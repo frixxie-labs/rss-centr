@@ -3,8 +3,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use sqlx::prelude::FromRow;
+use utoipa::ToSchema;
 
-#[derive(Serialize, Deserialize, FromRow)]
+#[derive(Serialize, Deserialize, FromRow, ToSchema)]
 pub struct FeedItem {
     pub id: i64,
     pub feed_id: i64,
@@ -14,7 +15,7 @@ pub struct FeedItem {
     pub inserted_at: DateTime<Utc>,
 }
 
-#[derive(Serialize, Deserialize, FromRow)]
+#[derive(Serialize, Deserialize, FromRow, ToSchema)]
 pub struct FeedItemDetail {
     pub id: i64,
     pub feed_item_id: i64,
@@ -55,6 +56,38 @@ pub async fn insert_feed_item(
     Ok(row)
 }
 
+pub async fn insert_feed_item_dedup(
+    pool: &SqlitePool,
+    feed_id: i64,
+    external_id: &str,
+    title: &str,
+    url: &str,
+) -> Result<Option<FeedItem>> {
+    let row = sqlx::query_as!(
+        FeedItem,
+        r#"
+        INSERT INTO feed_items (feed_id, external_id, title, url)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT(feed_id, external_id) DO NOTHING
+        RETURNING id as "id!: i64", feed_id, external_id, title, url,
+                  inserted_at as "inserted_at: _"
+        "#,
+        feed_id,
+        external_id,
+        title,
+        url,
+    )
+    .fetch_optional(pool)
+    .await
+    .with_context(|| {
+        format!(
+            "failed to insert (dedup) feed item with feed_id={feed_id} external_id={external_id}"
+        )
+    })?;
+
+    Ok(row)
+}
+
 pub async fn read_feed_item(pool: &SqlitePool, id: i64) -> Result<FeedItem> {
     let row = sqlx::query_as!(
         FeedItem,
@@ -77,7 +110,9 @@ pub async fn read_feed_items_by_feed(pool: &SqlitePool, feed_id: i64) -> Result<
     let rows = sqlx::query_as!(
         FeedItem,
         r#"
-        SELECT id, feed_id, external_id, title, url,
+        SELECT id as "id!: i64",
+               feed_id as "feed_id!: i64",
+               external_id, title, url,
                inserted_at as "inserted_at: _"
         FROM feed_items
         WHERE feed_id = $1
@@ -88,6 +123,27 @@ pub async fn read_feed_items_by_feed(pool: &SqlitePool, feed_id: i64) -> Result<
     .fetch_all(pool)
     .await
     .with_context(|| format!("failed to read feed items for feed_id={feed_id}"))?;
+
+    Ok(rows)
+}
+
+pub async fn read_latest_feed_items(pool: &SqlitePool, limit: i64) -> Result<Vec<FeedItem>> {
+    let rows = sqlx::query_as!(
+        FeedItem,
+        r#"
+        SELECT id as "id!: i64",
+               feed_id as "feed_id!: i64",
+               external_id, title, url,
+               inserted_at as "inserted_at: _"
+        FROM feed_items
+        ORDER BY inserted_at DESC, id DESC
+        LIMIT $1
+        "#,
+        limit,
+    )
+    .fetch_all(pool)
+    .await
+    .with_context(|| format!("failed to read latest feed items with limit={limit}"))?;
 
     Ok(rows)
 }
@@ -173,6 +229,39 @@ pub async fn insert_feed_item_detail(
     Ok(row)
 }
 
+pub async fn insert_feed_item_detail_dedup(
+    pool: &SqlitePool,
+    feed_item_id: i64,
+    summary: &str,
+    content: &str,
+    author: &str,
+    published_at: DateTime<Utc>,
+) -> Result<Option<FeedItemDetail>> {
+    let row = sqlx::query_as!(
+        FeedItemDetail,
+        r#"
+        INSERT INTO feed_item_details (feed_item_id, summary, content, author, published_at)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT(feed_item_id) DO NOTHING
+        RETURNING id as "id!: i64", feed_item_id as "feed_item_id!: i64",
+                  summary, content, author,
+                  published_at as "published_at: _"
+        "#,
+        feed_item_id,
+        summary,
+        content,
+        author,
+        published_at,
+    )
+    .fetch_optional(pool)
+    .await
+    .with_context(|| {
+        format!("failed to insert (dedup) feed item detail for feed_item_id={feed_item_id}")
+    })?;
+
+    Ok(row)
+}
+
 pub async fn read_feed_item_detail(pool: &SqlitePool, feed_item_id: i64) -> Result<FeedItemDetail> {
     let row = sqlx::query_as!(
         FeedItemDetail,
@@ -249,6 +338,7 @@ pub async fn delete_feed_item_detail(pool: &SqlitePool, feed_item_id: i64) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::feed::feed_subscription::upsert_feed_by_url;
 
     // -----------------------------------------------------------------------
     // FeedItem tests
@@ -256,19 +346,44 @@ mod tests {
 
     #[sqlx::test]
     async fn test_insert_feed_item(pool: SqlitePool) {
-        let item = insert_feed_item(&pool, 1, "ext-1", "Title", "https://example.com")
+        let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
 
-        assert_eq!(item.feed_id, 1);
+        let item = insert_feed_item(&pool, feed.id, "ext-1", "Title", "https://example.com")
+            .await
+            .unwrap();
+
+        assert_eq!(item.feed_id, feed.id);
         assert_eq!(item.external_id, "ext-1");
         assert_eq!(item.title, "Title");
         assert_eq!(item.url, "https://example.com");
     }
 
     #[sqlx::test]
+    async fn test_insert_feed_item_dedup(pool: SqlitePool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
+            .await
+            .unwrap();
+
+        let a = insert_feed_item_dedup(&pool, feed.id, "ext-1", "Title", "https://example.com")
+            .await
+            .unwrap();
+        assert!(a.is_some());
+
+        let b = insert_feed_item_dedup(&pool, feed.id, "ext-1", "Title", "https://example.com")
+            .await
+            .unwrap();
+        assert!(b.is_none());
+    }
+
+    #[sqlx::test]
     async fn test_read_feed_item(pool: SqlitePool) {
-        let inserted = insert_feed_item(&pool, 1, "ext-1", "Title", "https://example.com")
+        let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
+            .await
+            .unwrap();
+
+        let inserted = insert_feed_item(&pool, feed.id, "ext-1", "Title", "https://example.com")
             .await
             .unwrap();
 
@@ -287,20 +402,33 @@ mod tests {
 
     #[sqlx::test]
     async fn test_read_feed_items_by_feed(pool: SqlitePool) {
-        insert_feed_item(&pool, 1, "ext-1", "First", "https://example.com/1")
+        let feed1 = upsert_feed_by_url(&pool, "https://example.com/a.xml")
             .await
             .unwrap();
-        insert_feed_item(&pool, 1, "ext-2", "Second", "https://example.com/2")
-            .await
-            .unwrap();
-        insert_feed_item(&pool, 2, "ext-3", "Other feed", "https://example.com/3")
+        let feed2 = upsert_feed_by_url(&pool, "https://example.com/b.xml")
             .await
             .unwrap();
 
-        let items = read_feed_items_by_feed(&pool, 1).await.unwrap();
+        insert_feed_item(&pool, feed1.id, "ext-1", "First", "https://example.com/1")
+            .await
+            .unwrap();
+        insert_feed_item(&pool, feed1.id, "ext-2", "Second", "https://example.com/2")
+            .await
+            .unwrap();
+        insert_feed_item(
+            &pool,
+            feed2.id,
+            "ext-3",
+            "Other feed",
+            "https://example.com/3",
+        )
+        .await
+        .unwrap();
+
+        let items = read_feed_items_by_feed(&pool, feed1.id).await.unwrap();
         assert_eq!(items.len(), 2);
 
-        let items_feed2 = read_feed_items_by_feed(&pool, 2).await.unwrap();
+        let items_feed2 = read_feed_items_by_feed(&pool, feed2.id).await.unwrap();
         assert_eq!(items_feed2.len(), 1);
         assert_eq!(items_feed2[0].title, "Other feed");
     }
@@ -312,8 +440,37 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn test_read_latest_feed_items_limit_and_order(pool: SqlitePool) {
+        let feed1 = upsert_feed_by_url(&pool, "https://example.com/a.xml")
+            .await
+            .unwrap();
+        let feed2 = upsert_feed_by_url(&pool, "https://example.com/b.xml")
+            .await
+            .unwrap();
+
+        insert_feed_item(&pool, feed1.id, "ext-1", "First", "https://example.com/1")
+            .await
+            .unwrap();
+        insert_feed_item(&pool, feed2.id, "ext-2", "Second", "https://example.com/2")
+            .await
+            .unwrap();
+        insert_feed_item(&pool, feed1.id, "ext-3", "Third", "https://example.com/3")
+            .await
+            .unwrap();
+
+        let items = read_latest_feed_items(&pool, 2).await.unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].title, "Third");
+        assert_eq!(items[1].title, "Second");
+    }
+
+    #[sqlx::test]
     async fn test_update_feed_item(pool: SqlitePool) {
-        let item = insert_feed_item(&pool, 1, "ext-1", "Old title", "https://old.com")
+        let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
+            .await
+            .unwrap();
+
+        let item = insert_feed_item(&pool, feed.id, "ext-1", "Old title", "https://old.com")
             .await
             .unwrap();
 
@@ -329,7 +486,11 @@ mod tests {
 
     #[sqlx::test]
     async fn test_delete_feed_item(pool: SqlitePool) {
-        let item = insert_feed_item(&pool, 1, "ext-1", "Title", "https://example.com")
+        let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
+            .await
+            .unwrap();
+
+        let item = insert_feed_item(&pool, feed.id, "ext-1", "Title", "https://example.com")
             .await
             .unwrap();
 
@@ -351,7 +512,11 @@ mod tests {
 
     #[sqlx::test]
     async fn test_insert_feed_item_detail(pool: SqlitePool) {
-        let item = insert_feed_item(&pool, 1, "ext-1", "Title", "https://example.com")
+        let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
+            .await
+            .unwrap();
+
+        let item = insert_feed_item(&pool, feed.id, "ext-1", "Title", "https://example.com")
             .await
             .unwrap();
 
@@ -367,8 +532,34 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn test_insert_feed_item_detail_dedup(pool: SqlitePool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
+            .await
+            .unwrap();
+
+        let item = insert_feed_item(&pool, feed.id, "ext-1", "Title", "https://example.com")
+            .await
+            .unwrap();
+
+        let now = Utc::now();
+        let a = insert_feed_item_detail_dedup(&pool, item.id, "s", "c", "a", now)
+            .await
+            .unwrap();
+        assert!(a.is_some());
+
+        let b = insert_feed_item_detail_dedup(&pool, item.id, "s", "c", "a", now)
+            .await
+            .unwrap();
+        assert!(b.is_none());
+    }
+
+    #[sqlx::test]
     async fn test_read_feed_item_detail(pool: SqlitePool) {
-        let item = insert_feed_item(&pool, 1, "ext-1", "Title", "https://example.com")
+        let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
+            .await
+            .unwrap();
+
+        let item = insert_feed_item(&pool, feed.id, "ext-1", "Title", "https://example.com")
             .await
             .unwrap();
 
@@ -390,7 +581,11 @@ mod tests {
 
     #[sqlx::test]
     async fn test_update_feed_item_detail(pool: SqlitePool) {
-        let item = insert_feed_item(&pool, 1, "ext-1", "Title", "https://example.com")
+        let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
+            .await
+            .unwrap();
+
+        let item = insert_feed_item(&pool, feed.id, "ext-1", "Title", "https://example.com")
             .await
             .unwrap();
 
@@ -426,7 +621,11 @@ mod tests {
 
     #[sqlx::test]
     async fn test_delete_feed_item_detail(pool: SqlitePool) {
-        let item = insert_feed_item(&pool, 1, "ext-1", "Title", "https://example.com")
+        let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
+            .await
+            .unwrap();
+
+        let item = insert_feed_item(&pool, feed.id, "ext-1", "Title", "https://example.com")
             .await
             .unwrap();
 
@@ -449,7 +648,11 @@ mod tests {
 
     #[sqlx::test]
     async fn test_cascade_delete_removes_detail(pool: SqlitePool) {
-        let item = insert_feed_item(&pool, 1, "ext-1", "Title", "https://example.com")
+        let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
+            .await
+            .unwrap();
+
+        let item = insert_feed_item(&pool, feed.id, "ext-1", "Title", "https://example.com")
             .await
             .unwrap();
 
