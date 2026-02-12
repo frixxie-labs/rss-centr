@@ -75,12 +75,16 @@ Fresh Frontend
 - Reconnect + backfill support
 
 ### Technical Highlights
-- Monotonic `items.id` for:
+- Monotonic `feed_items.id` for:
   - Cursor pagination
   - SSE replay
 - `INSERT OR IGNORE` dedupe
 - Broadcast channel fanout
 - DB-backed replay on reconnect
+
+Note: the implementation stores item metadata in `feed_items` and heavier fields in
+`feed_item_details` (1:1), which keeps timeline reads fast while preserving full
+content for detail views.
 
 ---
 
@@ -89,10 +93,10 @@ Fresh Frontend
 ### Backend
 
 #### Feed Management
-- [ ] Add feed (`POST /api/feeds`)
-- [ ] List feeds
-- [ ] Enable/disable feed
-- [ ] Delete feed
+- [x] Add feed (DB: upsert by URL)
+- [x] List feeds (DB)
+- [x] Enable/disable feed (DB)
+- [x] Delete feed (DB)
 
 #### Polling
 - [ ] Scheduled polling per feed
@@ -101,10 +105,10 @@ Fresh Frontend
 - [ ] Jittered intervals
 
 #### Items
-- [ ] Store normalized items
-- [ ] Deduplicate via `UNIQUE(feed_id, external_id)`
+- [x] Store normalized items (`feed_items` + `feed_item_details`)
+- [x] Deduplicate via `UNIQUE(feed_id, external_id)`
 - [ ] Cursor pagination
-- [ ] Filter by feed
+- [x] Filter by feed (DB)
 
 #### Live Updates
 - [ ] `GET /api/events` (SSE)
@@ -125,10 +129,10 @@ Fresh Frontend
 ## 🗺 Roadmap
 
 ### Phase 1 — MVP (Current Goal)
-- Core ingest pipeline
-- SQLite schema + migrations
-- REST + SSE API
-- Fresh SSR + live island
+- [x] Core ingest pipeline
+- [x] SQLite schema + migrations
+- [ ] REST + SSE API
+- [ ] Fresh SSR + live island
 
 ### Phase 2 — Usability
 - Mark as read/unread
@@ -168,15 +172,14 @@ Fresh Frontend
 ```bash
 git clone <repo>
 cd backend
-
-cp .env.example .env
 ```
 
-Example `.env`:
+The backend uses `DATABASE_URL` (SQLite) and defaults to `sqlite:dev.db` if unset.
 
-```
-DATABASE_URL=sqlite://data.db
-BIND_ADDR=127.0.0.1:8080
+Example:
+
+```bash
+export DATABASE_URL='sqlite:dev.db'
 ```
 
 Run:
@@ -228,6 +231,7 @@ DELETE /api/feeds/:id
 ```
 GET /api/items?limit=50&cursor=123
 GET /api/items?feed_id=1
+GET /api/items/:id
 ```
 
 ### Live Updates (SSE)
@@ -245,6 +249,8 @@ data: { ...json... }
 ```
 
 Reconnect automatically handled via `Last-Event-ID`.
+
+`id` should correspond to `feed_items.id` to support monotonic cursors and replay.
 
 ---
 
@@ -264,17 +270,13 @@ Reconnect automatically handled via `Last-Event-ID`.
 - last_success_at
 - failure_count
 
-### items
+### feed_items
 
 - id (INTEGER PRIMARY KEY)
-- feed_id (FK)
+- feed_id (FK -> feeds.id)
 - external_id
 - title
 - url
-- summary
-- content
-- author
-- published_at
 - inserted_at
 
 Constraints:
@@ -282,6 +284,20 @@ Constraints:
 ```
 UNIQUE(feed_id, external_id)
 ```
+
+### feed_item_details
+
+- id (INTEGER PRIMARY KEY)
+- feed_item_id (UNIQUE FK -> feed_items.id)
+- summary
+- content
+- author
+- published_at
+
+Notes:
+
+- One detail row per item (`UNIQUE(feed_item_id)`).
+- `ON DELETE CASCADE` from `feed_items` to `feed_item_details`.
 
 ---
 
@@ -342,4 +358,3 @@ Recommended:
 ## 📜 License
 
 MIT
-

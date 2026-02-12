@@ -1,4 +1,7 @@
 pub mod feed;
 pub mod feed_item;
+pub mod feed_subscription;
+pub mod ingest;
 
-pub use feed::{FEED_URLS, fetch_feed};
+pub use feed::FEED_URLS;
+pub use ingest::ingest_feed_url;

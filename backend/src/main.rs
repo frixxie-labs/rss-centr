@@ -1,47 +1,117 @@
-mod feed;
+use anyhow::{Context, Result};
+use metrics_exporter_prometheus::PrometheusBuilder;
+use sqlx::SqlitePool;
+use structopt::StructOpt;
+use tokio::{net::TcpListener, sync::broadcast, sync::mpsc::channel};
+use tracing::{Level, info};
+use tracing_subscriber::FmtSubscriber;
 
-use anyhow::Result;
-use feed::FEED_URLS;
+use crate::{
+    background_tasks::{IngestJob, enqueue_due_feeds_loop, handle_ingest_bg_thread},
+    events::NewFeedItemEvent,
+    handlers::create_router,
+};
+
+pub mod background_tasks;
+pub mod events;
+pub mod feed;
+pub mod handlers;
+
+#[derive(Debug, Clone)]
+enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl std::str::FromStr for LogLevel {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "trace" => Ok(LogLevel::Trace),
+            "debug" => Ok(LogLevel::Debug),
+            "info" => Ok(LogLevel::Info),
+            "warn" => Ok(LogLevel::Warn),
+            "error" => Ok(LogLevel::Error),
+            _ => Err("unknown log level".to_string()),
+        }
+    }
+}
+
+impl From<LogLevel> for Level {
+    fn from(log_level: LogLevel) -> Self {
+        match log_level {
+            LogLevel::Trace => Level::TRACE,
+            LogLevel::Debug => Level::DEBUG,
+            LogLevel::Info => Level::INFO,
+            LogLevel::Warn => Level::WARN,
+            LogLevel::Error => Level::ERROR,
+        }
+    }
+}
+
+#[derive(Debug, Clone, StructOpt)]
+pub struct Opts {
+    #[structopt(short, long, default_value = "0.0.0.0:8080")]
+    host: String,
+
+    #[structopt(short, long, env = "DATABASE_URL", default_value = "sqlite:dev.db")]
+    db_url: String,
+
+    #[structopt(short, long, default_value = "info")]
+    log_level: LogLevel,
+
+    #[structopt(long, default_value = "30")]
+    scheduler_interval_seconds: u64,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let opts = Opts::from_args();
+    let level: Level = opts.log_level.into();
+    let subscriber = FmtSubscriber::builder().with_max_level(level).finish();
+    tracing::subscriber::set_global_default(subscriber).unwrap();
+
+    let metrics_handler = PrometheusBuilder::new()
+        .install_recorder()
+        .expect("failed to install recorder/exporter");
+
+    info!("Connecting to DB at {}", opts.db_url);
+    let pool = SqlitePool::connect(&opts.db_url)
+        .await
+        .with_context(|| format!("failed to connect to {}", opts.db_url))?;
+
+    sqlx::migrate!()
+        .run(&pool)
+        .await
+        .context("failed to run migrations")?;
+
     let client = reqwest::Client::new();
+    let (tx, rx) = channel::<IngestJob>(1 << 12);
+    let (new_item_tx, _new_item_rx) = broadcast::channel::<NewFeedItemEvent>(1 << 12);
 
-    for url in FEED_URLS {
-        match feed::fetch_feed(&client, url).await {
-            Ok(f) => {
-                let title = f
-                    .title
-                    .as_ref()
-                    .map(|t| t.content.as_str())
-                    .unwrap_or("(no title)");
+    let ingest_pool = pool.clone();
+    let ingest_client = client.clone();
+    let ingest_new_item_tx = new_item_tx.clone();
+    tokio::spawn(async move {
+        handle_ingest_bg_thread(rx, ingest_pool, ingest_client, ingest_new_item_tx).await;
+    });
 
-                println!("Feed: {title}  ({url})");
-                println!("Entries: {}", f.entries.len());
-
-                for entry in &f.entries {
-                    let entry_title = entry
-                        .title
-                        .as_ref()
-                        .map(|t| t.content.as_str())
-                        .unwrap_or("(no title)");
-
-                    let link = entry
-                        .links
-                        .first()
-                        .map(|l| l.href.as_str())
-                        .unwrap_or("(no link)");
-
-                    println!("  - {entry_title}");
-                    println!("    {link}");
-                }
-                println!();
-            }
-            Err(e) => {
-                eprintln!("Error fetching {url}: {e:#}");
-            }
+    let sched_pool = pool.clone();
+    let sched_tx = tx.clone();
+    let every = std::time::Duration::from_secs(opts.scheduler_interval_seconds);
+    tokio::spawn(async move {
+        if let Err(e) = enqueue_due_feeds_loop(sched_pool, sched_tx, every).await {
+            tracing::warn!("scheduler stopped: {e:#}");
         }
-    }
+    });
 
+    let app = create_router(pool, metrics_handler, tx, new_item_tx);
+
+    let listener = TcpListener::bind(&opts.host).await?;
+    axum::serve(listener, app).await?;
     Ok(())
 }
