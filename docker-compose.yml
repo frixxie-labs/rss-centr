@@ -1,0 +1,20 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./backend/dev.db:/app/dev.db
+    environment:
+      - DATABASE_URL=sqlite:dev.db
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "8000:8000"
+    environment:
+      - BACKEND_URL=http://backend:8080
+    depends_on:
+      - backend
