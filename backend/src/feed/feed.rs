@@ -6,6 +6,7 @@ pub const FEED_URLS: &[&str] = &[
     "https://www.nrk.no/nyheter/siste.rss",
     "https://rss.kode24.no/",
     "https://www.adressa.no/rss",
+    "https://www.tek.no/api/rss/rss2/medium/collections",
 ];
 
 /// Fetches and parses an RSS feed from the given URL.

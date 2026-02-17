@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "\n        UPDATE feed_items\n        SET title = $1, url = $2\n        WHERE id = $3\n        RETURNING id as \"id!: i64\", feed_id, external_id, title, url,\n                  inserted_at as \"inserted_at: _\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "feed_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "external_id",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "title",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "url",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "inserted_at: _",
+        "ordinal": 5,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0176a21a11b86efdf92ffe8139f0c3cea968e6cae2f05a24a744f78e6b02409a"
+}

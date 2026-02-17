@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n        UPDATE feeds\n        SET is_enabled = $1\n        WHERE id = $2\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "464764fb6e3ca41bf5ee18d35e707aba0573ec635add77c16fee7d7fb05f9f6c"
+}
