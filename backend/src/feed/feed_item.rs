@@ -25,10 +25,6 @@ pub struct FeedItemDetail {
     pub published_at: DateTime<Utc>,
 }
 
-// ---------------------------------------------------------------------------
-// FeedItem CRUD
-// ---------------------------------------------------------------------------
-
 pub async fn insert_feed_item(
     pool: &SqlitePool,
     feed_id: i64,
@@ -192,10 +188,6 @@ pub async fn delete_feed_item(pool: &SqlitePool, id: i64) -> Result<()> {
 
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// FeedItemDetail CRUD
-// ---------------------------------------------------------------------------
 
 pub async fn insert_feed_item_detail(
     pool: &SqlitePool,

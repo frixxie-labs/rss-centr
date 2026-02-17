@@ -1,26 +1,21 @@
 # AGENTS.md
 
-This repository currently contains a Rust backend in `backend/`.
-There are no Cursor rules (`.cursor/rules/` or `.cursorrules`) and no Copilot instructions (`.github/copilot-instructions.md`) in this repo as of today.
+This repository is an RSS aggregator with a **Rust backend** (`backend/`) and a **Deno Fresh 2 frontend** (`frontend/`). There are no Cursor rules or Copilot instructions in this repo.
 
 ## Version Control (jj)
 
-This repo uses Jujutsu (`jj`) for day-to-day version control. The repository is also a Git repo on disk for compatibility, but prefer `jj` commands and workflows.
-
-Common commands:
+This repo uses Jujutsu (`jj`) for version control. Git is kept on disk for compatibility, but prefer `jj` commands.
 
 ```bash
-jj status
-jj diff
-jj log
-
-# Add/adjust change description (commit message)
-jj describe -m "<message>"
+jj status          # working-copy changes
+jj diff            # current diff
+jj log             # change log
+jj describe -m "<message>"   # set change description
 ```
 
-## Commands (Build / Lint / Test)
+## Backend Commands (Rust / Cargo)
 
-Run from repo root (works regardless of your current directory):
+All commands work from the repo root with `--manifest-path backend/Cargo.toml`, or directly from `backend/`.
 
 ```bash
 # Build
@@ -29,103 +24,75 @@ cargo build --manifest-path backend/Cargo.toml
 # Run
 cargo run --manifest-path backend/Cargo.toml
 
-# Format
-cargo fmt --manifest-path backend/Cargo.toml
+# Format (check only)
 cargo fmt --manifest-path backend/Cargo.toml -- --check
 
-# Lint
-cargo clippy --manifest-path backend/Cargo.toml --all-targets --all-features
+# Lint (deny warnings)
 cargo clippy --manifest-path backend/Cargo.toml --all-targets --all-features -- -D warnings
 
 # Test (all)
 cargo test --manifest-path backend/Cargo.toml
 ```
 
-Run from `backend/` (shorter):
-
-```bash
-cargo build
-cargo run
-cargo fmt
-cargo clippy --all-targets --all-features
-cargo test
-```
-
 ### Running a single test
 
-Preferred patterns:
-
 ```bash
-# Exact test name (substring match)
+# Substring match
 cargo test --manifest-path backend/Cargo.toml test_insert_feed_item
 
-# Fully qualified path (best when names collide)
+# Fully qualified path (when names collide)
 cargo test --manifest-path backend/Cargo.toml feed::feed_item::tests::test_insert_feed_item
 
-# Run a single test and show stdout
+# Show stdout
 cargo test --manifest-path backend/Cargo.toml test_insert_feed_item -- --nocapture
-```
 
-Helpful test tooling:
-
-```bash
-# List tests
+# List all tests
 cargo test --manifest-path backend/Cargo.toml -- --list
-
-# Run only lib/unit tests (if a lib crate is added later)
-cargo test --manifest-path backend/Cargo.toml --lib
 ```
 
-## Environment & Database (sqlx + SQLite)
+### Environment & Database (sqlx + SQLite)
 
-- `backend/` uses `sqlx` macros (`query!`, `query_as!`). These perform compile-time SQL checking and typically require `DATABASE_URL` to be set in the environment during `cargo build` / `cargo test`.
-- A local dev value exists in `backend/.env`:
-  - `DATABASE_URL=sqlite:dev.db`
-- Rust/sqlx does not automatically load `.env` at compile time. If builds/tests fail with missing `DATABASE_URL`, export it in your shell:
+`sqlx` macros (`query!`, `query_as!`) require `DATABASE_URL` at compile time. A `.env` in `backend/` sets `DATABASE_URL=sqlite:dev.db`, but sqlx does **not** auto-load it. If builds fail:
 
 ```bash
 export DATABASE_URL='sqlite:dev.db'
-cargo test --manifest-path backend/Cargo.toml
 ```
 
-Migrations live in `backend/migrations/`. Tests using `#[sqlx::test]` are expected to run with migrations applied (sqlx test harness manages this).
+Migrations live in `backend/migrations/` and are auto-applied on server startup. Tests using `#[sqlx::test]` get an isolated DB per test with migrations applied.
 
-If you use `sqlx-cli` locally, typical commands look like:
+## Frontend Commands (Deno / Fresh 2)
+
+Run from `frontend/`:
 
 ```bash
-# Install once (optional)
-cargo install sqlx-cli
-
-# Apply migrations to your dev DB
-sqlx migrate run --source backend/migrations
+deno task dev      # Vite dev server
+deno task build    # production build
+deno task start    # serve built app (deno serve -A _fresh/server.js)
+deno task check    # deno fmt --check && deno lint && deno check
 ```
 
-## Code Style (Repository Conventions)
+The frontend proxies `/api/*` requests to `http://localhost:8080` (the backend). `BACKEND_URL` is defined in `frontend/utils.ts`.
 
-This section captures conventions already present in the codebase. Prefer following existing patterns over introducing new ones.
+## Code Style — Backend (Rust)
+
+Prefer following existing patterns over introducing new ones.
 
 ### Formatting
 
-- Use `rustfmt` (default settings). Do not hand-format.
-- Keep lines reasonably short; wrap fluent chains as rustfmt does.
+- Use `rustfmt` with default settings. Do not hand-format.
 - Use raw strings for SQL (`r#"..."#`) with consistent indentation.
 
 ### Imports
 
-- Group imports roughly as:
-  - std
-  - external crates
-  - crate modules
-- Prefer explicit imports (e.g. `use anyhow::{Context, Result};`) over glob imports.
+- Group as: std, external crates, crate modules.
+- Prefer explicit imports (`use anyhow::{Context, Result};`) over globs.
 - Keep `use` blocks small and local to the module.
 
 ### Types and Data Modeling
 
-- Use strong types for IDs when possible, but keep consistency with existing schema (`i64` for SQLite integer PKs).
-- For DB row models, derive:
-  - `sqlx::FromRow` (already used)
-  - `serde::{Serialize, Deserialize}` when used in API payloads
-- Use `chrono::DateTime<Utc>` for timestamps (already used).
+- `i64` for SQLite integer PKs (matches existing schema).
+- DB row models derive `sqlx::FromRow`; add `serde::{Serialize, Deserialize}` for API payloads.
+- `chrono::DateTime<Utc>` for timestamps.
 
 ### Naming
 
@@ -133,34 +100,49 @@ This section captures conventions already present in the codebase. Prefer follow
 - Structs and enums: `UpperCamelCase` (`FeedItem`, `FeedItemDetail`).
 - Constants: `SCREAMING_SNAKE_CASE` (`FEED_URLS`).
 
-### Error handling
+### Error Handling
 
 - Use `anyhow::Result<T>` for fallible operations.
-- Add context at boundaries:
-  - Network/IO/DB calls should use `.with_context(|| ...)` with actionable messages.
-- Use `anyhow::bail!` for domain errors like “not found” (see `delete_*` functions).
-- Avoid `unwrap()` / `expect()` outside tests.
+- Add `.with_context(|| ...)` at network/IO/DB boundaries with actionable messages.
+- Use `anyhow::bail!` for domain errors (e.g., "not found").
+- No `unwrap()` / `expect()` outside tests.
 
 ### Async / Tokio
 
-- Prefer passing a `reqwest::Client` around (already done in `fetch_feed`).
-- Keep async functions cancellation-safe when possible (avoid holding locks across `.await`).
+- Pass `reqwest::Client` as a parameter rather than constructing per-call.
+- Keep async functions cancellation-safe (avoid holding locks across `.await`).
 
-### SQLx usage
+### SQLx Usage
 
-- Prefer compile-time checked macros (`query!`, `query_as!`) as the code already does.
-- Keep SQL close to the function that uses it; avoid building SQL with string concatenation.
+- Prefer compile-time checked macros (`query!`, `query_as!`).
+- Keep SQL close to the function that uses it; no string concatenation for SQL.
 - Always bind parameters (no string interpolation into SQL).
-- For “no rows affected” cases, convert to a domain error (see `rows_affected()` checks).
+- Check `rows_affected()` and convert zero rows to a domain error.
 
 ### Testing
 
-- Keep unit tests near the code (`#[cfg(test)] mod tests { ... }`).
-- Use `#[sqlx::test]` for DB tests; it provides an isolated database per test.
-- Prefer deterministic tests. Note: `backend/src/feed/feed.rs` contains a networked test that fetches real feeds; it may be flaky/offline-sensitive.
+- Unit tests go in `#[cfg(test)] mod tests { ... }` alongside the code.
+- Use `#[sqlx::test]` for DB tests (isolated migrated DB per test).
+- Prefer deterministic tests. The test in `feed.rs` hits real RSS feeds and may be flaky.
 
-## Repo Hygiene for Agents
+## Code Style — Frontend (TypeScript / Deno Fresh)
 
-- Do not commit secrets. Avoid committing `backend/.env` changes.
-- Avoid committing databases and build artifacts (`backend/dev.db`, `*/target/`).
-- If you add new tooling rules (Cursor/Copilot), update this file to mirror them.
+### Formatting & Linting
+
+- `deno fmt` for formatting (built-in, no config needed).
+- `deno lint` with `"fresh"` and `"recommended"` rule tags (configured in `deno.json`).
+- Run `deno task check` to verify both formatting and linting.
+
+### Conventions
+
+- Use TypeScript `interface` for shared types (see `types.ts`).
+- Preact components in `components/` (server-rendered), interactive islands in `islands/`.
+- Import paths use the `@/` alias for project-root-relative imports (configured in `deno.json`).
+- JSX uses precompiled mode with `preact` as the import source.
+- Tailwind CSS 4 for styling (via Vite plugin).
+
+## Repo Hygiene
+
+- Do not commit secrets or `backend/.env` changes.
+- Do not commit databases (`dev.db`) or build artifacts (`*/target/`, `_fresh/`).
+- If you add Cursor/Copilot rules, update this file to mirror them.
