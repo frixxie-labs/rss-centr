@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "\n        INSERT INTO feed_items (feed_id, external_id, title, url)\n        VALUES ($1, $2, $3, $4)\n        ON CONFLICT(feed_id, external_id) DO NOTHING\n        RETURNING id as \"id!: i64\", feed_id, external_id, title, url,\n                  inserted_at as \"inserted_at: _\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "feed_id",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "external_id",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "title",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "url",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "inserted_at: _",
+        "ordinal": 5,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "953ead62388cfba99dcbb77ad7c52e7c8e536da3a28f9fb01998dda4119e98d3"
+}

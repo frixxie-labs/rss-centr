@@ -1,0 +1,18 @@
+check:
+    cargo check
+
+prepare:
+    sqlx database create
+    sqlx migrate run
+    cargo sqlx prepare
+
+# Build the project
+build: prepare check
+    cargo build
+
+lint:
+    cargo clippy
+
+# Run all tests
+test:
+    cargo test
