@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "\n        SELECT id as \"id!: i64\",\n               url,\n               title,\n               site_url,\n               etag,\n               last_modified,\n               poll_interval_seconds,\n               is_enabled as \"is_enabled!: bool\",\n               last_checked_at as \"last_checked_at: _\",\n               last_success_at as \"last_success_at: _\",\n               failure_count\n        FROM feeds\n        WHERE is_enabled = 1\n        ORDER BY id ASC\n        ",
+  "query": "\n        SELECT id as \"id!: i64\",\n               url,\n               title,\n               site_url,\n               etag,\n               last_modified,\n               poll_interval_seconds,\n               is_enabled as \"is_enabled!: bool\",\n               last_checked_at as \"last_checked_at: _\",\n               last_success_at as \"last_success_at: _\",\n               failure_count\n        FROM feeds\n        WHERE is_enabled = 1\n          AND (\n              last_checked_at IS NULL\n              OR (strftime('%s', $1) - strftime('%s', last_checked_at)) >= poll_interval_seconds\n          )\n        ORDER BY id ASC\n        ",
   "describe": {
     "columns": [
       {
@@ -60,7 +60,7 @@
       }
     ],
     "parameters": {
-      "Right": 0
+      "Right": 1
     },
     "nullable": [
       true,
@@ -76,5 +76,5 @@
       false
     ]
   },
-  "hash": "bdf0e5b661f57db5fa82719f28160461e015b31d06db7626fc979b5cc2c2dc40"
+  "hash": "9597c76dc087910d8408870274c447df97099e1661aab94e4a33021c6e03adc5"
 }
