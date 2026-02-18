@@ -134,5 +134,8 @@ pub struct ApiDoc;
 
 pub async fn get_openapi() -> String {
     let doc = ApiDoc::openapi();
-    serde_json::to_string_pretty(&doc).unwrap()
+    serde_json::to_string_pretty(&doc).unwrap_or_else(|e| {
+        tracing::error!("failed to render openapi document: {e}");
+        "{}".to_string()
+    })
 }

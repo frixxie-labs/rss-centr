@@ -51,18 +51,35 @@ pub async fn list_due_feeds(
     pool: &SqlitePool,
     now: DateTime<Utc>,
 ) -> Result<Vec<FeedSubscription>> {
-    let feeds = list_enabled_feeds(pool).await?;
-    let due = feeds
-        .into_iter()
-        .filter(|f| match f.last_checked_at {
-            None => true,
-            Some(last_checked_at) => {
-                let elapsed = now.signed_duration_since(last_checked_at).num_seconds();
-                elapsed >= f.poll_interval_seconds
-            }
-        })
-        .collect();
-    Ok(due)
+    let rows = sqlx::query_as!(
+        FeedSubscription,
+        r#"
+        SELECT id as "id!: i64",
+               url,
+               title,
+               site_url,
+               etag,
+               last_modified,
+               poll_interval_seconds,
+               is_enabled as "is_enabled!: bool",
+               last_checked_at as "last_checked_at: _",
+               last_success_at as "last_success_at: _",
+               failure_count
+        FROM feeds
+        WHERE is_enabled = 1
+          AND (
+              last_checked_at IS NULL
+              OR (strftime('%s', $1) - strftime('%s', last_checked_at)) >= poll_interval_seconds
+          )
+        ORDER BY id ASC
+        "#,
+        now,
+    )
+    .fetch_all(pool)
+    .await
+    .with_context(|| format!("failed to list due feeds at {now}"))?;
+
+    Ok(rows)
 }
 
 pub async fn upsert_feed_by_url(pool: &SqlitePool, url: &str) -> Result<FeedSubscription> {
@@ -114,9 +131,13 @@ pub async fn read_feed(pool: &SqlitePool, id: i64) -> Result<FeedSubscription> {
         "#,
         id,
     )
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await
     .with_context(|| format!("failed to read feed with id={id}"))?;
+
+    let Some(row) = row else {
+        anyhow::bail!("no feed found with id={id}");
+    };
 
     Ok(row)
 }

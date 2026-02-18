@@ -44,7 +44,7 @@ pub async fn fetch_feeds(
     let (pool, _tx) = app_state;
     let feeds = feed_subscription::list_feeds(&pool).await.map_err(|e| {
         warn!("failed with error: {e:#}");
-        HandlerError::new(500, format!("Failed to fetch data from database: {e}"))
+        HandlerError::from_db(e, "Failed to fetch data from database")
     })?;
     Ok(Json(feeds))
 }
@@ -67,14 +67,14 @@ pub async fn create_feed(
 ) -> Result<Json<FeedSubscription>, HandlerError> {
     let (pool, _tx) = app_state;
     if body.url.trim().is_empty() {
-        return Err(HandlerError::new(400, "Invalid input".to_string()));
+        return Err(HandlerError::bad_request("Invalid input"));
     }
 
     let feed = feed_subscription::upsert_feed_by_url(&pool, body.url.trim())
         .await
         .map_err(|e| {
             warn!("failed with error: {e:#}");
-            HandlerError::new(500, format!("Failed to store data in database: {e}"))
+            HandlerError::from_db(e, "Failed to store data in database")
         })?;
     Ok(Json(feed))
 }
@@ -101,7 +101,7 @@ pub async fn fetch_feed_by_id(
         .await
         .map_err(|e| {
             warn!("failed with error: {e:#}");
-            HandlerError::new(500, format!("Failed to fetch data from database: {e}"))
+            HandlerError::from_db(e, "Failed to fetch data from database")
         })?;
     Ok(Json(feed))
 }
@@ -131,7 +131,7 @@ pub async fn update_feed_enabled(
         .await
         .map_err(|e| {
             warn!("failed with error: {e:#}");
-            HandlerError::new(500, format!("Failed to update feed: {e}"))
+            HandlerError::from_db(e, "Failed to update feed")
         })?;
     Ok("OK".to_string())
 }
@@ -160,10 +160,9 @@ where
 
     tx.send(IngestJob::FeedId(feed_id)).await.map_err(|e| {
         warn!("failed with error: {e:#}");
-        HandlerError::new(
-            500,
-            format!("Failed to send ingest job to background thread: {e}"),
-        )
+        HandlerError::internal(format!(
+            "Failed to send ingest job to background thread: {e}"
+        ))
     })?;
 
     let resp = Response::builder()
@@ -171,7 +170,7 @@ where
         .body("queued".into())
         .map_err(|e| {
             warn!("failed with error: {e:#}");
-            HandlerError::new(500, format!("Failed to build response: {e}"))
+            HandlerError::internal(format!("Failed to build response: {e}"))
         })?;
     Ok(resp)
 }

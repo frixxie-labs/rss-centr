@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use sqlx::SqlitePool;
+use std::time::Duration;
 use structopt::StructOpt;
 use tokio::{net::TcpListener, sync::broadcast, sync::mpsc::channel};
 use tracing::{Level, info};
@@ -89,7 +90,11 @@ async fn main() -> Result<()> {
         .await
         .context("failed to run migrations")?;
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(20))
+        .build()
+        .context("failed to build HTTP client")?;
     let (tx, rx) = channel::<IngestJob>(1 << 12);
     let (new_item_tx, _new_item_rx) = broadcast::channel::<NewFeedItemEvent>(1 << 12);
 

@@ -135,8 +135,10 @@ mod tests {
 
     #[test]
     fn test_entry_external_id_prefers_id() {
-        let mut e = Entry::default();
-        e.id = "abc".to_string();
+        let e = Entry {
+            id: "abc".to_string(),
+            ..Default::default()
+        };
         assert_eq!(entry_external_id(&e), "abc");
     }
 }

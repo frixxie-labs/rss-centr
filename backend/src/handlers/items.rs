@@ -29,7 +29,7 @@ pub async fn fetch_items_by_feed(
 ) -> Result<Json<Vec<FeedItem>>, HandlerError> {
     let items = read_feed_items_by_feed(&pool, feed_id).await.map_err(|e| {
         warn!("failed with error: {e:#}");
-        HandlerError::new(500, format!("Failed to fetch data from database: {e}"))
+        HandlerError::from_db(e, "Failed to fetch data from database")
     })?;
     Ok(Json(items))
 }
@@ -59,7 +59,7 @@ pub async fn fetch_latest_items(
     let limit = query.limit.unwrap_or(100).min(500) as i64;
     let items = read_latest_feed_items(&pool, limit).await.map_err(|e| {
         warn!("failed with error: {e:#}");
-        HandlerError::new(500, format!("Failed to fetch data from database: {e}"))
+        HandlerError::from_db(e, "Failed to fetch data from database")
     })?;
     Ok(Json(items))
 }
@@ -83,7 +83,7 @@ pub async fn fetch_item_by_id(
 ) -> Result<Json<FeedItem>, HandlerError> {
     let item = read_feed_item(&pool, item_id).await.map_err(|e| {
         warn!("failed with error: {e:#}");
-        HandlerError::new(500, format!("Failed to fetch data from database: {e}"))
+        HandlerError::from_db(e, "Failed to fetch data from database")
     })?;
     Ok(Json(item))
 }
@@ -107,7 +107,7 @@ pub async fn fetch_item_detail(
 ) -> Result<Json<FeedItemDetail>, HandlerError> {
     let detail = read_feed_item_detail(&pool, item_id).await.map_err(|e| {
         warn!("failed with error: {e:#}");
-        HandlerError::new(500, format!("Failed to fetch data from database: {e}"))
+        HandlerError::from_db(e, "Failed to fetch data from database")
     })?;
     Ok(Json(detail))
 }

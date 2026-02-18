@@ -95,9 +95,13 @@ pub async fn read_feed_item(pool: &SqlitePool, id: i64) -> Result<FeedItem> {
         "#,
         id,
     )
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await
     .with_context(|| format!("failed to read feed item with id={id}"))?;
+
+    let Some(row) = row else {
+        anyhow::bail!("no feed item found with id={id}");
+    };
 
     Ok(row)
 }
@@ -266,9 +270,13 @@ pub async fn read_feed_item_detail(pool: &SqlitePool, feed_item_id: i64) -> Resu
         "#,
         feed_item_id,
     )
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await
     .with_context(|| format!("failed to read feed item detail for feed_item_id={feed_item_id}"))?;
+
+    let Some(row) = row else {
+        anyhow::bail!("no feed item detail found for feed_item_id={feed_item_id}");
+    };
 
     Ok(row)
 }

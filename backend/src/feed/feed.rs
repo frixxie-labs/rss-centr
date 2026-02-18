@@ -18,7 +18,9 @@ pub async fn fetch_feed(client: &reqwest::Client, url: &str) -> Result<Feed> {
         .get(url)
         .send()
         .await
-        .with_context(|| format!("Failed to fetch feed from {url}"))?;
+        .with_context(|| format!("Failed to fetch feed from {url}"))?
+        .error_for_status()
+        .with_context(|| format!("Non-success status fetching feed from {url}"))?;
 
     let bytes = response
         .bytes()
