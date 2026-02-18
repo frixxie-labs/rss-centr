@@ -1,9 +1,8 @@
 import type { FeedItem } from "../types.ts";
 
-function timeAgo(dateStr: string): string {
+function timeAgo(dateStr: string, nowMs: number): string {
   const date = new Date(dateStr);
-  const now = new Date();
-  const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+  const seconds = Math.floor((nowMs - date.getTime()) / 1000);
 
   if (seconds < 60) return "just now";
   const minutes = Math.floor(seconds / 60);
@@ -27,9 +26,12 @@ interface FeedItemCardProps {
   item: FeedItem;
   feedName?: string;
   isNew?: boolean;
+  nowMs: number;
 }
 
-export function FeedItemCard({ item, feedName, isNew }: FeedItemCardProps) {
+export function FeedItemCard(
+  { item, feedName, isNew, nowMs }: FeedItemCardProps,
+) {
   return (
     <a
       href={item.url}
@@ -51,7 +53,9 @@ export function FeedItemCard({ item, feedName, isNew }: FeedItemCardProps) {
           </>
         )}
         <span>&middot;</span>
-        <time datetime={item.inserted_at}>{timeAgo(item.inserted_at)}</time>
+        <time datetime={item.inserted_at}>
+          {timeAgo(item.inserted_at, nowMs)}
+        </time>
       </div>
     </a>
   );
