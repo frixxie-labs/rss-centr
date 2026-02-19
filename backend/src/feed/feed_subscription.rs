@@ -195,19 +195,25 @@ pub async fn touch_feed_success(
     checked_at: DateTime<Utc>,
     title: Option<&str>,
     site_url: Option<&str>,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
 ) -> Result<()> {
     let result = sqlx::query!(
         r#"
         UPDATE feeds
         SET title = COALESCE($1, title),
             site_url = COALESCE($2, site_url),
-            last_checked_at = $3,
-            last_success_at = $3,
+            etag = COALESCE($3, etag),
+            last_modified = COALESCE($4, last_modified),
+            last_checked_at = $5,
+            last_success_at = $5,
             failure_count = 0
-        WHERE id = $4
+        WHERE id = $6
         "#,
         title,
         site_url,
+        etag,
+        last_modified,
         checked_at,
         id,
     )
@@ -332,6 +338,8 @@ mod tests {
             t2,
             Some("Example"),
             Some("https://example.com"),
+            Some("\"etag-123\""),
+            Some("Mon, 01 Jan 2024 00:00:00 GMT"),
         )
         .await
         .unwrap();
@@ -342,5 +350,10 @@ mod tests {
         assert_eq!(r2.last_success_at.unwrap(), t2);
         assert_eq!(r2.title.as_deref(), Some("Example"));
         assert_eq!(r2.site_url.as_deref(), Some("https://example.com"));
+        assert_eq!(r2.etag.as_deref(), Some("\"etag-123\""));
+        assert_eq!(
+            r2.last_modified.as_deref(),
+            Some("Mon, 01 Jan 2024 00:00:00 GMT")
+        );
     }
 }

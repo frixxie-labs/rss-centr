@@ -1,8 +1,9 @@
-use std::time::Duration;
+use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use chrono::Utc;
 use metrics::{counter, gauge};
 use sqlx::SqlitePool;
+use tokio::sync::Mutex;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{info, warn};
@@ -21,9 +22,15 @@ pub async fn handle_ingest_bg_thread(
     pool: SqlitePool,
     client: reqwest::Client,
     new_item_tx: broadcast::Sender<NewFeedItemEvent>,
+    in_flight: Arc<Mutex<HashSet<i64>>>,
 ) {
     while let Some(job) = rx.recv().await {
         gauge!("rss_centr_ingest_queue_len").set(rx.len() as f64);
+
+        let tracked_feed_id = match &job {
+            IngestJob::FeedId(feed_id) => Some(*feed_id),
+            IngestJob::Url(_) => None,
+        };
 
         let (feed_id, url) = match job {
             IngestJob::FeedId(feed_id) => {
@@ -32,6 +39,9 @@ pub async fn handle_ingest_bg_thread(
                     Err(e) => {
                         counter!("rss_centr_ingest_errors_total").increment(1);
                         warn!("failed to read feed id={feed_id}: {e:#}");
+                        if let Some(tracked_feed_id) = tracked_feed_id {
+                            in_flight.lock().await.remove(&tracked_feed_id);
+                        }
                         continue;
                     }
                 };
@@ -57,6 +67,10 @@ pub async fn handle_ingest_bg_thread(
                 warn!("ingest failed url={url} feed_id={feed_id}: {e:#}");
             }
         }
+
+        if let Some(tracked_feed_id) = tracked_feed_id {
+            in_flight.lock().await.remove(&tracked_feed_id);
+        }
     }
 }
 
@@ -64,14 +78,25 @@ pub async fn enqueue_due_feeds_loop(
     pool: SqlitePool,
     tx: Sender<IngestJob>,
     every: Duration,
+    in_flight: Arc<Mutex<HashSet<i64>>>,
 ) -> anyhow::Result<()> {
     loop {
         let now = Utc::now();
         let due = feed_subscription::list_due_feeds(&pool, now).await?;
 
         for feed in due {
-            if let Err(e) = tx.send(IngestJob::FeedId(feed.id)).await {
-                warn!("failed to queue ingest for feed_id={}: {e}", feed.id);
+            let feed_id = feed.id;
+
+            {
+                let mut guard = in_flight.lock().await;
+                if !guard.insert(feed_id) {
+                    continue;
+                }
+            }
+
+            if let Err(e) = tx.send(IngestJob::FeedId(feed_id)).await {
+                warn!("failed to queue ingest for feed_id={}: {e}", feed_id);
+                in_flight.lock().await.remove(&feed_id);
             }
         }
 
