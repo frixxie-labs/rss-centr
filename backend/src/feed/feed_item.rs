@@ -16,6 +16,20 @@ pub struct FeedItem {
 }
 
 #[derive(Serialize, Deserialize, FromRow, ToSchema)]
+pub struct FeedItemWithDetail {
+    pub id: i64,
+    pub feed_id: i64,
+    pub external_id: String,
+    pub title: String,
+    pub url: String,
+    pub inserted_at: DateTime<Utc>,
+    pub summary: Option<String>,
+    pub content: Option<String>,
+    pub author: Option<String>,
+    pub published_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Serialize, Deserialize, FromRow, ToSchema)]
 pub struct FeedItemDetail {
     pub id: i64,
     pub feed_item_id: i64,
@@ -151,6 +165,37 @@ pub async fn read_latest_feed_items(pool: &SqlitePool, limit: i64) -> Result<Vec
     Ok(rows)
 }
 
+pub async fn read_latest_feed_items_with_detail(
+    pool: &SqlitePool,
+    limit: i64,
+) -> Result<Vec<FeedItemWithDetail>> {
+    let rows = sqlx::query_as!(
+        FeedItemWithDetail,
+        r#"
+        SELECT f.id as "id!: i64",
+               f.feed_id as "feed_id!: i64",
+               f.external_id,
+               f.title,
+               f.url,
+               f.inserted_at as "inserted_at: _",
+               d.summary,
+               d.content,
+               d.author,
+               d.published_at as "published_at: _"
+        FROM feed_items f
+        LEFT JOIN feed_item_details d ON d.feed_item_id = f.id
+        ORDER BY f.inserted_at DESC, f.id DESC
+        LIMIT $1
+        "#,
+        limit,
+    )
+    .fetch_all(pool)
+    .await
+    .with_context(|| format!("failed to read latest feed items with detail with limit={limit}"))?;
+
+    Ok(rows)
+}
+
 pub async fn read_all_feed_items(pool: &SqlitePool) -> Result<Vec<FeedItem>> {
     let rows = sqlx::query_as!(
         FeedItem,
@@ -166,6 +211,32 @@ pub async fn read_all_feed_items(pool: &SqlitePool) -> Result<Vec<FeedItem>> {
     .fetch_all(pool)
     .await
     .context("failed to read all feed items")?;
+
+    Ok(rows)
+}
+
+pub async fn read_all_feed_items_with_detail(pool: &SqlitePool) -> Result<Vec<FeedItemWithDetail>> {
+    let rows = sqlx::query_as!(
+        FeedItemWithDetail,
+        r#"
+        SELECT f.id as "id!: i64",
+               f.feed_id as "feed_id!: i64",
+               f.external_id,
+               f.title,
+               f.url,
+               f.inserted_at as "inserted_at: _",
+               d.summary,
+               d.content,
+               d.author,
+               d.published_at as "published_at: _"
+        FROM feed_items f
+        LEFT JOIN feed_item_details d ON d.feed_item_id = f.id
+        ORDER BY f.inserted_at DESC, f.id DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .context("failed to read all feed items with detail")?;
 
     Ok(rows)
 }

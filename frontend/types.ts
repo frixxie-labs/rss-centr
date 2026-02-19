@@ -5,6 +5,10 @@ export interface FeedItem {
   title: string;
   url: string;
   inserted_at: string;
+  summary?: string | null;
+  content?: string | null;
+  author?: string | null;
+  published_at?: string | null;
 }
 
 export interface FeedItemDetail {

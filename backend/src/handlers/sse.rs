@@ -4,8 +4,8 @@ use axum::{
     extract::State,
     response::sse::{Event, Sse},
 };
-use tokio::time::interval;
 use tokio::sync::broadcast;
+use tokio::time::interval;
 use tokio_stream::{StreamExt, wrappers::BroadcastStream, wrappers::IntervalStream};
 
 use crate::events::NewFeedItemEvent;
@@ -26,9 +26,8 @@ pub async fn stream_new_items(
         }
     });
 
-    let keep_alive_stream = IntervalStream::new(interval(Duration::from_secs(15))).map(|_| {
-        Ok(Event::default().event("keep_alive").data("keep-alive"))
-    });
+    let keep_alive_stream = IntervalStream::new(interval(Duration::from_secs(15)))
+        .map(|_| Ok(Event::default().event("keep_alive").data("keep-alive")));
 
     Sse::new(item_stream.merge(keep_alive_stream))
 }
