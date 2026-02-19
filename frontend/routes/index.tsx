@@ -37,7 +37,26 @@ export default define.page<typeof handler>(function Home({ data }) {
       <Head>
         <title>RSS Centr</title>
       </Head>
-      <Header />
+      <Header>
+        <a
+          href="/"
+          class="rounded-md bg-neutral-800 px-2 py-1 text-sm text-neutral-100"
+        >
+          Timeline
+        </a>
+        <a
+          href="/items"
+          class="rounded-md px-2 py-1 text-sm text-neutral-400 transition hover:bg-neutral-800 hover:text-neutral-100"
+        >
+          Items
+        </a>
+        <a
+          href="/feeds"
+          class="rounded-md px-2 py-1 text-sm text-neutral-400 transition hover:bg-neutral-800 hover:text-neutral-100"
+        >
+          Feeds
+        </a>
+      </Header>
       <main class="flex-1 max-w-2xl mx-auto w-full">
         {data.loadError && (
           <div class="mx-4 my-4 rounded-md border border-amber-700/50 bg-amber-950/50 px-3 py-2 text-sm text-amber-200">

@@ -6,7 +6,7 @@ export interface ButtonProps {
   onClick?: () => void;
   children?: ComponentChildren;
   disabled?: boolean;
-  variant?: "primary" | "secondary" | "ghost";
+  variant?: "primary" | "secondary" | "ghost" | "danger";
 }
 
 export function Button(
@@ -18,6 +18,8 @@ export function Button(
     secondary:
       "border border-neutral-700 text-neutral-300 hover:bg-neutral-800",
     ghost: "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800",
+    danger:
+      "border border-red-900/80 text-red-300 hover:bg-red-950/60 hover:text-red-200",
   };
 
   return (

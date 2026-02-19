@@ -99,8 +99,8 @@ content for detail views.
 - [x] Delete feed (DB)
 
 #### Polling
-- [ ] Scheduled polling per feed
-- [ ] Conditional GET (ETag / 304 support)
+- [x] Scheduled polling per feed
+- [x] Conditional GET (ETag / 304 support)
 - [ ] Backoff on failure
 - [ ] Jittered intervals
 
@@ -112,17 +112,17 @@ content for detail views.
 
 #### Live Updates
 - [ ] `GET /api/events` (SSE)
-- [ ] KeepAlive pings
+- [x] KeepAlive pings
 - [ ] Reconnect via `Last-Event-ID`
 - [ ] DB backfill on reconnect
 - [ ] Broadcast lag recovery
 
 ### Frontend (Fresh)
 
-- [ ] SSR aggregated timeline
-- [ ] SSE island for live updates
-- [ ] Add feed form
-- [ ] Basic per-feed filtering
+- [x] SSR aggregated timeline
+- [x] SSE island for live updates
+- [x] Add feed form
+- [x] Basic per-feed filtering
 
 ---
 
@@ -131,8 +131,8 @@ content for detail views.
 ### Phase 1 — MVP (Current Goal)
 - [x] Core ingest pipeline
 - [x] SQLite schema + migrations
-- [ ] REST + SSE API
-- [ ] Fresh SSR + live island
+- [x] REST + SSE API
+- [x] Fresh SSR + live island
 
 ### Phase 2 — Usability
 - Mark as read/unread

@@ -1,0 +1,297 @@
+import { useSignal } from "@preact/signals";
+import {
+  createFeed,
+  deleteFeed,
+  fetchFeeds,
+  queueFeedIngest,
+  updateFeedEnabled,
+} from "../api.ts";
+import { Button } from "../components/Button.tsx";
+import type { FeedSubscription } from "../types.ts";
+
+interface FeedManagementProps {
+  initialFeeds: FeedSubscription[];
+  initialLoadError: boolean;
+}
+
+function sortByNewestId(feeds: FeedSubscription[]): FeedSubscription[] {
+  return [...feeds].sort((a, b) => b.id - a.id);
+}
+
+function formatDateTime(value: string | null): string {
+  if (!value) {
+    return "Never";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown";
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+}
+
+function feedName(feed: FeedSubscription): string {
+  return feed.title?.trim() || feed.site_url?.trim() || feed.url;
+}
+
+export default function FeedManagement(
+  { initialFeeds, initialLoadError }: FeedManagementProps,
+) {
+  const feeds = useSignal<FeedSubscription[]>(sortByNewestId(initialFeeds));
+  const urlInput = useSignal("");
+  const submitting = useSignal(false);
+  const refreshing = useSignal(false);
+  const busyIds = useSignal<Set<number>>(new Set());
+  const errorMessage = useSignal<string | null>(
+    initialLoadError ? "Could not load feeds from the backend." : null,
+  );
+  const successMessage = useSignal<string | null>(null);
+
+  async function refreshFeeds() {
+    refreshing.value = true;
+    errorMessage.value = null;
+    try {
+      feeds.value = sortByNewestId(await fetchFeeds());
+    } catch (_err) {
+      errorMessage.value = "Could not refresh feeds.";
+    } finally {
+      refreshing.value = false;
+    }
+  }
+
+  async function handleAddFeed() {
+    const url = urlInput.value.trim();
+    if (!url) {
+      errorMessage.value = "Feed URL is required.";
+      return;
+    }
+
+    submitting.value = true;
+    errorMessage.value = null;
+    successMessage.value = null;
+
+    try {
+      await createFeed(url);
+      urlInput.value = "";
+      await refreshFeeds();
+      successMessage.value = "Feed saved.";
+    } catch (err) {
+      errorMessage.value = err instanceof Error
+        ? err.message
+        : "Failed to save feed.";
+    } finally {
+      submitting.value = false;
+    }
+  }
+
+  async function handleToggle(feed: FeedSubscription) {
+    busyIds.value = new Set([...busyIds.value, feed.id]);
+    errorMessage.value = null;
+    successMessage.value = null;
+
+    try {
+      const nextEnabled = !feed.is_enabled;
+      await updateFeedEnabled(feed.id, nextEnabled);
+      await refreshFeeds();
+      successMessage.value = nextEnabled ? "Feed enabled." : "Feed paused.";
+    } catch (err) {
+      errorMessage.value = err instanceof Error
+        ? err.message
+        : "Failed to update feed.";
+    } finally {
+      busyIds.value = new Set(
+        [...busyIds.value].filter((id) => id !== feed.id),
+      );
+    }
+  }
+
+  async function handleIngest(feedId: number) {
+    busyIds.value = new Set([...busyIds.value, feedId]);
+    errorMessage.value = null;
+    successMessage.value = null;
+
+    try {
+      await queueFeedIngest(feedId);
+      successMessage.value = "Ingest queued.";
+    } catch (err) {
+      errorMessage.value = err instanceof Error
+        ? err.message
+        : "Failed to queue ingest.";
+    } finally {
+      busyIds.value = new Set(
+        [...busyIds.value].filter((id) => id !== feedId),
+      );
+    }
+  }
+
+  async function handleDelete(feed: FeedSubscription) {
+    if (!confirm(`Delete feed?\n\n${feed.url}`)) {
+      return;
+    }
+
+    busyIds.value = new Set([...busyIds.value, feed.id]);
+    errorMessage.value = null;
+    successMessage.value = null;
+
+    try {
+      await deleteFeed(feed.id);
+      await refreshFeeds();
+      successMessage.value = "Feed deleted.";
+    } catch (err) {
+      errorMessage.value = err instanceof Error
+        ? err.message
+        : "Failed to delete feed.";
+    } finally {
+      busyIds.value = new Set(
+        [...busyIds.value].filter((id) => id !== feed.id),
+      );
+    }
+  }
+
+  return (
+    <div class="mx-4 my-5 space-y-4">
+      <section class="rounded-lg border border-neutral-800 bg-neutral-900/60 p-4 space-y-3">
+        <h2 class="text-sm font-semibold text-neutral-100">Add feed</h2>
+        <form
+          class="flex flex-col gap-2 sm:flex-row"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void handleAddFeed();
+          }}
+        >
+          <input
+            type="url"
+            value={urlInput.value}
+            onInput={(event) => {
+              const target = event.currentTarget as HTMLInputElement;
+              urlInput.value = target.value;
+            }}
+            class="flex-1 rounded-md border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-neutral-200 outline-none transition focus:border-amber-500"
+            placeholder="https://example.com/feed.xml"
+            required
+          />
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={submitting.value || refreshing.value}
+          >
+            {submitting.value ? "Saving..." : "Save feed"}
+          </Button>
+        </form>
+      </section>
+
+      {errorMessage.value && (
+        <div class="rounded-md border border-red-900/70 bg-red-950/40 px-3 py-2 text-sm text-red-200">
+          {errorMessage.value}
+        </div>
+      )}
+
+      {successMessage.value && (
+        <div class="rounded-md border border-emerald-900/70 bg-emerald-950/40 px-3 py-2 text-sm text-emerald-200">
+          {successMessage.value}
+        </div>
+      )}
+
+      <section class="rounded-lg border border-neutral-800 bg-neutral-900/60">
+        <div class="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
+          <h2 class="text-sm font-semibold text-neutral-100">
+            Feeds ({feeds.value.length})
+          </h2>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => {
+              void refreshFeeds();
+            }}
+            disabled={refreshing.value}
+          >
+            {refreshing.value ? "Refreshing..." : "Refresh"}
+          </Button>
+        </div>
+
+        {feeds.value.length === 0
+          ? (
+            <div class="px-4 py-8 text-sm text-neutral-500">
+              No feeds yet. Add one above to start collecting items.
+            </div>
+          )
+          : (
+            <div class="divide-y divide-neutral-800">
+              {feeds.value.map((feed) => {
+                const isBusy = busyIds.value.has(feed.id);
+                return (
+                  <article key={feed.id} class="px-4 py-4 space-y-3">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <h3 class="text-sm font-semibold text-neutral-100">
+                        {feedName(feed)}
+                      </h3>
+                      <span
+                        class={`rounded px-2 py-0.5 text-xs font-medium ${
+                          feed.is_enabled
+                            ? "bg-emerald-950 text-emerald-300"
+                            : "bg-neutral-800 text-neutral-300"
+                        }`}
+                      >
+                        {feed.is_enabled ? "Enabled" : "Paused"}
+                      </span>
+                    </div>
+
+                    <div class="space-y-1 text-xs text-neutral-400">
+                      <p class="break-all text-neutral-300">{feed.url}</p>
+                      <p>
+                        Last checked: {formatDateTime(feed.last_checked_at)}
+                        {" "}
+                        | Last success: {formatDateTime(feed.last_success_at)}
+                      </p>
+                      <p>
+                        Poll every {feed.poll_interval_seconds}s | Failures:
+                        {" "}
+                        {feed.failure_count}
+                      </p>
+                    </div>
+
+                    <div class="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant={feed.is_enabled ? "secondary" : "primary"}
+                        onClick={() => {
+                          void handleToggle(feed);
+                        }}
+                        disabled={isBusy}
+                      >
+                        {feed.is_enabled ? "Pause" : "Enable"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={() => {
+                          void handleIngest(feed.id);
+                        }}
+                        disabled={isBusy}
+                      >
+                        Ingest now
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="danger"
+                        onClick={() => {
+                          void handleDelete(feed);
+                        }}
+                        disabled={isBusy}
+                      >
+                        Delete
+                      </Button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+      </section>
+    </div>
+  );
+}

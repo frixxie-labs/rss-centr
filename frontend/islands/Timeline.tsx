@@ -45,6 +45,7 @@ export default function Timeline(
   );
   const newItemIds = useSignal<Set<number>>(new Set());
   const connected = useSignal(false);
+  const keepAlivePulse = useSignal(false);
   const nowMs = useSignal(new Date(initialNowIso).getTime());
 
   // Re-render every 60s so relative timestamps stay fresh
@@ -58,6 +59,7 @@ export default function Timeline(
   useEffect(() => {
     const eventSource = new EventSource("/api/items/stream");
     const clearNewItemTimers = new Set<number>();
+    let keepAlivePulseTimer: number | undefined;
 
     eventSource.addEventListener("open", () => {
       connected.value = true;
@@ -99,10 +101,37 @@ export default function Timeline(
       connected.value = false;
     });
 
+    eventSource.addEventListener("keep_alive", (_e: MessageEvent) => {
+      keepAlivePulse.value = true;
+      if (keepAlivePulseTimer !== undefined) {
+        clearTimeout(keepAlivePulseTimer);
+      }
+      keepAlivePulseTimer = setTimeout(() => {
+        keepAlivePulse.value = false;
+      }, 450);
+    });
+
+    eventSource.addEventListener("message", (e: MessageEvent) => {
+      if (e.data !== "keep-alive") {
+        return;
+      }
+
+      keepAlivePulse.value = true;
+      if (keepAlivePulseTimer !== undefined) {
+        clearTimeout(keepAlivePulseTimer);
+      }
+      keepAlivePulseTimer = setTimeout(() => {
+        keepAlivePulse.value = false;
+      }, 450);
+    });
+
     return () => {
       eventSource.close();
       for (const timer of clearNewItemTimers) {
         clearTimeout(timer);
+      }
+      if (keepAlivePulseTimer !== undefined) {
+        clearTimeout(keepAlivePulseTimer);
       }
     };
   }, []);
@@ -117,9 +146,9 @@ export default function Timeline(
           )}
           <span class="flex items-center gap-1">
             <span
-              class={`inline-block w-1.5 h-1.5 rounded-full ${
+              class={`inline-block h-1.5 w-1.5 rounded-full transition-transform duration-300 ${
                 connected.value ? "bg-emerald-500" : "bg-neutral-600"
-              }`}
+              } ${keepAlivePulse.value ? "scale-150" : "scale-100"}`}
             />
             {connected.value ? "live" : "connecting..."}
           </span>

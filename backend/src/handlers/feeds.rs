@@ -174,3 +174,30 @@ where
         })?;
     Ok(resp)
 }
+
+#[utoipa::path(
+    delete,
+    path = "/api/feeds/{feed_id}",
+    params(
+        ("feed_id" = i64, Path, description = "Feed ID")
+    ),
+    responses(
+        (status = 200, description = "Feed deleted", body = String),
+        (status = 500, description = "Internal server error"),
+    ),
+    tag = "feeds"
+)]
+#[instrument]
+pub async fn delete_feed(
+    State(app_state): FeedState,
+    Path(feed_id): Path<i64>,
+) -> Result<String, HandlerError> {
+    let (pool, _tx) = app_state;
+    feed_subscription::delete_feed(&pool, feed_id)
+        .await
+        .map_err(|e| {
+            warn!("failed with error: {e:#}");
+            HandlerError::from_db(e, "Failed to delete feed")
+        })?;
+    Ok("OK".to_string())
+}
