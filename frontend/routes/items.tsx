@@ -1,10 +1,10 @@
 import { Head } from "fresh/runtime";
-import { define } from "../utils.ts";
 import { fetchFeeds, fetchLatestItems } from "../api.ts";
 import { Header } from "../components/Header.tsx";
-import Timeline from "../islands/Timeline.tsx";
-import type { FeedItem } from "../types.ts";
+import FeedItemsView from "../islands/FeedItemsView.tsx";
 import { getLogger } from "../logger.ts";
+import type { FeedItem } from "../types.ts";
+import { define } from "../utils.ts";
 
 const log = getLogger("ssr");
 
@@ -14,9 +14,10 @@ export const handler = define.handlers({
     let feedNames: Record<number, string> = {};
     let loadError = false;
     const initialNowIso = new Date().toISOString();
+
     try {
       const [itemsResult, feeds] = await Promise.all([
-        fetchLatestItems(100),
+        fetchLatestItems(),
         fetchFeeds(),
       ]);
       items = itemsResult;
@@ -24,29 +25,30 @@ export const handler = define.handlers({
         feeds.map((f) => [f.id, f.title ?? f.url]),
       );
     } catch (err) {
-      log.error("Failed to fetch data for SSR", err);
+      log.error("Failed to fetch items for SSR", err);
       loadError = true;
     }
+
     return { data: { items, feedNames, loadError, initialNowIso } };
   },
 });
 
-export default define.page<typeof handler>(function Home({ data }) {
+export default define.page<typeof handler>(function ItemsPage({ data }) {
   return (
     <div class="min-h-screen flex flex-col">
       <Head>
-        <title>RSS Centr</title>
+        <title>RSS Centr - All Items</title>
       </Head>
       <Header>
         <a
           href="/"
-          class="rounded-md bg-neutral-800 px-2 py-1 text-sm text-neutral-100"
+          class="rounded-md px-2 py-1 text-sm text-neutral-400 transition hover:bg-neutral-800 hover:text-neutral-100"
         >
           Timeline
         </a>
         <a
           href="/items"
-          class="rounded-md px-2 py-1 text-sm text-neutral-400 transition hover:bg-neutral-800 hover:text-neutral-100"
+          class="rounded-md bg-neutral-800 px-2 py-1 text-sm text-neutral-100"
         >
           Items
         </a>
@@ -57,14 +59,13 @@ export default define.page<typeof handler>(function Home({ data }) {
           Feeds
         </a>
       </Header>
-      <main class="flex-1 max-w-2xl mx-auto w-full">
+      <main class="mx-auto w-full max-w-3xl flex-1">
         {data.loadError && (
           <div class="mx-4 my-4 rounded-md border border-amber-700/50 bg-amber-950/50 px-3 py-2 text-sm text-amber-200">
-            Could not load the latest items from the backend. Showing available
-            data and waiting for live updates.
+            Could not load items from the backend.
           </div>
         )}
-        <Timeline
+        <FeedItemsView
           initialItems={data.items}
           feedNames={data.feedNames}
           initialNowIso={data.initialNowIso}

@@ -2,10 +2,11 @@ use std::{convert::Infallible, time::Duration};
 
 use axum::{
     extract::State,
-    response::sse::{Event, KeepAlive, Sse},
+    response::sse::{Event, Sse},
 };
+use tokio::time::interval;
 use tokio::sync::broadcast;
-use tokio_stream::{StreamExt, wrappers::BroadcastStream};
+use tokio_stream::{StreamExt, wrappers::BroadcastStream, wrappers::IntervalStream};
 
 use crate::events::NewFeedItemEvent;
 
@@ -14,7 +15,7 @@ pub async fn stream_new_items(
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
     let rx = tx.subscribe();
 
-    let stream = BroadcastStream::new(rx).filter_map(|msg| match msg {
+    let item_stream = BroadcastStream::new(rx).filter_map(|msg| match msg {
         Ok(item) => match Event::default().event("feed_item").json_data(item) {
             Ok(event) => Some(Ok(event)),
             Err(_) => None,
@@ -25,9 +26,9 @@ pub async fn stream_new_items(
         }
     });
 
-    Sse::new(stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text("keep-alive"),
-    )
+    let keep_alive_stream = IntervalStream::new(interval(Duration::from_secs(15))).map(|_| {
+        Ok(Event::default().event("keep_alive").data("keep-alive"))
+    });
+
+    Sse::new(item_stream.merge(keep_alive_stream))
 }

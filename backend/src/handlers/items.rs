@@ -5,7 +5,8 @@ use tracing::{instrument, warn};
 
 use crate::feed::feed_item::{FeedItem, FeedItemDetail};
 use crate::feed::feed_item::{
-    read_feed_item, read_feed_item_detail, read_feed_items_by_feed, read_latest_feed_items,
+    read_all_feed_items, read_feed_item, read_feed_item_detail, read_feed_items_by_feed,
+    read_latest_feed_items,
 };
 
 use super::error::HandlerError;
@@ -43,7 +44,7 @@ pub struct LatestItemsQuery {
     get,
     path = "/api/items/latest",
     params(
-        ("limit" = Option<u32>, Query, description = "Maximum number of items to return (default 100, max 500)")
+        ("limit" = Option<u32>, Query, description = "Maximum number of items to return")
     ),
     responses(
         (status = 200, description = "List of latest feed items", body = [FeedItem]),
@@ -56,8 +57,11 @@ pub async fn fetch_latest_items(
     State(pool): State<SqlitePool>,
     Query(query): Query<LatestItemsQuery>,
 ) -> Result<Json<Vec<FeedItem>>, HandlerError> {
-    let limit = query.limit.unwrap_or(100).min(500) as i64;
-    let items = read_latest_feed_items(&pool, limit).await.map_err(|e| {
+    let items = match query.limit {
+        Some(limit) => read_latest_feed_items(&pool, limit as i64).await,
+        None => read_all_feed_items(&pool).await,
+    }
+    .map_err(|e| {
         warn!("failed with error: {e:#}");
         HandlerError::from_db(e, "Failed to fetch data from database")
     })?;

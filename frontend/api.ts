@@ -1,18 +1,104 @@
 import { BACKEND_URL } from "./utils.ts";
 import type { FeedItem, FeedSubscription } from "./types.ts";
 
-export async function fetchLatestItems(limit = 100): Promise<FeedItem[]> {
-  const res = await fetch(`${BACKEND_URL}/api/items/latest?limit=${limit}`);
+function apiUrl(path: string): string {
+  if (typeof window === "undefined") {
+    return `${BACKEND_URL}/api/${path}`;
+  }
+  return `/api/${path}`;
+}
+
+async function throwRequestError(
+  prefix: string,
+  res: Response,
+): Promise<never> {
+  const body = await res.text();
+  const suffix = body ? ` (${body})` : "";
+  throw new Error(`${prefix}: ${res.status}${suffix}`);
+}
+
+export async function fetchLatestItems(limit?: number): Promise<FeedItem[]> {
+  const url = limit === undefined
+    ? apiUrl("items/latest")
+    : `${apiUrl("items/latest")}?limit=${limit}`;
+  const res = await fetch(url);
   if (!res.ok) {
-    throw new Error(`Failed to fetch latest items: ${res.status}`);
+    await throwRequestError("Failed to fetch latest items", res);
   }
   return await res.json();
 }
 
 export async function fetchFeeds(): Promise<FeedSubscription[]> {
-  const res = await fetch(`${BACKEND_URL}/api/feeds`);
+  const res = await fetch(apiUrl("feeds"));
   if (!res.ok) {
-    throw new Error(`Failed to fetch feeds: ${res.status}`);
+    await throwRequestError("Failed to fetch feeds", res);
   }
   return await res.json();
+}
+
+export async function createFeed(url: string): Promise<FeedSubscription> {
+  const res = await fetch(apiUrl("feeds"), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ url }),
+  });
+  if (!res.ok) {
+    await throwRequestError("Failed to create feed", res);
+  }
+  return await res.json();
+}
+
+export async function updateFeedEnabled(
+  feedId: number,
+  isEnabled: boolean,
+): Promise<void> {
+  const url = apiUrl(`feeds/${feedId}`);
+
+  const res = await fetch(url, {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ is_enabled: isEnabled }),
+  });
+
+  if (res.ok) {
+    return;
+  }
+
+  if (res.status === 400) {
+    const retry = await fetch(url, {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ isEnabled }),
+    });
+    if (retry.ok) {
+      return;
+    }
+    await throwRequestError("Failed to update feed", retry);
+  }
+
+  await throwRequestError("Failed to update feed", res);
+}
+
+export async function queueFeedIngest(feedId: number): Promise<void> {
+  const res = await fetch(apiUrl(`feeds/${feedId}/ingest`), {
+    method: "POST",
+  });
+  if (!res.ok) {
+    await throwRequestError("Failed to queue ingest", res);
+  }
+}
+
+export async function deleteFeed(feedId: number): Promise<void> {
+  const res = await fetch(apiUrl(`feeds/${feedId}`), {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    await throwRequestError("Failed to delete feed", res);
+  }
 }

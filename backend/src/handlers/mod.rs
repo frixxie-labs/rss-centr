@@ -4,7 +4,7 @@ use axum::{
     extract::Request,
     middleware::{self, Next},
     response::Response,
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
 };
 use metrics::histogram;
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -64,6 +64,7 @@ pub fn create_router(
         .route("/feeds", post(feeds::create_feed))
         .route("/feeds/{feed_id}", get(feeds::fetch_feed_by_id))
         .route("/feeds/{feed_id}", put(feeds::update_feed_enabled))
+        .route("/feeds/{feed_id}", delete(feeds::delete_feed))
         .route("/feeds/{feed_id}/ingest", post(feeds::queue_ingest_feed))
         .with_state((pool.clone(), tx.clone()));
 
@@ -114,6 +115,7 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
         feeds::create_feed,
         feeds::fetch_feed_by_id,
         feeds::update_feed_enabled,
+        feeds::delete_feed,
         feeds::queue_ingest_feed,
         items::fetch_items_by_feed,
         items::fetch_latest_items,

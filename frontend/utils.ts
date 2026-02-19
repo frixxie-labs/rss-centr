@@ -6,5 +6,8 @@ export interface State {
 
 export const define = createDefine<State>();
 
-export const BACKEND_URL = Deno.env.get("BACKEND_URL") ||
-  "http://localhost:8080";
+const backendFromEnv = typeof Deno !== "undefined" && "env" in Deno
+  ? Deno.env.get("BACKEND_URL")
+  : undefined;
+
+export const BACKEND_URL = backendFromEnv || "http://localhost:8080";
