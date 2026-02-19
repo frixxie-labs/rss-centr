@@ -128,6 +128,7 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
             feeds::NewFeed,
             feeds::UpdateFeedEnabled,
             crate::feed::feed_item::FeedItem,
+            crate::feed::feed_item::FeedItemWithDetail,
             crate::feed::feed_item::FeedItemDetail,
             ping::PingResponse,
         )

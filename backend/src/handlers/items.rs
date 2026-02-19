@@ -3,10 +3,10 @@ use serde::Deserialize;
 use sqlx::SqlitePool;
 use tracing::{instrument, warn};
 
-use crate::feed::feed_item::{FeedItem, FeedItemDetail};
+use crate::feed::feed_item::{FeedItem, FeedItemDetail, FeedItemWithDetail};
 use crate::feed::feed_item::{
-    read_all_feed_items, read_feed_item, read_feed_item_detail, read_feed_items_by_feed,
-    read_latest_feed_items,
+    read_all_feed_items_with_detail, read_feed_item, read_feed_item_detail,
+    read_feed_items_by_feed, read_latest_feed_items_with_detail,
 };
 
 use super::error::HandlerError;
@@ -47,7 +47,7 @@ pub struct LatestItemsQuery {
         ("limit" = Option<u32>, Query, description = "Maximum number of items to return")
     ),
     responses(
-        (status = 200, description = "List of latest feed items", body = [FeedItem]),
+        (status = 200, description = "List of latest feed items", body = [FeedItemWithDetail]),
         (status = 500, description = "Internal server error"),
     ),
     tag = "items"
@@ -56,10 +56,10 @@ pub struct LatestItemsQuery {
 pub async fn fetch_latest_items(
     State(pool): State<SqlitePool>,
     Query(query): Query<LatestItemsQuery>,
-) -> Result<Json<Vec<FeedItem>>, HandlerError> {
+) -> Result<Json<Vec<FeedItemWithDetail>>, HandlerError> {
     let items = match query.limit {
-        Some(limit) => read_latest_feed_items(&pool, limit as i64).await,
-        None => read_all_feed_items(&pool).await,
+        Some(limit) => read_latest_feed_items_with_detail(&pool, limit as i64).await,
+        None => read_all_feed_items_with_detail(&pool).await,
     }
     .map_err(|e| {
         warn!("failed with error: {e:#}");

@@ -41,8 +41,12 @@ export default function FeedItemsView(
       return true;
     }
     const name = (feedNames[item.feed_id] || "").toLowerCase();
+    const summary = (item.summary || "").toLowerCase();
+    const author = (item.author || "").toLowerCase();
     return item.title.toLowerCase().includes(normalizedQuery) ||
       item.url.toLowerCase().includes(normalizedQuery) ||
+      summary.includes(normalizedQuery) ||
+      author.includes(normalizedQuery) ||
       name.includes(normalizedQuery);
   });
 
@@ -68,7 +72,7 @@ export default function FeedItemsView(
               query.value = target.value;
             }}
             class="rounded-md border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-neutral-200 outline-none transition focus:border-amber-500"
-            placeholder="Filter by title, URL, or feed"
+            placeholder="Filter by title, summary, author, URL, or feed"
           />
           <select
             value={selectedFeedId.value}
