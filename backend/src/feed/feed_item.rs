@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
 use sqlx::prelude::FromRow;
+use sqlx::{Sqlite, SqlitePool};
 use utoipa::ToSchema;
 
 #[derive(Serialize, Deserialize, FromRow, ToSchema)]
@@ -52,13 +52,16 @@ pub async fn insert_feed_item(
     Ok(row)
 }
 
-pub async fn insert_feed_item_dedup(
-    pool: &SqlitePool,
+pub async fn insert_feed_item_dedup<'e, E>(
+    executor: E,
     feed_id: i64,
     external_id: &str,
     title: &str,
     url: &str,
-) -> Result<Option<FeedItem>> {
+) -> Result<Option<FeedItem>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     let row = sqlx::query_as!(
         FeedItem,
         r#"
@@ -73,7 +76,7 @@ pub async fn insert_feed_item_dedup(
         title,
         url,
     )
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
     .with_context(|| {
         format!(
@@ -225,14 +228,17 @@ pub async fn insert_feed_item_detail(
     Ok(row)
 }
 
-pub async fn insert_feed_item_detail_dedup(
-    pool: &SqlitePool,
+pub async fn insert_feed_item_detail_dedup<'e, E>(
+    executor: E,
     feed_item_id: i64,
     summary: &str,
     content: &str,
     author: &str,
     published_at: DateTime<Utc>,
-) -> Result<Option<FeedItemDetail>> {
+) -> Result<Option<FeedItemDetail>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     let row = sqlx::query_as!(
         FeedItemDetail,
         r#"
@@ -249,7 +255,7 @@ pub async fn insert_feed_item_detail_dedup(
         author,
         published_at,
     )
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
     .with_context(|| {
         format!("failed to insert (dedup) feed item detail for feed_item_id={feed_item_id}")

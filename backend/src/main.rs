@@ -1,9 +1,12 @@
 use anyhow::{Context, Result};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use sqlx::SqlitePool;
-use std::time::Duration;
+use std::{collections::HashSet, sync::Arc, time::Duration};
 use structopt::StructOpt;
-use tokio::{net::TcpListener, sync::broadcast, sync::mpsc::channel};
+use tokio::{
+    net::TcpListener,
+    sync::{Mutex, broadcast, mpsc::channel},
+};
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
@@ -97,19 +100,29 @@ async fn main() -> Result<()> {
         .context("failed to build HTTP client")?;
     let (tx, rx) = channel::<IngestJob>(1 << 12);
     let (new_item_tx, _new_item_rx) = broadcast::channel::<NewFeedItemEvent>(1 << 12);
+    let in_flight = Arc::new(Mutex::new(HashSet::<i64>::new()));
 
     let ingest_pool = pool.clone();
     let ingest_client = client.clone();
     let ingest_new_item_tx = new_item_tx.clone();
+    let ingest_in_flight = in_flight.clone();
     tokio::spawn(async move {
-        handle_ingest_bg_thread(rx, ingest_pool, ingest_client, ingest_new_item_tx).await;
+        handle_ingest_bg_thread(
+            rx,
+            ingest_pool,
+            ingest_client,
+            ingest_new_item_tx,
+            ingest_in_flight,
+        )
+        .await;
     });
 
     let sched_pool = pool.clone();
     let sched_tx = tx.clone();
+    let sched_in_flight = in_flight.clone();
     let every = std::time::Duration::from_secs(opts.scheduler_interval_seconds);
     tokio::spawn(async move {
-        if let Err(e) = enqueue_due_feeds_loop(sched_pool, sched_tx, every).await {
+        if let Err(e) = enqueue_due_feeds_loop(sched_pool, sched_tx, every, sched_in_flight).await {
             tracing::warn!("scheduler stopped: {e:#}");
         }
     });

@@ -1,5 +1,6 @@
 use axum::{
     Router,
+    extract::MatchedPath,
     extract::Request,
     middleware::{self, Next},
     response::Response,
@@ -28,11 +29,16 @@ mod sse;
 #[instrument]
 pub async fn profile_endpoint(request: Request, next: Next) -> Response {
     let method = request.method().clone().to_string();
-    let uri = request.uri().clone().to_string();
-    info!("Handling {method} at {uri}");
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(MatchedPath::as_str)
+        .unwrap_or(request.uri().path())
+        .to_string();
+    info!("Handling {method} at {route}");
 
     let now = Instant::now();
-    let labels = [("method", method.clone()), ("uri", uri.clone())];
+    let labels = [("method", method.clone()), ("route", route.clone())];
 
     let response = next.run(request).await;
     let elapsed = now.elapsed();
@@ -41,7 +47,7 @@ pub async fn profile_endpoint(request: Request, next: Next) -> Response {
     info!(
         "Finished handling {} at {}, used {} ms",
         method,
-        uri,
+        route,
         elapsed.as_millis()
     );
     response

@@ -6,7 +6,7 @@ use tokio::sync::broadcast;
 
 use crate::events::NewFeedItemEvent;
 
-use super::feed::fetch_feed;
+use super::feed::{FetchFeedOutcome, fetch_feed_with_cache};
 use super::feed_item::{insert_feed_item_dedup, insert_feed_item_detail_dedup};
 use super::feed_subscription::{touch_feed_failure, touch_feed_success, upsert_feed_by_url};
 
@@ -24,7 +24,14 @@ pub async fn ingest_feed_url(
     let feed_sub = upsert_feed_by_url(pool, url).await?;
     let checked_at = Utc::now();
 
-    let feed = match fetch_feed(client, url).await {
+    let fetch_outcome = match fetch_feed_with_cache(
+        client,
+        url,
+        feed_sub.etag.as_deref(),
+        feed_sub.last_modified.as_deref(),
+    )
+    .await
+    {
         Ok(f) => f,
         Err(e) => {
             touch_feed_failure(pool, feed_sub.id, checked_at).await?;
@@ -32,9 +39,46 @@ pub async fn ingest_feed_url(
         }
     };
 
+    let (feed, etag, last_modified) = match fetch_outcome {
+        FetchFeedOutcome::NotModified {
+            etag,
+            last_modified,
+        } => {
+            touch_feed_success(
+                pool,
+                feed_sub.id,
+                checked_at,
+                None,
+                None,
+                etag.as_deref(),
+                last_modified.as_deref(),
+            )
+            .await?;
+
+            return Ok(IngestResult {
+                feed_id: feed_sub.id,
+                inserted_items: 0,
+            });
+        }
+        FetchFeedOutcome::Fetched {
+            feed,
+            etag,
+            last_modified,
+        } => (feed, etag, last_modified),
+    };
+
     let title = feed.title.as_ref().map(text_value);
     let site_url = feed.links.first().map(|l| l.href.as_str());
-    touch_feed_success(pool, feed_sub.id, checked_at, title, site_url).await?;
+    touch_feed_success(
+        pool,
+        feed_sub.id,
+        checked_at,
+        title,
+        site_url,
+        etag.as_deref(),
+        last_modified.as_deref(),
+    )
+    .await?;
 
     let mut inserted_items = 0usize;
     for entry in &feed.entries {
@@ -59,7 +103,12 @@ async fn ingest_entry(
     let title = entry.title.as_ref().map(text_value).unwrap_or("(no title)");
     let url = entry.links.first().map(|l| l.href.as_str()).unwrap_or("");
 
-    let inserted = insert_feed_item_dedup(pool, feed_id, &external_id, title, url).await?;
+    let mut tx = pool
+        .begin()
+        .await
+        .with_context(|| format!("failed to begin entry ingest tx for feed_id={feed_id}"))?;
+
+    let inserted = insert_feed_item_dedup(&mut *tx, feed_id, &external_id, title, url).await?;
     let Some(item) = inserted else {
         return Ok(false);
     };
@@ -69,9 +118,16 @@ async fn ingest_entry(
     let published_at = entry_published_at(entry).unwrap_or_else(Utc::now);
 
     let _detail =
-        insert_feed_item_detail_dedup(pool, item.id, &summary, &content, author, published_at)
+        insert_feed_item_detail_dedup(&mut *tx, item.id, &summary, &content, author, published_at)
             .await
             .with_context(|| format!("failed to insert detail for feed_item_id={}", item.id))?;
+
+    tx.commit().await.with_context(|| {
+        format!(
+            "failed to commit entry ingest transaction for feed_item_id={} external_id={}",
+            item.id, external_id
+        )
+    })?;
 
     let _ = new_item_tx.send(NewFeedItemEvent::from(&item));
 
