@@ -1,5 +1,5 @@
 import { BACKEND_URL } from "./utils.ts";
-import type { FeedItem, FeedSubscription } from "./types.ts";
+import type { FeedItem, FeedItemDetail, FeedSubscription } from "./types.ts";
 
 function apiUrl(path: string): string {
   if (typeof window === "undefined") {
@@ -26,6 +26,33 @@ export async function fetchLatestItems(limit?: number): Promise<FeedItem[]> {
     await throwRequestError("Failed to fetch latest items", res);
   }
   return await res.json();
+}
+
+export async function fetchItemWithDetail(itemId: number): Promise<FeedItem> {
+  const [itemRes, detailRes] = await Promise.all([
+    fetch(apiUrl(`items/${itemId}`)),
+    fetch(apiUrl(`items/${itemId}/detail`)),
+  ]);
+
+  if (!itemRes.ok) {
+    await throwRequestError(`Failed to fetch item ${itemId}`, itemRes);
+  }
+
+  const item = await itemRes.json() as FeedItem;
+
+  if (!detailRes.ok) {
+    return item;
+  }
+
+  const detail = await detailRes.json() as FeedItemDetail;
+
+  return {
+    ...item,
+    summary: detail.summary,
+    content: detail.content,
+    author: detail.author,
+    published_at: detail.published_at,
+  };
 }
 
 export async function fetchFeeds(): Promise<FeedSubscription[]> {
