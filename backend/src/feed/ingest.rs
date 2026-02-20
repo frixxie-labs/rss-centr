@@ -52,6 +52,7 @@ pub async fn ingest_feed_url(
                 None,
                 etag.as_deref(),
                 last_modified.as_deref(),
+                None,
             )
             .await?;
 
@@ -69,6 +70,7 @@ pub async fn ingest_feed_url(
 
     let title = feed.title.as_ref().map(text_value);
     let site_url = feed.links.first().map(|l| l.href.as_str());
+    let poll_interval_seconds = average_update_frequency_seconds(&feed.entries);
     touch_feed_success(
         pool,
         feed_sub.id,
@@ -77,6 +79,7 @@ pub async fn ingest_feed_url(
         site_url,
         etag.as_deref(),
         last_modified.as_deref(),
+        poll_interval_seconds,
     )
     .await?;
 
@@ -185,9 +188,38 @@ fn entry_published_at(entry: &Entry) -> Option<DateTime<Utc>> {
         .map(|dt| dt.with_timezone(&Utc))
 }
 
+fn average_update_frequency_seconds(entries: &[Entry]) -> Option<i64> {
+    let mut timestamps: Vec<_> = entries.iter().filter_map(entry_published_at).collect();
+    if timestamps.len() < 2 {
+        return None;
+    }
+
+    timestamps.sort_unstable_by(|a, b| b.cmp(a));
+
+    let mut sum = 0i64;
+    let mut count = 0i64;
+
+    for window in timestamps.windows(2) {
+        let newer = window[0];
+        let older = window[1];
+        let diff = newer.signed_duration_since(older).num_seconds();
+        if diff > 0 {
+            sum += diff;
+            count += 1;
+        }
+    }
+
+    if count == 0 {
+        return None;
+    }
+
+    Some(sum / count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
 
     #[test]
     fn test_entry_external_id_prefers_id() {
@@ -196,5 +228,34 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(entry_external_id(&e), "abc");
+    }
+
+    #[test]
+    fn test_average_update_frequency_seconds() {
+        let now = Utc::now();
+        let entries = vec![
+            Entry {
+                published: Some((now - Duration::minutes(30)).into()),
+                ..Default::default()
+            },
+            Entry {
+                published: Some((now - Duration::hours(1)).into()),
+                ..Default::default()
+            },
+            Entry {
+                published: Some((now - Duration::hours(2)).into()),
+                ..Default::default()
+            },
+        ];
+
+        let interval = average_update_frequency_seconds(&entries);
+        assert_eq!(interval, Some(2700));
+    }
+
+    #[test]
+    fn test_average_update_frequency_seconds_not_enough_dates() {
+        let entries = vec![Entry::default()];
+        let interval = average_update_frequency_seconds(&entries);
+        assert_eq!(interval, None);
     }
 }
