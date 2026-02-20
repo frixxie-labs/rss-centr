@@ -9,8 +9,15 @@ interface FeedItemsViewProps {
   initialNowIso: string;
 }
 
-function sortByNewestId(items: FeedItem[]): FeedItem[] {
-  return [...items].sort((a, b) => b.id - a.id);
+function effectiveDate(item: FeedItem): number {
+  return new Date(item.published_at ?? item.inserted_at).getTime();
+}
+
+function sortByNewest(items: FeedItem[]): FeedItem[] {
+  return [...items].sort((a, b) => {
+    const dateDiff = effectiveDate(b) - effectiveDate(a);
+    return dateDiff !== 0 ? dateDiff : b.id - a.id;
+  });
 }
 
 export default function FeedItemsView(
@@ -27,7 +34,7 @@ export default function FeedItemsView(
     return () => clearInterval(id);
   }, []);
 
-  const items = sortByNewestId(initialItems);
+  const items = sortByNewest(initialItems);
   const normalizedQuery = query.value.trim().toLowerCase();
   const selectedId = selectedFeedId.value === "all"
     ? null

@@ -13,19 +13,32 @@ interface TimelineProps {
   initialNowIso: string;
 }
 
-function sortByNewestId(items: FeedItem[]): FeedItem[] {
-  return [...items].sort((a, b) => b.id - a.id);
+function effectiveDate(item: FeedItem): number {
+  return new Date(item.published_at ?? item.inserted_at).getTime();
 }
 
-function upsertByNewestId(items: FeedItem[], nextItem: FeedItem): FeedItem[] {
+function sortByNewest(items: FeedItem[]): FeedItem[] {
+  return [...items].sort((a, b) => {
+    const dateDiff = effectiveDate(b) - effectiveDate(a);
+    return dateDiff !== 0 ? dateDiff : b.id - a.id;
+  });
+}
+
+function upsertByNewest(items: FeedItem[], nextItem: FeedItem): FeedItem[] {
   const deduped = items.filter((item) => item.id !== nextItem.id);
+  const nextDate = effectiveDate(nextItem);
 
   let insertIndex = 0;
-  while (
-    insertIndex < deduped.length &&
-    deduped[insertIndex].id > nextItem.id
-  ) {
-    insertIndex += 1;
+  while (insertIndex < deduped.length) {
+    const d = effectiveDate(deduped[insertIndex]);
+    if (
+      d > nextDate ||
+      (d === nextDate && deduped[insertIndex].id > nextItem.id)
+    ) {
+      insertIndex += 1;
+    } else {
+      break;
+    }
   }
 
   const next = [
@@ -41,7 +54,7 @@ export default function Timeline(
   { initialItems, feedNames, initialNowIso }: TimelineProps,
 ) {
   const items = useSignal<FeedItem[]>(
-    sortByNewestId(initialItems).slice(0, MAX_TIMELINE_ITEMS),
+    sortByNewest(initialItems).slice(0, MAX_TIMELINE_ITEMS),
   );
   const newItemIds = useSignal<Set<number>>(new Set());
   const connected = useSignal(false);
@@ -77,7 +90,7 @@ export default function Timeline(
           inserted_at: event.inserted_at,
         };
 
-        items.value = upsertByNewestId(items.value, newItem);
+        items.value = upsertByNewest(items.value, newItem);
         newItemIds.value = new Set([...newItemIds.value, newItem.id]);
 
         // Clear "new" highlight after 30 seconds

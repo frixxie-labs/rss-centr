@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "\n        SELECT f.id as \"id!: i64\",\n               f.feed_id as \"feed_id!: i64\",\n               f.external_id,\n               f.title,\n               f.url,\n               f.inserted_at as \"inserted_at: _\",\n               d.summary,\n               d.content,\n               d.author,\n               d.published_at as \"published_at: _\"\n        FROM feed_items f\n        LEFT JOIN feed_item_details d ON d.feed_item_id = f.id\n        ORDER BY COALESCE(d.published_at, f.inserted_at) DESC, f.id DESC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "feed_id!: i64",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "external_id",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "title",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "url",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "inserted_at: _",
+        "ordinal": 5,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "summary",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "content",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "author",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "published_at: _",
+        "ordinal": 9,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "2ba173c462d615e560f705211b7b445a77337c88eff4727c27762c83e0d699fa"
+}

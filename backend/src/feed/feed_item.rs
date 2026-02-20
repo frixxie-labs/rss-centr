@@ -184,7 +184,7 @@ pub async fn read_latest_feed_items_with_detail(
                d.published_at as "published_at: _"
         FROM feed_items f
         LEFT JOIN feed_item_details d ON d.feed_item_id = f.id
-        ORDER BY f.inserted_at DESC, f.id DESC
+        ORDER BY COALESCE(d.published_at, f.inserted_at) DESC, f.id DESC
         LIMIT $1
         "#,
         limit,
@@ -231,7 +231,7 @@ pub async fn read_all_feed_items_with_detail(pool: &SqlitePool) -> Result<Vec<Fe
                d.published_at as "published_at: _"
         FROM feed_items f
         LEFT JOIN feed_item_details d ON d.feed_item_id = f.id
-        ORDER BY f.inserted_at DESC, f.id DESC
+        ORDER BY COALESCE(d.published_at, f.inserted_at) DESC, f.id DESC
         "#,
     )
     .fetch_all(pool)
