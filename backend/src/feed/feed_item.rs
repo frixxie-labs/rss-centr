@@ -39,6 +39,11 @@ pub struct FeedItemDetail {
     pub published_at: DateTime<Utc>,
 }
 
+struct FeedCadenceAverages {
+    avg_inserted_seconds: Option<f64>,
+    avg_published_seconds: Option<f64>,
+}
+
 pub async fn insert_feed_item(
     pool: &SqlitePool,
     feed_id: i64,
@@ -142,6 +147,49 @@ pub async fn read_feed_items_by_feed(pool: &SqlitePool, feed_id: i64) -> Result<
     .with_context(|| format!("failed to read feed items for feed_id={feed_id}"))?;
 
     Ok(rows)
+}
+
+pub async fn read_feed_cadence_seconds(pool: &SqlitePool, feed_id: i64) -> Result<Option<i64>> {
+    let row = sqlx::query_as!(
+        FeedCadenceAverages,
+        r#"
+        WITH inserted_diffs AS (
+            SELECT CAST(
+                strftime('%s', inserted_at)
+                - strftime('%s', LAG(inserted_at) OVER (ORDER BY inserted_at ASC, id ASC))
+                AS REAL
+            ) AS diff_seconds
+            FROM feed_items
+            WHERE feed_id = $1
+        ),
+        published_diffs AS (
+            SELECT CAST(
+                strftime('%s', d.published_at)
+                - strftime('%s', LAG(d.published_at) OVER (ORDER BY d.published_at ASC, d.id ASC))
+                AS REAL
+            ) AS diff_seconds
+            FROM feed_items f
+            JOIN feed_item_details d ON d.feed_item_id = f.id
+            WHERE f.feed_id = $1
+        )
+        SELECT
+            (SELECT AVG(diff_seconds) FROM inserted_diffs WHERE diff_seconds > 0) as "avg_inserted_seconds?: f64",
+            (SELECT AVG(diff_seconds) FROM published_diffs WHERE diff_seconds > 0) as "avg_published_seconds?: f64"
+        "#,
+        feed_id,
+    )
+    .fetch_one(pool)
+    .await
+    .with_context(|| format!("failed to read feed cadence averages for feed_id={feed_id}"))?;
+
+    let interval = match (row.avg_inserted_seconds, row.avg_published_seconds) {
+        (Some(inserted), Some(published)) => ((inserted + published) / 2.0).round() as i64,
+        (Some(inserted), None) => inserted.round() as i64,
+        (None, Some(published)) => published.round() as i64,
+        (None, None) => return Ok(None),
+    };
+
+    Ok(Some(interval))
 }
 
 pub async fn read_latest_feed_items(pool: &SqlitePool, limit: i64) -> Result<Vec<FeedItem>> {
