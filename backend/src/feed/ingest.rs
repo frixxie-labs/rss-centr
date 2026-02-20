@@ -7,7 +7,9 @@ use tokio::sync::broadcast;
 use crate::events::NewFeedItemEvent;
 
 use super::feed::{FetchFeedOutcome, fetch_feed_with_cache};
-use super::feed_item::{insert_feed_item_dedup, insert_feed_item_detail_dedup};
+use super::feed_item::{
+    insert_feed_item_dedup, insert_feed_item_detail_dedup, read_feed_cadence_seconds,
+};
 use super::feed_subscription::{touch_feed_failure, touch_feed_success, upsert_feed_by_url};
 
 const MAX_FALLBACK_POLL_INTERVAL_SECONDS: i64 = 6_000;
@@ -70,9 +72,18 @@ pub async fn ingest_feed_url(
         } => (feed, etag, last_modified),
     };
 
+    let mut inserted_items = 0usize;
+    for entry in &feed.entries {
+        if ingest_entry(pool, feed_sub.id, entry, new_item_tx).await? {
+            inserted_items += 1;
+        }
+    }
+
     let title = feed.title.as_ref().map(text_value);
     let site_url = feed.links.first().map(|l| l.href.as_str());
-    let poll_interval_seconds = Some(resolved_poll_interval_seconds(&feed.entries));
+    let poll_interval_seconds = Some(resolved_poll_interval_seconds(
+        read_feed_cadence_seconds(pool, feed_sub.id).await?,
+    ));
     touch_feed_success(
         pool,
         feed_sub.id,
@@ -84,13 +95,6 @@ pub async fn ingest_feed_url(
         poll_interval_seconds,
     )
     .await?;
-
-    let mut inserted_items = 0usize;
-    for entry in &feed.entries {
-        if ingest_entry(pool, feed_sub.id, entry, new_item_tx).await? {
-            inserted_items += 1;
-        }
-    }
 
     Ok(IngestResult {
         feed_id: feed_sub.id,
@@ -190,36 +194,8 @@ fn entry_published_at(entry: &Entry) -> Option<DateTime<Utc>> {
         .map(|dt| dt.with_timezone(&Utc))
 }
 
-fn average_update_frequency_seconds(entries: &[Entry]) -> Option<i64> {
-    let mut timestamps: Vec<_> = entries.iter().filter_map(entry_published_at).collect();
-    if timestamps.len() < 2 {
-        return None;
-    }
-
-    timestamps.sort_unstable_by(|a, b| b.cmp(a));
-
-    let mut sum = 0i64;
-    let mut count = 0i64;
-
-    for window in timestamps.windows(2) {
-        let newer = window[0];
-        let older = window[1];
-        let diff = newer.signed_duration_since(older).num_seconds();
-        if diff > 0 {
-            sum += diff;
-            count += 1;
-        }
-    }
-
-    if count == 0 {
-        return None;
-    }
-
-    Some(sum / count)
-}
-
-fn resolved_poll_interval_seconds(entries: &[Entry]) -> i64 {
-    average_update_frequency_seconds(entries)
+fn resolved_poll_interval_seconds(interval_seconds: Option<i64>) -> i64 {
+    interval_seconds
         .unwrap_or(MAX_FALLBACK_POLL_INTERVAL_SECONDS)
         .min(MAX_FALLBACK_POLL_INTERVAL_SECONDS)
 }
@@ -227,8 +203,6 @@ fn resolved_poll_interval_seconds(entries: &[Entry]) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Duration;
-
     #[test]
     fn test_entry_external_id_prefers_id() {
         let e = Entry {
@@ -239,56 +213,20 @@ mod tests {
     }
 
     #[test]
-    fn test_average_update_frequency_seconds() {
-        let now = Utc::now();
-        let entries = vec![
-            Entry {
-                published: Some((now - Duration::minutes(30)).into()),
-                ..Default::default()
-            },
-            Entry {
-                published: Some((now - Duration::hours(1)).into()),
-                ..Default::default()
-            },
-            Entry {
-                published: Some((now - Duration::hours(2)).into()),
-                ..Default::default()
-            },
-        ];
-
-        let interval = average_update_frequency_seconds(&entries);
-        assert_eq!(interval, Some(2700));
-    }
-
-    #[test]
-    fn test_average_update_frequency_seconds_not_enough_dates() {
-        let entries = vec![Entry::default()];
-        let interval = average_update_frequency_seconds(&entries);
-        assert_eq!(interval, None);
-    }
-
-    #[test]
     fn test_resolved_poll_interval_seconds_falls_back_to_max() {
-        let entries = vec![Entry::default()];
-        let interval = resolved_poll_interval_seconds(&entries);
+        let interval = resolved_poll_interval_seconds(None);
         assert_eq!(interval, 6000);
     }
 
     #[test]
     fn test_resolved_poll_interval_seconds_caps_large_average() {
-        let now = Utc::now();
-        let entries = vec![
-            Entry {
-                published: Some((now - Duration::hours(4)).into()),
-                ..Default::default()
-            },
-            Entry {
-                published: Some((now - Duration::hours(8)).into()),
-                ..Default::default()
-            },
-        ];
-
-        let interval = resolved_poll_interval_seconds(&entries);
+        let interval = resolved_poll_interval_seconds(Some(14_400));
         assert_eq!(interval, 6000);
+    }
+
+    #[test]
+    fn test_resolved_poll_interval_seconds_uses_db_value() {
+        let interval = resolved_poll_interval_seconds(Some(900));
+        assert_eq!(interval, 900);
     }
 }
