@@ -10,6 +10,8 @@ use super::feed::{FetchFeedOutcome, fetch_feed_with_cache};
 use super::feed_item::{insert_feed_item_dedup, insert_feed_item_detail_dedup};
 use super::feed_subscription::{touch_feed_failure, touch_feed_success, upsert_feed_by_url};
 
+const MAX_FALLBACK_POLL_INTERVAL_SECONDS: i64 = 6_000;
+
 pub struct IngestResult {
     pub feed_id: i64,
     pub inserted_items: usize,
@@ -70,7 +72,7 @@ pub async fn ingest_feed_url(
 
     let title = feed.title.as_ref().map(text_value);
     let site_url = feed.links.first().map(|l| l.href.as_str());
-    let poll_interval_seconds = average_update_frequency_seconds(&feed.entries);
+    let poll_interval_seconds = Some(resolved_poll_interval_seconds(&feed.entries));
     touch_feed_success(
         pool,
         feed_sub.id,
@@ -216,6 +218,12 @@ fn average_update_frequency_seconds(entries: &[Entry]) -> Option<i64> {
     Some(sum / count)
 }
 
+fn resolved_poll_interval_seconds(entries: &[Entry]) -> i64 {
+    average_update_frequency_seconds(entries)
+        .unwrap_or(MAX_FALLBACK_POLL_INTERVAL_SECONDS)
+        .min(MAX_FALLBACK_POLL_INTERVAL_SECONDS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,5 +265,30 @@ mod tests {
         let entries = vec![Entry::default()];
         let interval = average_update_frequency_seconds(&entries);
         assert_eq!(interval, None);
+    }
+
+    #[test]
+    fn test_resolved_poll_interval_seconds_falls_back_to_max() {
+        let entries = vec![Entry::default()];
+        let interval = resolved_poll_interval_seconds(&entries);
+        assert_eq!(interval, 6000);
+    }
+
+    #[test]
+    fn test_resolved_poll_interval_seconds_caps_large_average() {
+        let now = Utc::now();
+        let entries = vec![
+            Entry {
+                published: Some((now - Duration::hours(4)).into()),
+                ..Default::default()
+            },
+            Entry {
+                published: Some((now - Duration::hours(8)).into()),
+                ..Default::default()
+            },
+        ];
+
+        let interval = resolved_poll_interval_seconds(&entries);
+        assert_eq!(interval, 6000);
     }
 }

@@ -38,6 +38,30 @@ function feedName(feed: FeedSubscription): string {
   return feed.title?.trim() || feed.site_url?.trim() || feed.url;
 }
 
+function formatPollInterval(seconds: number): string {
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+
+  if (hours > 0) {
+    if (minutes > 0) {
+      return `${hours}h ${minutes}m`;
+    }
+
+    return `${hours}h`;
+  }
+
+  if (secs === 0) {
+    return `${minutes}m`;
+  }
+
+  return `${minutes}m ${secs}s`;
+}
+
 export default function FeedManagement(
   { initialFeeds, initialLoadError }: FeedManagementProps,
 ) {
@@ -248,9 +272,9 @@ export default function FeedManagement(
                         | Last success: {formatDateTime(feed.last_success_at)}
                       </p>
                       <p>
-                        Poll every {feed.poll_interval_seconds}s | Failures:
-                        {" "}
-                        {feed.failure_count}
+                        Poll every{" "}
+                        {formatPollInterval(feed.poll_interval_seconds)}{" "}
+                        | Failures: {feed.failure_count}
                       </p>
                     </div>
 
