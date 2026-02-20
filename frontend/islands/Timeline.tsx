@@ -3,6 +3,7 @@ import { useEffect } from "preact/hooks";
 import type { FeedItem, NewFeedItemEvent } from "../types.ts";
 import { FeedItemCard } from "../components/FeedItemCard.tsx";
 import { getLogger } from "../logger.ts";
+import { fetchItemWithDetail } from "../api.ts";
 
 const log = getLogger("sse");
 const MAX_TIMELINE_ITEMS = 500;
@@ -73,6 +74,19 @@ export default function Timeline(
     const eventSource = new EventSource("/api/items/stream");
     const clearNewItemTimers = new Set<number>();
     let keepAlivePulseTimer: number | undefined;
+    let isDisposed = false;
+
+    const refreshItem = async (itemId: number) => {
+      try {
+        const fullItem = await fetchItemWithDetail(itemId);
+        if (isDisposed) {
+          return;
+        }
+        items.value = upsertByNewest(items.value, fullItem);
+      } catch (err) {
+        log.warn("Failed to refresh new item details", { itemId, err });
+      }
+    };
 
     eventSource.addEventListener("open", () => {
       connected.value = true;
@@ -91,6 +105,7 @@ export default function Timeline(
         };
 
         items.value = upsertByNewest(items.value, newItem);
+        void refreshItem(newItem.id);
         newItemIds.value = new Set([...newItemIds.value, newItem.id]);
 
         // Clear "new" highlight after 30 seconds
@@ -139,6 +154,7 @@ export default function Timeline(
     });
 
     return () => {
+      isDisposed = true;
       eventSource.close();
       for (const timer of clearNewItemTimers) {
         clearTimeout(timer);
