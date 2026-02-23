@@ -12,7 +12,8 @@ use super::feed_item::{
 };
 use super::feed_subscription::{touch_feed_failure, touch_feed_success, upsert_feed_by_url};
 
-const MAX_FALLBACK_POLL_INTERVAL_SECONDS: i64 = 6_000;
+const MIN_POLL_INTERVAL_SECONDS: i64 = 60;
+const MAX_POLL_INTERVAL_SECONDS: i64 = 6_000;
 
 pub struct IngestResult {
     pub feed_id: i64,
@@ -38,7 +39,15 @@ pub async fn ingest_feed_url(
     {
         Ok(f) => f,
         Err(e) => {
-            touch_feed_failure(pool, feed_sub.id, checked_at).await?;
+            touch_feed_failure(
+                pool,
+                feed_sub.id,
+                checked_at,
+                Some(backoff_poll_interval_seconds(
+                    feed_sub.poll_interval_seconds,
+                )),
+            )
+            .await?;
             return Err(e);
         }
     };
@@ -56,7 +65,9 @@ pub async fn ingest_feed_url(
                 None,
                 etag.as_deref(),
                 last_modified.as_deref(),
-                None,
+                Some(backoff_poll_interval_seconds(
+                    feed_sub.poll_interval_seconds,
+                )),
             )
             .await?;
 
@@ -196,8 +207,13 @@ fn entry_published_at(entry: &Entry) -> Option<DateTime<Utc>> {
 
 fn resolved_poll_interval_seconds(interval_seconds: Option<i64>) -> i64 {
     interval_seconds
-        .unwrap_or(MAX_FALLBACK_POLL_INTERVAL_SECONDS)
-        .min(MAX_FALLBACK_POLL_INTERVAL_SECONDS)
+        .unwrap_or(MAX_POLL_INTERVAL_SECONDS)
+        .clamp(MIN_POLL_INTERVAL_SECONDS, MAX_POLL_INTERVAL_SECONDS)
+}
+
+fn backoff_poll_interval_seconds(current_interval_seconds: i64) -> i64 {
+    (current_interval_seconds.saturating_mul(2))
+        .clamp(MIN_POLL_INTERVAL_SECONDS, MAX_POLL_INTERVAL_SECONDS)
 }
 
 #[cfg(test)]
@@ -219,6 +235,12 @@ mod tests {
     }
 
     #[test]
+    fn test_resolved_poll_interval_seconds_applies_minimum() {
+        let interval = resolved_poll_interval_seconds(Some(15));
+        assert_eq!(interval, 60);
+    }
+
+    #[test]
     fn test_resolved_poll_interval_seconds_caps_large_average() {
         let interval = resolved_poll_interval_seconds(Some(14_400));
         assert_eq!(interval, 6000);
@@ -228,5 +250,11 @@ mod tests {
     fn test_resolved_poll_interval_seconds_uses_db_value() {
         let interval = resolved_poll_interval_seconds(Some(900));
         assert_eq!(interval, 900);
+    }
+
+    #[test]
+    fn test_backoff_poll_interval_seconds_doubles_and_caps() {
+        assert_eq!(backoff_poll_interval_seconds(300), 600);
+        assert_eq!(backoff_poll_interval_seconds(6000), 6000);
     }
 }

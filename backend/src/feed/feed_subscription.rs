@@ -69,7 +69,14 @@ pub async fn list_due_feeds(
         WHERE is_enabled = 1
           AND (
               last_checked_at IS NULL
-              OR (strftime('%s', $1) - strftime('%s', last_checked_at)) >= poll_interval_seconds
+              OR (strftime('%s', $1) - strftime('%s', last_checked_at)) >= (
+                  poll_interval_seconds
+                  + (
+                      id % (
+                          MIN(30, MAX(1, poll_interval_seconds / 10)) + 1
+                      )
+                  )
+              )
           )
         ORDER BY id ASC
         "#,
@@ -235,15 +242,18 @@ pub async fn touch_feed_failure(
     pool: &SqlitePool,
     id: i64,
     checked_at: DateTime<Utc>,
+    poll_interval_seconds: Option<i64>,
 ) -> Result<()> {
     let result = sqlx::query!(
         r#"
         UPDATE feeds
         SET last_checked_at = $1,
-            failure_count = failure_count + 1
-        WHERE id = $2
+            failure_count = failure_count + 1,
+            poll_interval_seconds = COALESCE($2, poll_interval_seconds)
+        WHERE id = $3
         "#,
         checked_at,
+        poll_interval_seconds,
         id,
     )
     .execute(pool)
@@ -279,6 +289,11 @@ pub async fn delete_feed(pool: &SqlitePool, id: i64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn jitter_seconds(feed_id: i64, poll_interval_seconds: i64) -> i64 {
+        let jitter_cap = (poll_interval_seconds / 10).clamp(1, 30);
+        feed_id % (jitter_cap + 1)
+    }
 
     #[sqlx::test]
     async fn test_upsert_feed_by_url_is_idempotent(pool: SqlitePool) {
@@ -329,10 +344,13 @@ mod tests {
             .unwrap();
 
         let t1 = Utc::now();
-        touch_feed_failure(&pool, f.id, t1).await.unwrap();
+        touch_feed_failure(&pool, f.id, t1, Some(1200))
+            .await
+            .unwrap();
         let r1 = read_feed(&pool, f.id).await.unwrap();
         assert_eq!(r1.failure_count, 1);
         assert_eq!(r1.last_checked_at.unwrap(), t1);
+        assert_eq!(r1.poll_interval_seconds, 1200);
 
         let t2 = Utc::now();
         touch_feed_success(
@@ -360,5 +378,56 @@ mod tests {
             r2.last_modified.as_deref(),
             Some("Mon, 01 Jan 2024 00:00:00 GMT")
         );
+    }
+
+    #[sqlx::test]
+    async fn test_list_due_feeds_applies_per_feed_jitter(pool: SqlitePool) {
+        let f1 = upsert_feed_by_url(&pool, "https://example.com/jitter-a.xml")
+            .await
+            .unwrap();
+        let f2 = upsert_feed_by_url(&pool, "https://example.com/jitter-b.xml")
+            .await
+            .unwrap();
+
+        let checked_at = DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let poll_interval = 100i64;
+
+        sqlx::query!(
+            r#"
+            UPDATE feeds
+            SET poll_interval_seconds = $1,
+                last_checked_at = $2
+            WHERE id IN ($3, $4)
+            "#,
+            poll_interval,
+            checked_at,
+            f1.id,
+            f2.id,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let f1_jitter = jitter_seconds(f1.id, poll_interval);
+        let f2_jitter = jitter_seconds(f2.id, poll_interval);
+
+        let (early_id, early_jitter, late_id, late_jitter) = if f1_jitter <= f2_jitter {
+            (f1.id, f1_jitter, f2.id, f2_jitter)
+        } else {
+            (f2.id, f2_jitter, f1.id, f1_jitter)
+        };
+
+        let first_due_at = checked_at + chrono::Duration::seconds(poll_interval + early_jitter);
+
+        let due_now = list_due_feeds(&pool, first_due_at).await.unwrap();
+        assert!(due_now.iter().any(|f| f.id == early_id));
+        assert!(due_now.iter().all(|f| f.id != late_id));
+
+        let second_due_at = checked_at + chrono::Duration::seconds(poll_interval + late_jitter);
+        let due_later = list_due_feeds(&pool, second_due_at).await.unwrap();
+        assert!(due_later.iter().any(|f| f.id == early_id));
+        assert!(due_later.iter().any(|f| f.id == late_id));
     }
 }
