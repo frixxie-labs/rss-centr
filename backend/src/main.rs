@@ -77,11 +77,12 @@ async fn main() -> Result<()> {
     let opts = Opts::from_args();
     let level: Level = opts.log_level.into();
     let subscriber = FmtSubscriber::builder().with_max_level(level).finish();
-    tracing::subscriber::set_global_default(subscriber).unwrap();
+    tracing::subscriber::set_global_default(subscriber)
+        .context("failed to install tracing subscriber")?;
 
     let metrics_handler = PrometheusBuilder::new()
         .install_recorder()
-        .expect("failed to install recorder/exporter");
+        .context("failed to install metrics recorder/exporter")?;
 
     info!("Connecting to DB at {}", opts.db_url);
     let pool = SqlitePool::connect(&opts.db_url)
