@@ -194,6 +194,7 @@ pub async fn read_feed_cadence_seconds(pool: &SqlitePool, feed_id: i64) -> Resul
             FROM feed_items f
             JOIN feed_item_details d ON d.feed_item_id = f.id
             WHERE f.feed_id = $1
+              AND (strftime('%s', f.inserted_at) - strftime('%s', d.published_at)) > 5
         )
         SELECT
             (SELECT AVG(diff_seconds) FROM inserted_diffs WHERE diff_seconds > 0) as "avg_inserted_seconds?: f64",
@@ -531,6 +532,134 @@ mod tests {
     // -----------------------------------------------------------------------
     // FeedItem tests
     // -----------------------------------------------------------------------
+
+    #[sqlx::test]
+    async fn test_read_feed_cadence_seconds_ignores_inferred_published_at(pool: SqlitePool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/cadence.xml")
+            .await
+            .unwrap();
+
+        let item1 = insert_feed_item(&pool, feed.id, "cadence-1", "One", "https://example.com/1")
+            .await
+            .unwrap();
+        let item2 = insert_feed_item(&pool, feed.id, "cadence-2", "Two", "https://example.com/2")
+            .await
+            .unwrap();
+        let item3 = insert_feed_item(
+            &pool,
+            feed.id,
+            "cadence-3",
+            "Three",
+            "https://example.com/3",
+        )
+        .await
+        .unwrap();
+
+        let now = Utc::now();
+        insert_feed_item_detail(&pool, item1.id, "", "", "", now)
+            .await
+            .unwrap();
+        insert_feed_item_detail(&pool, item2.id, "", "", "", now)
+            .await
+            .unwrap();
+        insert_feed_item_detail(&pool, item3.id, "", "", "", now)
+            .await
+            .unwrap();
+
+        let inserted_1 = DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let inserted_2 = DateTime::parse_from_rfc3339("2024-01-01T00:05:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let inserted_3 = DateTime::parse_from_rfc3339("2024-01-01T00:10:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let published_1 = DateTime::parse_from_rfc3339("2023-12-31T23:43:20Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let published_2 = DateTime::parse_from_rfc3339("2023-12-31T23:44:20Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        sqlx::query!(
+            r#"
+            UPDATE feed_items
+            SET inserted_at = $1
+            WHERE id = $2
+            "#,
+            inserted_1,
+            item1.id,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query!(
+            r#"
+            UPDATE feed_items
+            SET inserted_at = $1
+            WHERE id = $2
+            "#,
+            inserted_2,
+            item2.id,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query!(
+            r#"
+            UPDATE feed_items
+            SET inserted_at = $1
+            WHERE id = $2
+            "#,
+            inserted_3,
+            item3.id,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query!(
+            r#"
+            UPDATE feed_item_details
+            SET published_at = $1
+            WHERE feed_item_id = $2
+            "#,
+            published_1,
+            item1.id,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query!(
+            r#"
+            UPDATE feed_item_details
+            SET published_at = $1
+            WHERE feed_item_id = $2
+            "#,
+            published_2,
+            item2.id,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query!(
+            r#"
+            UPDATE feed_item_details
+            SET published_at = $1
+            WHERE feed_item_id = $2
+            "#,
+            inserted_3,
+            item3.id,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let cadence = read_feed_cadence_seconds(&pool, feed.id).await.unwrap();
+        assert_eq!(cadence, Some(220));
+    }
 
     #[sqlx::test]
     async fn test_insert_feed_item(pool: SqlitePool) {
