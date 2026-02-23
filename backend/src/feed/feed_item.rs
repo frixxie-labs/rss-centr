@@ -42,6 +42,29 @@ pub struct FeedItemDetail {
 struct FeedCadenceAverages {
     avg_inserted_seconds: Option<f64>,
     avg_published_seconds: Option<f64>,
+    inserted_samples: i64,
+    published_samples: i64,
+}
+
+fn weighted_cadence_seconds(row: &FeedCadenceAverages) -> Option<i64> {
+    let mut weighted_sum = 0.0;
+    let mut sample_count = 0i64;
+
+    if let Some(inserted) = row.avg_inserted_seconds {
+        weighted_sum += inserted * row.inserted_samples as f64;
+        sample_count += row.inserted_samples;
+    }
+
+    if let Some(published) = row.avg_published_seconds {
+        weighted_sum += published * row.published_samples as f64;
+        sample_count += row.published_samples;
+    }
+
+    if sample_count == 0 {
+        return None;
+    }
+
+    Some((weighted_sum / sample_count as f64).round() as i64)
 }
 
 pub async fn insert_feed_item(
@@ -174,7 +197,9 @@ pub async fn read_feed_cadence_seconds(pool: &SqlitePool, feed_id: i64) -> Resul
         )
         SELECT
             (SELECT AVG(diff_seconds) FROM inserted_diffs WHERE diff_seconds > 0) as "avg_inserted_seconds?: f64",
-            (SELECT AVG(diff_seconds) FROM published_diffs WHERE diff_seconds > 0) as "avg_published_seconds?: f64"
+            (SELECT AVG(diff_seconds) FROM published_diffs WHERE diff_seconds > 0) as "avg_published_seconds?: f64",
+            (SELECT COUNT(*) FROM inserted_diffs WHERE diff_seconds > 0) as "inserted_samples!: i64",
+            (SELECT COUNT(*) FROM published_diffs WHERE diff_seconds > 0) as "published_samples!: i64"
         "#,
         feed_id,
     )
@@ -182,14 +207,7 @@ pub async fn read_feed_cadence_seconds(pool: &SqlitePool, feed_id: i64) -> Resul
     .await
     .with_context(|| format!("failed to read feed cadence averages for feed_id={feed_id}"))?;
 
-    let interval = match (row.avg_inserted_seconds, row.avg_published_seconds) {
-        (Some(inserted), Some(published)) => ((inserted + published) / 2.0).round() as i64,
-        (Some(inserted), None) => inserted.round() as i64,
-        (None, Some(published)) => published.round() as i64,
-        (None, None) => return Ok(None),
-    };
-
-    Ok(Some(interval))
+    Ok(weighted_cadence_seconds(&row))
 }
 
 pub async fn read_latest_feed_items(pool: &SqlitePool, limit: i64) -> Result<Vec<FeedItem>> {
@@ -483,6 +501,32 @@ pub async fn delete_feed_item_detail(pool: &SqlitePool, feed_item_id: i64) -> Re
 mod tests {
     use super::*;
     use crate::feed::feed_subscription::upsert_feed_by_url;
+
+    #[test]
+    fn test_weighted_cadence_seconds_prefers_larger_sample_set() {
+        let row = FeedCadenceAverages {
+            avg_inserted_seconds: Some(3_600.0),
+            avg_published_seconds: Some(300.0),
+            inserted_samples: 2,
+            published_samples: 18,
+        };
+
+        let cadence = weighted_cadence_seconds(&row);
+        assert_eq!(cadence, Some(630));
+    }
+
+    #[test]
+    fn test_weighted_cadence_seconds_handles_empty_samples() {
+        let row = FeedCadenceAverages {
+            avg_inserted_seconds: None,
+            avg_published_seconds: None,
+            inserted_samples: 0,
+            published_samples: 0,
+        };
+
+        let cadence = weighted_cadence_seconds(&row);
+        assert_eq!(cadence, None);
+    }
 
     // -----------------------------------------------------------------------
     // FeedItem tests
