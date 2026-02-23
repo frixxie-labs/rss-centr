@@ -1,7 +1,7 @@
 use axum::{
     Json,
     extract::{Path, State},
-    response::{IntoResponse, Response},
+    http::StatusCode,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -152,10 +152,7 @@ pub async fn update_feed_enabled(
 pub async fn queue_ingest_feed(
     State(app_state): FeedState,
     Path(feed_id): Path<i64>,
-) -> Result<Response, HandlerError>
-where
-    Response: IntoResponse,
-{
+) -> Result<(StatusCode, &'static str), HandlerError> {
     let (_pool, tx) = app_state;
 
     tx.send(IngestJob::FeedId(feed_id)).await.map_err(|e| {
@@ -165,14 +162,7 @@ where
         ))
     })?;
 
-    let resp = Response::builder()
-        .status(202)
-        .body("queued".into())
-        .map_err(|e| {
-            warn!("failed with error: {e:#}");
-            HandlerError::internal(format!("Failed to build response: {e}"))
-        })?;
-    Ok(resp)
+    Ok((StatusCode::ACCEPTED, "queued"))
 }
 
 #[utoipa::path(

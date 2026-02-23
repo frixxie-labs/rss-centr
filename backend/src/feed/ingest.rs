@@ -10,7 +10,9 @@ use super::feed::{FetchFeedOutcome, fetch_feed_with_cache};
 use super::feed_item::{
     insert_feed_item_dedup, insert_feed_item_detail_dedup, read_feed_cadence_seconds,
 };
-use super::feed_subscription::{touch_feed_failure, touch_feed_success, upsert_feed_by_url};
+use super::feed_subscription::{
+    FeedSuccessUpdate, touch_feed_failure, touch_feed_success, upsert_feed_by_url,
+};
 
 const MIN_POLL_INTERVAL_SECONDS: i64 = 60;
 const MAX_POLL_INTERVAL_SECONDS: i64 = 6_000;
@@ -60,14 +62,16 @@ pub async fn ingest_feed_url(
             touch_feed_success(
                 pool,
                 feed_sub.id,
-                checked_at,
-                None,
-                None,
-                etag.as_deref(),
-                last_modified.as_deref(),
-                Some(backoff_poll_interval_seconds(
-                    feed_sub.poll_interval_seconds,
-                )),
+                FeedSuccessUpdate {
+                    checked_at,
+                    title: None,
+                    site_url: None,
+                    etag: etag.as_deref(),
+                    last_modified: last_modified.as_deref(),
+                    poll_interval_seconds: Some(backoff_poll_interval_seconds(
+                        feed_sub.poll_interval_seconds,
+                    )),
+                },
             )
             .await?;
 
@@ -98,12 +102,14 @@ pub async fn ingest_feed_url(
     touch_feed_success(
         pool,
         feed_sub.id,
-        checked_at,
-        title,
-        site_url,
-        etag.as_deref(),
-        last_modified.as_deref(),
-        poll_interval_seconds,
+        FeedSuccessUpdate {
+            checked_at,
+            title,
+            site_url,
+            etag: etag.as_deref(),
+            last_modified: last_modified.as_deref(),
+            poll_interval_seconds,
+        },
     )
     .await?;
 

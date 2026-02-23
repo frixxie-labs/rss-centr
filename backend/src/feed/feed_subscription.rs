@@ -196,16 +196,29 @@ pub async fn set_feed_enabled(pool: &SqlitePool, id: i64, is_enabled: bool) -> R
     Ok(())
 }
 
+pub struct FeedSuccessUpdate<'a> {
+    pub checked_at: DateTime<Utc>,
+    pub title: Option<&'a str>,
+    pub site_url: Option<&'a str>,
+    pub etag: Option<&'a str>,
+    pub last_modified: Option<&'a str>,
+    pub poll_interval_seconds: Option<i64>,
+}
+
 pub async fn touch_feed_success(
     pool: &SqlitePool,
     id: i64,
-    checked_at: DateTime<Utc>,
-    title: Option<&str>,
-    site_url: Option<&str>,
-    etag: Option<&str>,
-    last_modified: Option<&str>,
-    poll_interval_seconds: Option<i64>,
+    update: FeedSuccessUpdate<'_>,
 ) -> Result<()> {
+    let FeedSuccessUpdate {
+        checked_at,
+        title,
+        site_url,
+        etag,
+        last_modified,
+        poll_interval_seconds,
+    } = update;
+
     let result = sqlx::query!(
         r#"
         UPDATE feeds
@@ -356,12 +369,14 @@ mod tests {
         touch_feed_success(
             &pool,
             f.id,
-            t2,
-            Some("Example"),
-            Some("https://example.com"),
-            Some("\"etag-123\""),
-            Some("Mon, 01 Jan 2024 00:00:00 GMT"),
-            Some(900),
+            FeedSuccessUpdate {
+                checked_at: t2,
+                title: Some("Example"),
+                site_url: Some("https://example.com"),
+                etag: Some("\"etag-123\""),
+                last_modified: Some("Mon, 01 Jan 2024 00:00:00 GMT"),
+                poll_interval_seconds: Some(900),
+            },
         )
         .await
         .unwrap();
