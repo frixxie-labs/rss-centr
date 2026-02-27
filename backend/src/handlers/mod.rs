@@ -77,7 +77,7 @@ pub fn create_router(
 
     let item_events = Router::new()
         .route("/items/stream", get(sse::stream_new_items))
-        .with_state(new_item_tx);
+        .with_state((pool.clone(), new_item_tx));
 
     Router::new()
         .nest("/api", feeds)

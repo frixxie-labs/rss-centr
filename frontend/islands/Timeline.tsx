@@ -7,6 +7,7 @@ import { fetchItemWithDetail } from "../api.ts";
 
 const log = getLogger("sse");
 const MAX_TIMELINE_ITEMS = 500;
+const LAST_EVENT_ID_STORAGE_KEY = "rss:last-event-id";
 
 interface TimelineProps {
   initialItems: FeedItem[];
@@ -60,6 +61,7 @@ export default function Timeline(
   const newItemIds = useSignal<Set<number>>(new Set());
   const connected = useSignal(false);
   const keepAlivePulse = useSignal(false);
+  const replayCursor = useSignal<string | null>(null);
   const nowMs = useSignal(new Date(initialNowIso).getTime());
 
   // Re-render every 60s so relative timestamps stay fresh
@@ -71,7 +73,16 @@ export default function Timeline(
   }, []);
 
   useEffect(() => {
-    const eventSource = new EventSource("/api/items/stream");
+    const lastEventId = globalThis.localStorage.getItem(
+      LAST_EVENT_ID_STORAGE_KEY,
+    );
+    replayCursor.value = lastEventId;
+
+    const sseUrl = lastEventId
+      ? `/api/items/stream?last_event_id=${encodeURIComponent(lastEventId)}`
+      : "/api/items/stream";
+
+    const eventSource = new EventSource(sseUrl);
     const clearNewItemTimers = new Set<number>();
     let keepAlivePulseTimer: number | undefined;
     let isDisposed = false;
@@ -94,6 +105,14 @@ export default function Timeline(
 
     eventSource.addEventListener("feed_item", (e: MessageEvent) => {
       try {
+        if (e.lastEventId) {
+          globalThis.localStorage.setItem(
+            LAST_EVENT_ID_STORAGE_KEY,
+            e.lastEventId,
+          );
+          replayCursor.value = e.lastEventId;
+        }
+
         const event: NewFeedItemEvent = JSON.parse(e.data);
         const newItem: FeedItem = {
           id: event.id,
@@ -170,6 +189,9 @@ export default function Timeline(
       <div class="px-4 py-2 border-b border-neutral-800 flex items-center justify-between text-xs text-neutral-500">
         <span>{items.value.length} items</span>
         <div class="flex items-center gap-2">
+          {replayCursor.value && (
+            <span class="text-neutral-600">cursor {replayCursor.value}</span>
+          )}
           {newItemIds.value.size > 0 && (
             <span class="text-amber-500">{newItemIds.value.size} new</span>
           )}

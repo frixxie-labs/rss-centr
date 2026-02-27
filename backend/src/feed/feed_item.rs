@@ -232,6 +232,27 @@ pub async fn read_latest_feed_items(pool: &SqlitePool, limit: i64) -> Result<Vec
     Ok(rows)
 }
 
+pub async fn read_feed_items_after_id(pool: &SqlitePool, id: i64) -> Result<Vec<FeedItem>> {
+    let rows = sqlx::query_as!(
+        FeedItem,
+        r#"
+        SELECT id as "id!: i64",
+               feed_id as "feed_id!: i64",
+               external_id, title, url,
+               inserted_at as "inserted_at: _"
+        FROM feed_items
+        WHERE id > $1
+        ORDER BY id ASC
+        "#,
+        id,
+    )
+    .fetch_all(pool)
+    .await
+    .with_context(|| format!("failed to read feed items after id={id}"))?;
+
+    Ok(rows)
+}
+
 pub async fn read_latest_feed_items_with_detail(
     pool: &SqlitePool,
     limit: i64,
