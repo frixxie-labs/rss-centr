@@ -101,20 +101,20 @@ content for detail views.
 #### Polling
 - [x] Scheduled polling per feed
 - [x] Conditional GET (ETag / 304 support)
-- [ ] Backoff on failure
-- [ ] Jittered intervals
+- [x] Backoff on failure
+- [x] Jittered intervals
 
 #### Items
 - [x] Store normalized items (`feed_items` + `feed_item_details`)
 - [x] Deduplicate via `UNIQUE(feed_id, external_id)`
-- [ ] Cursor pagination
+- [ ] Cursor pagination (not yet implemented)
 - [x] Filter by feed (DB)
 
 #### Live Updates
-- [ ] `GET /api/events` (SSE)
+- [x] `GET /api/items/stream` (SSE)
 - [x] KeepAlive pings
-- [ ] Reconnect via `Last-Event-ID`
-- [ ] DB backfill on reconnect
+- [x] Reconnect via `Last-Event-ID`
+- [x] DB backfill on reconnect
 - [ ] Broadcast lag recovery
 
 ### Frontend (Fresh)
@@ -237,7 +237,7 @@ GET /api/items/:id
 ### Live Updates (SSE)
 
 ```
-GET /api/events
+GET /api/items/stream
 ```
 
 Example SSE frame:
