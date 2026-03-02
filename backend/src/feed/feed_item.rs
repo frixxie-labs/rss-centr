@@ -46,25 +46,31 @@ struct FeedCadenceAverages {
     published_samples: i64,
 }
 
+/// Minimum number of diff samples before we consider a cadence signal reliable.
+const MIN_CADENCE_SAMPLES: i64 = 2;
+
+/// Choose the best cadence estimate from inserted-at and published-at diffs.
+///
+/// Published-at diffs reflect the feed's *actual* publishing rhythm and are
+/// preferred whenever we have enough samples.  Inserted-at diffs are only used
+/// as a fallback when published data is insufficient (e.g. the feed never
+/// provides a publication date).
 fn weighted_cadence_seconds(row: &FeedCadenceAverages) -> Option<i64> {
-    let mut weighted_sum = 0.0;
-    let mut sample_count = 0i64;
+    let has_published =
+        row.published_samples >= MIN_CADENCE_SAMPLES && row.avg_published_seconds.is_some();
+    let has_inserted =
+        row.inserted_samples >= MIN_CADENCE_SAMPLES && row.avg_inserted_seconds.is_some();
 
-    if let Some(inserted) = row.avg_inserted_seconds {
-        weighted_sum += inserted * row.inserted_samples as f64;
-        sample_count += row.inserted_samples;
+    if has_published {
+        // Published cadence is the most reliable signal — use it directly.
+        Some(row.avg_published_seconds.unwrap().round() as i64)
+    } else if has_inserted {
+        // Fallback: use inserted-at cadence (already filtered for bulk-ingest
+        // noise in the SQL query via a minimum diff threshold).
+        Some(row.avg_inserted_seconds.unwrap().round() as i64)
+    } else {
+        None
     }
-
-    if let Some(published) = row.avg_published_seconds {
-        weighted_sum += published * row.published_samples as f64;
-        sample_count += row.published_samples;
-    }
-
-    if sample_count == 0 {
-        return None;
-    }
-
-    Some((weighted_sum / sample_count as f64).round() as i64)
 }
 
 pub async fn insert_feed_item(
@@ -194,13 +200,12 @@ pub async fn read_feed_cadence_seconds(pool: &SqlitePool, feed_id: i64) -> Resul
             FROM feed_items f
             JOIN feed_item_details d ON d.feed_item_id = f.id
             WHERE f.feed_id = $1
-              AND (strftime('%s', f.inserted_at) - strftime('%s', d.published_at)) > 5
         )
         SELECT
-            (SELECT AVG(diff_seconds) FROM inserted_diffs WHERE diff_seconds > 0) as "avg_inserted_seconds?: f64",
-            (SELECT AVG(diff_seconds) FROM published_diffs WHERE diff_seconds > 0) as "avg_published_seconds?: f64",
-            (SELECT COUNT(*) FROM inserted_diffs WHERE diff_seconds > 0) as "inserted_samples!: i64",
-            (SELECT COUNT(*) FROM published_diffs WHERE diff_seconds > 0) as "published_samples!: i64"
+            (SELECT AVG(diff_seconds) FROM inserted_diffs WHERE diff_seconds >= 60) as "avg_inserted_seconds?: f64",
+            (SELECT AVG(diff_seconds) FROM published_diffs WHERE diff_seconds >= 60) as "avg_published_seconds?: f64",
+            (SELECT COUNT(*) FROM inserted_diffs WHERE diff_seconds >= 60) as "inserted_samples!: i64",
+            (SELECT COUNT(*) FROM published_diffs WHERE diff_seconds >= 60) as "published_samples!: i64"
         "#,
         feed_id,
     )
@@ -525,7 +530,7 @@ mod tests {
     use crate::feed::feed_subscription::upsert_feed_by_url;
 
     #[test]
-    fn test_weighted_cadence_seconds_prefers_larger_sample_set() {
+    fn test_weighted_cadence_seconds_prefers_published_when_sufficient() {
         let row = FeedCadenceAverages {
             avg_inserted_seconds: Some(3_600.0),
             avg_published_seconds: Some(300.0),
@@ -533,8 +538,35 @@ mod tests {
             published_samples: 18,
         };
 
+        // published_samples >= MIN_CADENCE_SAMPLES, so published average wins
         let cadence = weighted_cadence_seconds(&row);
-        assert_eq!(cadence, Some(630));
+        assert_eq!(cadence, Some(300));
+    }
+
+    #[test]
+    fn test_weighted_cadence_seconds_falls_back_to_inserted() {
+        let row = FeedCadenceAverages {
+            avg_inserted_seconds: Some(3_600.0),
+            avg_published_seconds: None,
+            inserted_samples: 5,
+            published_samples: 0,
+        };
+
+        let cadence = weighted_cadence_seconds(&row);
+        assert_eq!(cadence, Some(3_600));
+    }
+
+    #[test]
+    fn test_weighted_cadence_seconds_ignores_insufficient_samples() {
+        let row = FeedCadenceAverages {
+            avg_inserted_seconds: Some(100.0),
+            avg_published_seconds: Some(200.0),
+            inserted_samples: 1,  // below MIN_CADENCE_SAMPLES
+            published_samples: 1, // below MIN_CADENCE_SAMPLES
+        };
+
+        let cadence = weighted_cadence_seconds(&row);
+        assert_eq!(cadence, None);
     }
 
     #[test]
@@ -555,7 +587,10 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[sqlx::test]
-    async fn test_read_feed_cadence_seconds_ignores_inferred_published_at(pool: SqlitePool) {
+    async fn test_read_feed_cadence_seconds_prefers_published_over_inserted(pool: SqlitePool) {
+        // Scenario: feed was just subscribed to, so inserted_at values are
+        // close together (bulk ingest), but published_at values reflect the
+        // real publishing cadence.
         let feed = upsert_feed_by_url(&pool, "https://example.com/cadence.xml")
             .await
             .unwrap();
@@ -587,29 +622,30 @@ mod tests {
             .await
             .unwrap();
 
+        // Bulk-ingested: all inserted_at values within 2 seconds (< 60s threshold).
         let inserted_1 = DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
-        let inserted_2 = DateTime::parse_from_rfc3339("2024-01-01T00:05:00Z")
+        let inserted_2 = DateTime::parse_from_rfc3339("2024-01-01T00:00:01Z")
             .unwrap()
             .with_timezone(&Utc);
-        let inserted_3 = DateTime::parse_from_rfc3339("2024-01-01T00:10:00Z")
+        let inserted_3 = DateTime::parse_from_rfc3339("2024-01-01T00:00:02Z")
             .unwrap()
             .with_timezone(&Utc);
 
-        let published_1 = DateTime::parse_from_rfc3339("2023-12-31T23:43:20Z")
+        // Real published_at cadence: 2 hours apart.
+        let published_1 = DateTime::parse_from_rfc3339("2023-12-31T20:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
-        let published_2 = DateTime::parse_from_rfc3339("2023-12-31T23:44:20Z")
+        let published_2 = DateTime::parse_from_rfc3339("2023-12-31T22:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let published_3 = DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
 
         sqlx::query!(
-            r#"
-            UPDATE feed_items
-            SET inserted_at = $1
-            WHERE id = $2
-            "#,
+            r#"UPDATE feed_items SET inserted_at = $1 WHERE id = $2"#,
             inserted_1,
             item1.id,
         )
@@ -617,11 +653,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query!(
-            r#"
-            UPDATE feed_items
-            SET inserted_at = $1
-            WHERE id = $2
-            "#,
+            r#"UPDATE feed_items SET inserted_at = $1 WHERE id = $2"#,
             inserted_2,
             item2.id,
         )
@@ -629,11 +661,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query!(
-            r#"
-            UPDATE feed_items
-            SET inserted_at = $1
-            WHERE id = $2
-            "#,
+            r#"UPDATE feed_items SET inserted_at = $1 WHERE id = $2"#,
             inserted_3,
             item3.id,
         )
@@ -642,11 +670,7 @@ mod tests {
         .unwrap();
 
         sqlx::query!(
-            r#"
-            UPDATE feed_item_details
-            SET published_at = $1
-            WHERE feed_item_id = $2
-            "#,
+            r#"UPDATE feed_item_details SET published_at = $1 WHERE feed_item_id = $2"#,
             published_1,
             item1.id,
         )
@@ -654,11 +678,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query!(
-            r#"
-            UPDATE feed_item_details
-            SET published_at = $1
-            WHERE feed_item_id = $2
-            "#,
+            r#"UPDATE feed_item_details SET published_at = $1 WHERE feed_item_id = $2"#,
             published_2,
             item2.id,
         )
@@ -666,12 +686,8 @@ mod tests {
         .await
         .unwrap();
         sqlx::query!(
-            r#"
-            UPDATE feed_item_details
-            SET published_at = $1
-            WHERE feed_item_id = $2
-            "#,
-            inserted_3,
+            r#"UPDATE feed_item_details SET published_at = $1 WHERE feed_item_id = $2"#,
+            published_3,
             item3.id,
         )
         .execute(&pool)
@@ -679,7 +695,84 @@ mod tests {
         .unwrap();
 
         let cadence = read_feed_cadence_seconds(&pool, feed.id).await.unwrap();
-        assert_eq!(cadence, Some(220));
+        // inserted_diffs: 1s, 1s — both < 60s, so 0 qualifying samples.
+        // published_diffs: 7200s, 7200s — both >= 60s, so avg = 7200.
+        // Published data is preferred and sufficient (2 samples), so cadence = 7200.
+        assert_eq!(cadence, Some(7200));
+    }
+
+    #[sqlx::test]
+    async fn test_read_feed_cadence_seconds_falls_back_to_inserted_diffs(pool: SqlitePool) {
+        // Scenario: feed items have no real published_at (all inferred to
+        // insertion time), so published_diffs are all < 60s. Falls back to
+        // inserted_diffs which have a real cadence.
+        let feed = upsert_feed_by_url(&pool, "https://example.com/cadence-fallback.xml")
+            .await
+            .unwrap();
+
+        let item1 = insert_feed_item(&pool, feed.id, "fb-1", "One", "https://example.com/fb/1")
+            .await
+            .unwrap();
+        let item2 = insert_feed_item(&pool, feed.id, "fb-2", "Two", "https://example.com/fb/2")
+            .await
+            .unwrap();
+        let item3 = insert_feed_item(&pool, feed.id, "fb-3", "Three", "https://example.com/fb/3")
+            .await
+            .unwrap();
+
+        // Inserted at 10-minute intervals (real polling cadence).
+        let inserted_1 = DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let inserted_2 = DateTime::parse_from_rfc3339("2024-01-01T00:10:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let inserted_3 = DateTime::parse_from_rfc3339("2024-01-01T00:20:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        sqlx::query!(
+            r#"UPDATE feed_items SET inserted_at = $1 WHERE id = $2"#,
+            inserted_1,
+            item1.id,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query!(
+            r#"UPDATE feed_items SET inserted_at = $1 WHERE id = $2"#,
+            inserted_2,
+            item2.id,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query!(
+            r#"UPDATE feed_items SET inserted_at = $1 WHERE id = $2"#,
+            inserted_3,
+            item3.id,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Published_at = inserted_at (inferred, no real publication date).
+        // This means published_diffs = inserted_diffs = 600s, which IS >= 60s.
+        // Both signals have 2 samples, but published is preferred.
+        insert_feed_item_detail(&pool, item1.id, "", "", "", inserted_1)
+            .await
+            .unwrap();
+        insert_feed_item_detail(&pool, item2.id, "", "", "", inserted_2)
+            .await
+            .unwrap();
+        insert_feed_item_detail(&pool, item3.id, "", "", "", inserted_3)
+            .await
+            .unwrap();
+
+        let cadence = read_feed_cadence_seconds(&pool, feed.id).await.unwrap();
+        // Both inserted_diffs and published_diffs average 600s.
+        // Published is preferred: cadence = 600.
+        assert_eq!(cadence, Some(600));
     }
 
     #[sqlx::test]
