@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "\n        WITH inserted_diffs AS (\n            SELECT CAST(\n                strftime('%s', inserted_at)\n                - strftime('%s', LAG(inserted_at) OVER (ORDER BY inserted_at ASC, id ASC))\n                AS REAL\n            ) AS diff_seconds\n            FROM feed_items\n            WHERE feed_id = $1\n        ),\n        published_diffs AS (\n            SELECT CAST(\n                strftime('%s', d.published_at)\n                - strftime('%s', LAG(d.published_at) OVER (ORDER BY d.published_at ASC, d.id ASC))\n                AS REAL\n            ) AS diff_seconds\n            FROM feed_items f\n            JOIN feed_item_details d ON d.feed_item_id = f.id\n            WHERE f.feed_id = $1\n        ),\n        inserted_filtered AS (\n            SELECT diff_seconds, ROW_NUMBER() OVER (ORDER BY diff_seconds) AS rn,\n                   COUNT(*) OVER () AS total\n            FROM inserted_diffs\n            WHERE diff_seconds >= 60\n        ),\n        published_filtered AS (\n            SELECT diff_seconds, ROW_NUMBER() OVER (ORDER BY diff_seconds) AS rn,\n                   COUNT(*) OVER () AS total\n            FROM published_diffs\n            WHERE diff_seconds >= 60\n        )\n        SELECT\n            (SELECT AVG(diff_seconds) FROM inserted_filtered\n             WHERE rn IN (total / 2, total / 2 + 1)) as \"median_inserted_seconds?: f64\",\n            (SELECT AVG(diff_seconds) FROM published_filtered\n             WHERE rn IN (total / 2, total / 2 + 1)) as \"median_published_seconds?: f64\",\n            (SELECT COALESCE(MAX(total), 0) FROM inserted_filtered) as \"inserted_samples!: i64\",\n            (SELECT COALESCE(MAX(total), 0) FROM published_filtered) as \"published_samples!: i64\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "name": "median_inserted_seconds?: f64",
+        "ordinal": 0,
+        "type_info": "Null"
+      },
+      {
+        "name": "median_published_seconds?: f64",
+        "ordinal": 1,
+        "type_info": "Null"
+      },
+      {
+        "name": "inserted_samples!: i64",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "published_samples!: i64",
+        "ordinal": 3,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "b0109153427ec50f73a02b75c0a809e9ab0fdf30819d091fdf87ccc957d1df0e"
+}

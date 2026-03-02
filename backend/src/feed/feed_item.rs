@@ -39,9 +39,9 @@ pub struct FeedItemDetail {
     pub published_at: DateTime<Utc>,
 }
 
-struct FeedCadenceAverages {
-    avg_inserted_seconds: Option<f64>,
-    avg_published_seconds: Option<f64>,
+struct FeedCadenceStats {
+    median_inserted_seconds: Option<f64>,
+    median_published_seconds: Option<f64>,
     inserted_samples: i64,
     published_samples: i64,
 }
@@ -55,19 +55,19 @@ const MIN_CADENCE_SAMPLES: i64 = 2;
 /// preferred whenever we have enough samples.  Inserted-at diffs are only used
 /// as a fallback when published data is insufficient (e.g. the feed never
 /// provides a publication date).
-fn weighted_cadence_seconds(row: &FeedCadenceAverages) -> Option<i64> {
+fn cadence_seconds(row: &FeedCadenceStats) -> Option<i64> {
     let has_published =
-        row.published_samples >= MIN_CADENCE_SAMPLES && row.avg_published_seconds.is_some();
+        row.published_samples >= MIN_CADENCE_SAMPLES && row.median_published_seconds.is_some();
     let has_inserted =
-        row.inserted_samples >= MIN_CADENCE_SAMPLES && row.avg_inserted_seconds.is_some();
+        row.inserted_samples >= MIN_CADENCE_SAMPLES && row.median_inserted_seconds.is_some();
 
     if has_published {
         // Published cadence is the most reliable signal — use it directly.
-        Some(row.avg_published_seconds.unwrap().round() as i64)
+        Some(row.median_published_seconds.unwrap().round() as i64)
     } else if has_inserted {
         // Fallback: use inserted-at cadence (already filtered for bulk-ingest
         // noise in the SQL query via a minimum diff threshold).
-        Some(row.avg_inserted_seconds.unwrap().round() as i64)
+        Some(row.median_inserted_seconds.unwrap().round() as i64)
     } else {
         None
     }
@@ -180,7 +180,7 @@ pub async fn read_feed_items_by_feed(pool: &SqlitePool, feed_id: i64) -> Result<
 
 pub async fn read_feed_cadence_seconds(pool: &SqlitePool, feed_id: i64) -> Result<Option<i64>> {
     let row = sqlx::query_as!(
-        FeedCadenceAverages,
+        FeedCadenceStats,
         r#"
         WITH inserted_diffs AS (
             SELECT CAST(
@@ -200,20 +200,34 @@ pub async fn read_feed_cadence_seconds(pool: &SqlitePool, feed_id: i64) -> Resul
             FROM feed_items f
             JOIN feed_item_details d ON d.feed_item_id = f.id
             WHERE f.feed_id = $1
+        ),
+        inserted_filtered AS (
+            SELECT diff_seconds, ROW_NUMBER() OVER (ORDER BY diff_seconds) AS rn,
+                   COUNT(*) OVER () AS total
+            FROM inserted_diffs
+            WHERE diff_seconds >= 60
+        ),
+        published_filtered AS (
+            SELECT diff_seconds, ROW_NUMBER() OVER (ORDER BY diff_seconds) AS rn,
+                   COUNT(*) OVER () AS total
+            FROM published_diffs
+            WHERE diff_seconds >= 60
         )
         SELECT
-            (SELECT AVG(diff_seconds) FROM inserted_diffs WHERE diff_seconds >= 60) as "avg_inserted_seconds?: f64",
-            (SELECT AVG(diff_seconds) FROM published_diffs WHERE diff_seconds >= 60) as "avg_published_seconds?: f64",
-            (SELECT COUNT(*) FROM inserted_diffs WHERE diff_seconds >= 60) as "inserted_samples!: i64",
-            (SELECT COUNT(*) FROM published_diffs WHERE diff_seconds >= 60) as "published_samples!: i64"
+            (SELECT AVG(diff_seconds) FROM inserted_filtered
+             WHERE rn IN (total / 2, total / 2 + 1)) as "median_inserted_seconds?: f64",
+            (SELECT AVG(diff_seconds) FROM published_filtered
+             WHERE rn IN (total / 2, total / 2 + 1)) as "median_published_seconds?: f64",
+            (SELECT COALESCE(MAX(total), 0) FROM inserted_filtered) as "inserted_samples!: i64",
+            (SELECT COALESCE(MAX(total), 0) FROM published_filtered) as "published_samples!: i64"
         "#,
         feed_id,
     )
     .fetch_one(pool)
     .await
-    .with_context(|| format!("failed to read feed cadence averages for feed_id={feed_id}"))?;
+    .with_context(|| format!("failed to read feed cadence stats for feed_id={feed_id}"))?;
 
-    Ok(weighted_cadence_seconds(&row))
+    Ok(cadence_seconds(&row))
 }
 
 pub async fn read_latest_feed_items(pool: &SqlitePool, limit: i64) -> Result<Vec<FeedItem>> {
@@ -530,55 +544,55 @@ mod tests {
     use crate::feed::feed_subscription::upsert_feed_by_url;
 
     #[test]
-    fn test_weighted_cadence_seconds_prefers_published_when_sufficient() {
-        let row = FeedCadenceAverages {
-            avg_inserted_seconds: Some(3_600.0),
-            avg_published_seconds: Some(300.0),
+    fn test_cadence_seconds_prefers_published_when_sufficient() {
+        let row = FeedCadenceStats {
+            median_inserted_seconds: Some(3_600.0),
+            median_published_seconds: Some(300.0),
             inserted_samples: 2,
             published_samples: 18,
         };
 
-        // published_samples >= MIN_CADENCE_SAMPLES, so published average wins
-        let cadence = weighted_cadence_seconds(&row);
+        // published_samples >= MIN_CADENCE_SAMPLES, so published median wins
+        let cadence = cadence_seconds(&row);
         assert_eq!(cadence, Some(300));
     }
 
     #[test]
-    fn test_weighted_cadence_seconds_falls_back_to_inserted() {
-        let row = FeedCadenceAverages {
-            avg_inserted_seconds: Some(3_600.0),
-            avg_published_seconds: None,
+    fn test_cadence_seconds_falls_back_to_inserted() {
+        let row = FeedCadenceStats {
+            median_inserted_seconds: Some(3_600.0),
+            median_published_seconds: None,
             inserted_samples: 5,
             published_samples: 0,
         };
 
-        let cadence = weighted_cadence_seconds(&row);
+        let cadence = cadence_seconds(&row);
         assert_eq!(cadence, Some(3_600));
     }
 
     #[test]
-    fn test_weighted_cadence_seconds_ignores_insufficient_samples() {
-        let row = FeedCadenceAverages {
-            avg_inserted_seconds: Some(100.0),
-            avg_published_seconds: Some(200.0),
+    fn test_cadence_seconds_ignores_insufficient_samples() {
+        let row = FeedCadenceStats {
+            median_inserted_seconds: Some(100.0),
+            median_published_seconds: Some(200.0),
             inserted_samples: 1,  // below MIN_CADENCE_SAMPLES
             published_samples: 1, // below MIN_CADENCE_SAMPLES
         };
 
-        let cadence = weighted_cadence_seconds(&row);
+        let cadence = cadence_seconds(&row);
         assert_eq!(cadence, None);
     }
 
     #[test]
-    fn test_weighted_cadence_seconds_handles_empty_samples() {
-        let row = FeedCadenceAverages {
-            avg_inserted_seconds: None,
-            avg_published_seconds: None,
+    fn test_cadence_seconds_handles_empty_samples() {
+        let row = FeedCadenceStats {
+            median_inserted_seconds: None,
+            median_published_seconds: None,
             inserted_samples: 0,
             published_samples: 0,
         };
 
-        let cadence = weighted_cadence_seconds(&row);
+        let cadence = cadence_seconds(&row);
         assert_eq!(cadence, None);
     }
 
