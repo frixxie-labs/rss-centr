@@ -69,24 +69,24 @@ export function FeedItemCard(
       href={item.url}
       target="_blank"
       rel="noopener noreferrer"
-      class={`block px-4 py-3 border-b border-neutral-800 hover:bg-neutral-900 transition-colors ${
-        isNew ? "bg-neutral-900/50 border-l-2 border-l-amber-500" : ""
+      class={`block px-4 py-3 border-b border-sumi-ink3 hover:bg-sumi-ink2 transition-colors ${
+        isNew ? "bg-wave-blue1/50 border-l-2 border-l-carp-yellow" : ""
       }`}
     >
-      <h3 class="text-sm font-medium text-neutral-100 leading-snug">
+      <h3 class="text-sm font-medium text-fuji-white leading-snug">
         {item.title}
       </h3>
       {preview && (
-        <p class="mt-2 line-clamp-3 text-sm leading-relaxed text-neutral-400">
+        <p class="mt-2 line-clamp-3 text-sm leading-relaxed text-fuji-gray">
           {preview}
         </p>
       )}
-      <div class="mt-1 flex items-center gap-2 text-xs text-neutral-500">
+      <div class="mt-1 flex items-center gap-2 text-xs text-katana-gray">
         <span>{hostname(item.url)}</span>
         {item.author && (
           <>
             <span>&middot;</span>
-            <span class="text-neutral-400">{item.author}</span>
+            <span class="text-fuji-gray">{item.author}</span>
           </>
         )}
         {item.published_at && (
@@ -95,7 +95,7 @@ export function FeedItemCard(
             <time
               datetime={item.published_at}
               title={formatAbsoluteDate(item.published_at)}
-              class="text-neutral-400"
+              class="text-fuji-gray"
             >
               published {timeAgo(item.published_at, nowMs)}
             </time>
@@ -104,7 +104,7 @@ export function FeedItemCard(
         {feedName && (
           <>
             <span>&middot;</span>
-            <span class="text-neutral-400">{feedName}</span>
+            <span class="text-fuji-gray">{feedName}</span>
           </>
         )}
         <span>&middot;</span>

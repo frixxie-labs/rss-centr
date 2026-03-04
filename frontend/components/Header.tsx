@@ -6,9 +6,9 @@ interface HeaderProps {
 
 export function Header({ children }: HeaderProps) {
   return (
-    <header class="border-b border-neutral-800 px-4 py-3 flex items-center justify-between">
+    <header class="border-b border-sumi-ink3 px-4 py-3 flex items-center justify-between">
       <div class="flex items-center gap-3">
-        <h1 class="text-lg font-semibold tracking-tight text-neutral-100">
+        <h1 class="text-lg font-semibold tracking-tight text-fuji-white">
           RSS Centr
         </h1>
       </div>

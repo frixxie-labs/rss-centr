@@ -178,8 +178,8 @@ export default function FeedManagement(
 
   return (
     <div class="mx-4 my-5 space-y-4">
-      <section class="rounded-lg border border-neutral-800 bg-neutral-900/60 p-4 space-y-3">
-        <h2 class="text-sm font-semibold text-neutral-100">Add feed</h2>
+      <section class="rounded-lg border border-sumi-ink3 bg-sumi-ink2/60 p-4 space-y-3">
+        <h2 class="text-sm font-semibold text-fuji-white">Add feed</h2>
         <form
           class="flex flex-col gap-2 sm:flex-row"
           onSubmit={(event) => {
@@ -194,7 +194,7 @@ export default function FeedManagement(
               const target = event.currentTarget as HTMLInputElement;
               urlInput.value = target.value;
             }}
-            class="flex-1 rounded-md border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-neutral-200 outline-none transition focus:border-amber-500"
+            class="flex-1 rounded-md border border-sumi-ink4 bg-sumi-ink0 px-3 py-2 text-sm text-old-white outline-none transition focus:border-carp-yellow"
             placeholder="https://example.com/feed.xml"
             required
           />
@@ -209,20 +209,20 @@ export default function FeedManagement(
       </section>
 
       {errorMessage.value && (
-        <div class="rounded-md border border-red-900/70 bg-red-950/40 px-3 py-2 text-sm text-red-200">
+        <div class="rounded-md border border-autumn-red/70 bg-winter-red/40 px-3 py-2 text-sm text-wave-red">
           {errorMessage.value}
         </div>
       )}
 
       {successMessage.value && (
-        <div class="rounded-md border border-emerald-900/70 bg-emerald-950/40 px-3 py-2 text-sm text-emerald-200">
+        <div class="rounded-md border border-autumn-green/70 bg-winter-green/40 px-3 py-2 text-sm text-spring-green">
           {successMessage.value}
         </div>
       )}
 
-      <section class="rounded-lg border border-neutral-800 bg-neutral-900/60">
-        <div class="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
-          <h2 class="text-sm font-semibold text-neutral-100">
+      <section class="rounded-lg border border-sumi-ink3 bg-sumi-ink2/60">
+        <div class="flex items-center justify-between border-b border-sumi-ink3 px-4 py-3">
+          <h2 class="text-sm font-semibold text-fuji-white">
             Feeds ({feeds.value.length})
           </h2>
           <Button
@@ -239,33 +239,33 @@ export default function FeedManagement(
 
         {feeds.value.length === 0
           ? (
-            <div class="px-4 py-8 text-sm text-neutral-500">
+            <div class="px-4 py-8 text-sm text-katana-gray">
               No feeds yet. Add one above to start collecting items.
             </div>
           )
           : (
-            <div class="divide-y divide-neutral-800">
+            <div class="divide-y divide-sumi-ink3">
               {feeds.value.map((feed) => {
                 const isBusy = busyIds.value.has(feed.id);
                 return (
                   <article key={feed.id} class="px-4 py-4 space-y-3">
                     <div class="flex flex-wrap items-center gap-2">
-                      <h3 class="text-sm font-semibold text-neutral-100">
+                      <h3 class="text-sm font-semibold text-fuji-white">
                         {feedName(feed)}
                       </h3>
                       <span
                         class={`rounded px-2 py-0.5 text-xs font-medium ${
                           feed.is_enabled
-                            ? "bg-emerald-950 text-emerald-300"
-                            : "bg-neutral-800 text-neutral-300"
+                            ? "bg-winter-green text-spring-green"
+                            : "bg-sumi-ink3 text-old-white"
                         }`}
                       >
                         {feed.is_enabled ? "Enabled" : "Paused"}
                       </span>
                     </div>
 
-                    <div class="space-y-1 text-xs text-neutral-400">
-                      <p class="break-all text-neutral-300">{feed.url}</p>
+                    <div class="space-y-1 text-xs text-fuji-gray">
+                      <p class="break-all text-old-white">{feed.url}</p>
                       <p>
                         Last checked: {formatDateTime(feed.last_checked_at)}
                         {" "}

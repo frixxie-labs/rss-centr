@@ -1,1 +1,47 @@
 @import "tailwindcss";
+
+@theme {
+  /* Kanagawa Wave — Background / Ink */
+  --color-sumi-ink0: #16161d;
+  --color-sumi-ink1: #1f1f28;
+  --color-sumi-ink2: #2a2a37;
+  --color-sumi-ink3: #363646;
+  --color-sumi-ink4: #54546d;
+
+  /* Kanagawa Wave — Selection / Popup */
+  --color-wave-blue1: #223249;
+  --color-wave-blue2: #2d4f67;
+
+  /* Kanagawa Wave — Diff backgrounds */
+  --color-winter-green: #2b3328;
+  --color-winter-red: #43242b;
+  --color-winter-yellow: #49443c;
+
+  /* Kanagawa Wave — Foreground */
+  --color-fuji-white: #dcd7ba;
+  --color-old-white: #c8c093;
+  --color-fuji-gray: #727169;
+
+  /* Kanagawa Wave — Accent / Syntax */
+  --color-crystal-blue: #7e9cd8;
+  --color-spring-violet1: #938aa9;
+  --color-spring-violet2: #9cabca;
+  --color-oni-violet: #957fb8;
+  --color-spring-blue: #7fb4ca;
+  --color-spring-green: #98bb6c;
+  --color-carp-yellow: #e6c384;
+  --color-autumn-yellow: #dca561;
+  --color-boat-yellow2: #c0a36e;
+  --color-ronin-yellow: #ff9e3b;
+  --color-surimi-orange: #ffa066;
+  --color-sakura-pink: #d27e99;
+  --color-wave-red: #e46876;
+  --color-peach-red: #ff5d62;
+  --color-samurai-red: #e82424;
+  --color-autumn-red: #c34043;
+  --color-autumn-green: #76946a;
+  --color-wave-aqua1: #6a9589;
+  --color-wave-aqua2: #7aa89f;
+  --color-dragon-blue: #658594;
+  --color-katana-gray: #717c7c;
+}

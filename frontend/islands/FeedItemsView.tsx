@@ -63,10 +63,10 @@ export default function FeedItemsView(
 
   return (
     <div>
-      <div class="mx-4 my-5 rounded-lg border border-neutral-800 bg-neutral-900/60 p-4 space-y-3">
+      <div class="mx-4 my-5 rounded-lg border border-sumi-ink3 bg-sumi-ink2/60 p-4 space-y-3">
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <h2 class="text-sm font-semibold text-neutral-100">Feed items</h2>
-          <span class="text-xs text-neutral-500">
+          <h2 class="text-sm font-semibold text-fuji-white">Feed items</h2>
+          <span class="text-xs text-katana-gray">
             {visibleItems.length} shown
           </span>
         </div>
@@ -78,7 +78,7 @@ export default function FeedItemsView(
               const target = event.currentTarget as HTMLInputElement;
               query.value = target.value;
             }}
-            class="rounded-md border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-neutral-200 outline-none transition focus:border-amber-500"
+            class="rounded-md border border-sumi-ink4 bg-sumi-ink0 px-3 py-2 text-sm text-old-white outline-none transition focus:border-carp-yellow"
             placeholder="Filter by title, summary, author, URL, or feed"
           />
           <select
@@ -87,7 +87,7 @@ export default function FeedItemsView(
               const target = event.currentTarget as HTMLSelectElement;
               selectedFeedId.value = target.value;
             }}
-            class="rounded-md border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-neutral-200 outline-none transition focus:border-amber-500"
+            class="rounded-md border border-sumi-ink4 bg-sumi-ink0 px-3 py-2 text-sm text-old-white outline-none transition focus:border-carp-yellow"
           >
             <option value="all">All feeds</option>
             {feedOptions.map((feed) => (
@@ -97,7 +97,7 @@ export default function FeedItemsView(
         </div>
       </div>
 
-      <div class="border-y border-neutral-800">
+      <div class="border-y border-sumi-ink3">
         {visibleItems.map((item) => (
           <FeedItemCard
             key={item.id}
@@ -107,7 +107,7 @@ export default function FeedItemsView(
           />
         ))}
         {visibleItems.length === 0 && (
-          <div class="px-4 py-12 text-center text-neutral-500">
+          <div class="px-4 py-12 text-center text-katana-gray">
             No items match the current filters.
           </div>
         )}
