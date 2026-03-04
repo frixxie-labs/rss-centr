@@ -186,19 +186,19 @@ export default function Timeline(
 
   return (
     <div>
-      <div class="px-4 py-2 border-b border-neutral-800 flex items-center justify-between text-xs text-neutral-500">
+      <div class="px-4 py-2 border-b border-sumi-ink3 flex items-center justify-between text-xs text-katana-gray">
         <span>{items.value.length} items</span>
         <div class="flex items-center gap-2">
           {replayCursor.value && (
-            <span class="text-neutral-600">cursor {replayCursor.value}</span>
+            <span class="text-sumi-ink4">cursor {replayCursor.value}</span>
           )}
           {newItemIds.value.size > 0 && (
-            <span class="text-amber-500">{newItemIds.value.size} new</span>
+            <span class="text-ronin-yellow">{newItemIds.value.size} new</span>
           )}
           <span class="flex items-center gap-1">
             <span
               class={`inline-block h-1.5 w-1.5 rounded-full transition-transform duration-300 ${
-                connected.value ? "bg-emerald-500" : "bg-neutral-600"
+                connected.value ? "bg-spring-green" : "bg-sumi-ink4"
               } ${keepAlivePulse.value ? "scale-150" : "scale-100"}`}
             />
             {connected.value ? "live" : "connecting..."}
@@ -216,7 +216,7 @@ export default function Timeline(
           />
         ))}
         {items.value.length === 0 && (
-          <div class="px-4 py-12 text-center text-neutral-600">
+          <div class="px-4 py-12 text-center text-sumi-ink4">
             No items yet. Add some feeds to get started.
           </div>
         )}

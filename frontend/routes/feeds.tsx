@@ -33,19 +33,19 @@ export default define.page<typeof handler>(function FeedsPage({ data }) {
       <Header>
         <a
           href="/"
-          class="rounded-md px-2 py-1 text-sm text-neutral-400 transition hover:bg-neutral-800 hover:text-neutral-100"
+          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
         >
           Timeline
         </a>
         <a
           href="/items"
-          class="rounded-md px-2 py-1 text-sm text-neutral-400 transition hover:bg-neutral-800 hover:text-neutral-100"
+          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
         >
           Items
         </a>
         <a
           href="/feeds"
-          class="rounded-md bg-neutral-800 px-2 py-1 text-sm text-neutral-100"
+          class="rounded-md bg-sumi-ink3 px-2 py-1 text-sm text-fuji-white"
         >
           Feeds
         </a>

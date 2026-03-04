@@ -14,12 +14,11 @@ export function Button(
 ) {
   const base = "px-3 py-1.5 text-sm rounded-md transition-colors font-medium";
   const variants = {
-    primary: "bg-amber-600 text-white hover:bg-amber-500",
-    secondary:
-      "border border-neutral-700 text-neutral-300 hover:bg-neutral-800",
-    ghost: "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800",
+    primary: "bg-autumn-yellow text-sumi-ink1 hover:bg-carp-yellow",
+    secondary: "border border-sumi-ink4 text-old-white hover:bg-sumi-ink3",
+    ghost: "text-fuji-gray hover:text-old-white hover:bg-sumi-ink3",
     danger:
-      "border border-red-900/80 text-red-300 hover:bg-red-950/60 hover:text-red-200",
+      "border border-autumn-red/80 text-wave-red hover:bg-winter-red hover:text-peach-red",
   };
 
   return (
