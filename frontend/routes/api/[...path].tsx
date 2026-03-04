@@ -14,7 +14,7 @@ const HOP_BY_HOP_HEADERS = new Set([
   "upgrade",
 ]);
 
-function filterProxyHeaders(headers: Headers): Headers {
+export function filterProxyHeaders(headers: Headers): Headers {
   const filtered = new Headers();
   for (const [key, value] of headers.entries()) {
     if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase())) {
@@ -24,7 +24,7 @@ function filterProxyHeaders(headers: Headers): Headers {
   return filtered;
 }
 
-function forwardRequestHeaders(req: Request): Headers {
+export function forwardRequestHeaders(req: Request): Headers {
   const forwarded = new Headers();
   const allowList = [
     "accept",

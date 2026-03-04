@@ -34,6 +34,8 @@ cargo clippy --manifest-path backend/Cargo.toml --all-targets --all-features -- 
 cargo test --manifest-path backend/Cargo.toml
 ```
 
+A `justfile` in `backend/` provides shortcuts: `just check`, `just lint`, `just test`, `just build`, `just prepare`.
+
 ### Running a single test
 
 ```bash
@@ -60,6 +62,8 @@ export DATABASE_URL='sqlite:dev.db'
 
 Migrations live in `backend/migrations/` and are auto-applied on server startup. Tests using `#[sqlx::test]` get an isolated DB per test with migrations applied.
 
+The `backend/.sqlx/` directory contains cached query metadata for offline compilation (used in Docker builds with `SQLX_OFFLINE=true`). After changing SQL queries, run `cargo sqlx prepare --workspace` from `backend/` to regenerate these files.
+
 ## Frontend Commands (Deno / Fresh 2)
 
 Run from `frontend/`:
@@ -71,9 +75,22 @@ deno task start    # serve built app (deno serve -A _fresh/server.js)
 deno task check    # deno fmt --check && deno lint && deno check
 ```
 
+### Running frontend tests
+
+```bash
+# All tests
+deno test frontend/
+
+# Single test file
+deno test frontend/components/FeedItemCard_test.ts
+
+# Filter by test name
+deno test frontend/ --filter "timeAgo"
+```
+
 The frontend proxies `/api/*` requests to `http://localhost:8080` (the backend). `BACKEND_URL` is defined in `frontend/utils.ts`.
 
-## Code Style — Backend (Rust)
+## Code Style -- Backend (Rust)
 
 Prefer following existing patterns over introducing new ones.
 
@@ -91,7 +108,7 @@ Prefer following existing patterns over introducing new ones.
 ### Types and Data Modeling
 
 - `i64` for SQLite integer PKs (matches existing schema).
-- DB row models derive `sqlx::FromRow`; add `serde::{Serialize, Deserialize}` for API payloads.
+- DB row models derive `sqlx::FromRow`; add `serde::{Serialize, Deserialize}` and `utoipa::ToSchema` for API payloads.
 - `chrono::DateTime<Utc>` for timestamps.
 
 ### Naming
@@ -118,14 +135,22 @@ Prefer following existing patterns over introducing new ones.
 - Keep SQL close to the function that uses it; no string concatenation for SQL.
 - Always bind parameters (no string interpolation into SQL).
 - Check `rows_affected()` and convert zero rows to a domain error.
+- Use column type annotations (`"id!: i64"`) for SQLite type coercion when needed.
+
+### Handlers
+
+- Handlers return `Result<Json<T>, HandlerError>`.
+- Annotate with `#[instrument]` for tracing and `#[utoipa::path(...)]` for OpenAPI docs.
+- `HandlerError` wraps HTTP status + message; see `handlers/error.rs`.
 
 ### Testing
 
 - Unit tests go in `#[cfg(test)] mod tests { ... }` alongside the code.
 - Use `#[sqlx::test]` for DB tests (isolated migrated DB per test).
 - Prefer deterministic tests. The test in `feed.rs` hits real RSS feeds and may be flaky.
+- `unwrap()` is acceptable inside tests.
 
-## Code Style — Frontend (TypeScript / Deno Fresh)
+## Code Style -- Frontend (TypeScript / Deno Fresh)
 
 ### Formatting & Linting
 
@@ -136,10 +161,19 @@ Prefer following existing patterns over introducing new ones.
 ### Conventions
 
 - Use TypeScript `interface` for shared types (see `types.ts`).
-- Preact components in `components/` (server-rendered), interactive islands in `islands/`.
+- Use explicit `type` imports: `import type { FeedItem } from "../types.ts"`.
 - Import paths use the `@/` alias for project-root-relative imports (configured in `deno.json`).
+- Preact components in `components/` (server-rendered), interactive islands in `islands/`.
+- Islands use `useSignal` from `@preact/signals` for state management.
 - JSX uses precompiled mode with `preact` as the import source.
 - Tailwind CSS 4 for styling (via Vite plugin).
+
+### Testing
+
+- Test files are co-located with source: `FeedItemCard.tsx` / `FeedItemCard_test.ts`.
+- Use `Deno.test()` with `@std/assert` (`assertEquals`) and `@std/testing/mock`.
+- Export utility functions from components and test them separately.
+- Tests are pure logic tests -- no DOM rendering tests.
 
 ## Repo Hygiene
 

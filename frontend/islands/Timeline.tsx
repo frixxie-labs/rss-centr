@@ -6,7 +6,7 @@ import { getLogger } from "../logger.ts";
 import { fetchItemWithDetail } from "../api.ts";
 
 const log = getLogger("sse");
-const MAX_TIMELINE_ITEMS = 500;
+export const MAX_TIMELINE_ITEMS = 500;
 const LAST_EVENT_ID_STORAGE_KEY = "rss:last-event-id";
 
 interface TimelineProps {
@@ -15,18 +15,21 @@ interface TimelineProps {
   initialNowIso: string;
 }
 
-function effectiveDate(item: FeedItem): number {
+export function effectiveDate(item: FeedItem): number {
   return new Date(item.published_at ?? item.inserted_at).getTime();
 }
 
-function sortByNewest(items: FeedItem[]): FeedItem[] {
+export function sortByNewest(items: FeedItem[]): FeedItem[] {
   return [...items].sort((a, b) => {
     const dateDiff = effectiveDate(b) - effectiveDate(a);
     return dateDiff !== 0 ? dateDiff : b.id - a.id;
   });
 }
 
-function upsertByNewest(items: FeedItem[], nextItem: FeedItem): FeedItem[] {
+export function upsertByNewest(
+  items: FeedItem[],
+  nextItem: FeedItem,
+): FeedItem[] {
   const deduped = items.filter((item) => item.id !== nextItem.id);
   const nextDate = effectiveDate(nextItem);
 
