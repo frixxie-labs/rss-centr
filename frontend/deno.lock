@@ -11,12 +11,17 @@
     "jsr:@fresh/plugin-vite@*": "1.0.8",
     "jsr:@fresh/plugin-vite@1.0.8": "1.0.8",
     "jsr:@fresh/plugin-vite@^1.0.8": "1.0.8",
+    "jsr:@std/assert@^1.0.17": "1.0.19",
+    "jsr:@std/assert@^1.0.19": "1.0.19",
+    "jsr:@std/async@^1.1.0": "1.2.0",
     "jsr:@std/bytes@^1.0.6": "1.0.6",
+    "jsr:@std/data-structures@^1.0.10": "1.0.10",
     "jsr:@std/dotenv@~0.225.5": "0.225.6",
     "jsr:@std/encoding@^1.0.10": "1.0.10",
     "jsr:@std/fmt@^1.0.7": "1.0.9",
     "jsr:@std/fmt@^1.0.8": "1.0.9",
     "jsr:@std/fs@^1.0.19": "1.0.22",
+    "jsr:@std/fs@^1.0.22": "1.0.22",
     "jsr:@std/html@^1.0.5": "1.0.5",
     "jsr:@std/http@^1.0.21": "1.0.24",
     "jsr:@std/internal@^1.0.12": "1.0.12",
@@ -28,6 +33,7 @@
     "jsr:@std/path@^1.1.2": "1.1.4",
     "jsr:@std/path@^1.1.4": "1.1.4",
     "jsr:@std/semver@^1.0.6": "1.0.8",
+    "jsr:@std/testing@^1.0.17": "1.0.17",
     "jsr:@std/uuid@^1.0.9": "1.1.0",
     "npm:@babel/core@^7.28.0": "7.29.0",
     "npm:@babel/preset-react@^7.27.1": "7.28.5_@babel+core@7.29.0",
@@ -35,9 +41,9 @@
     "npm:@opentelemetry/api@^1.9.0": "1.9.0",
     "npm:@preact/signals@^2.2.1": "2.8.1_preact@10.28.4",
     "npm:@preact/signals@^2.8.1": "2.8.1_preact@10.28.4",
-    "npm:@prefresh/vite@^2.4.8": "2.4.11_preact@10.28.4_vite@7.3.1__@types+node@22.19.13__picomatch@4.0.3_@types+node@22.19.13",
-    "npm:@tailwindcss/vite@^4.2.1": "4.2.1_vite@7.3.1__@types+node@22.19.13__picomatch@4.0.3_@types+node@22.19.13",
-    "npm:@types/node@22": "22.19.13",
+    "npm:@prefresh/vite@^2.4.8": "2.4.11_preact@10.28.4_vite@7.3.1__@types+node@25.3.3_@types+node@25.3.3",
+    "npm:@tailwindcss/vite@^4.2.1": "4.2.1_vite@7.3.1__@types+node@25.3.3_@types+node@25.3.3",
+    "npm:@types/node@^25.3.3": "25.3.3",
     "npm:esbuild-wasm@~0.25.11": "0.25.12",
     "npm:esbuild@0.25.7": "0.25.7",
     "npm:esbuild@~0.25.5": "0.25.12",
@@ -47,8 +53,8 @@
     "npm:preact@^10.28.4": "10.28.4",
     "npm:rollup@^4.50.0": "4.57.1",
     "npm:tailwindcss@^4.2.1": "4.2.1",
-    "npm:vite@^7.1.4": "7.3.1_@types+node@22.19.13_picomatch@4.0.3",
-    "npm:vite@^7.3.1": "7.3.1_@types+node@22.19.13_picomatch@4.0.3"
+    "npm:vite@^7.1.4": "7.3.1_@types+node@25.3.3",
+    "npm:vite@^7.3.1": "7.3.1_@types+node@25.3.3"
   },
   "jsr": {
     "@deno/esbuild-plugin@1.2.1": {
@@ -75,7 +81,7 @@
         "jsr:@fresh/build-id",
         "jsr:@std/encoding",
         "jsr:@std/fmt@^1.0.8",
-        "jsr:@std/fs",
+        "jsr:@std/fs@^1.0.19",
         "jsr:@std/html",
         "jsr:@std/http",
         "jsr:@std/jsonc",
@@ -109,8 +115,20 @@
         "npm:vite@^7.1.4"
       ]
     },
+    "@std/assert@1.0.19": {
+      "integrity": "eaada96ee120cb980bc47e040f82814d786fe8162ecc53c91d8df60b8755991e",
+      "dependencies": [
+        "jsr:@std/internal"
+      ]
+    },
+    "@std/async@1.2.0": {
+      "integrity": "c059c6f6d95ca7cc012ae8e8d7164d1697113d54b0b679e4372b354b11c2dee5"
+    },
     "@std/bytes@1.0.6": {
       "integrity": "f6ac6adbd8ccd99314045f5703e23af0a68d7f7e58364b47d2c7f408aeb5820a"
+    },
+    "@std/data-structures@1.0.10": {
+      "integrity": "f574f86b0e07c69b9edc555fcc814b57d29258bad39fd5a34ba8a80ecf033cfe"
     },
     "@std/dotenv@0.225.6": {
       "integrity": "1d6f9db72f565bd26790fa034c26e45ecb260b5245417be76c2279e5734c421b"
@@ -159,6 +177,17 @@
     },
     "@std/semver@1.0.8": {
       "integrity": "dc830e8b8b6a380c895d53fbfd1258dc253704ca57bbe1629ac65fd7830179b7"
+    },
+    "@std/testing@1.0.17": {
+      "integrity": "87bdc2700fa98249d48a17cd72413352d3d3680dcfbdb64947fd0982d6bbf681",
+      "dependencies": [
+        "jsr:@std/assert@^1.0.17",
+        "jsr:@std/async",
+        "jsr:@std/data-structures",
+        "jsr:@std/fs@^1.0.22",
+        "jsr:@std/internal",
+        "jsr:@std/path@^1.1.4"
+      ]
     },
     "@std/uuid@1.1.0": {
       "integrity": "6268db2ccf172849c9be80763354ca305d49ef4af41fe995623d44fcc3f7457c",
@@ -794,7 +823,7 @@
     "@prefresh/utils@1.2.1": {
       "integrity": "sha512-vq/sIuN5nYfYzvyayXI4C2QkprfNaHUQ9ZX+3xLD8nL3rWyzpxOm1+K7RtMbhd+66QcaISViK7amjnheQ/4WZw=="
     },
-    "@prefresh/vite@2.4.11_preact@10.28.4_vite@7.3.1__@types+node@22.19.13__picomatch@4.0.3_@types+node@22.19.13": {
+    "@prefresh/vite@2.4.11_preact@10.28.4_vite@7.3.1__@types+node@25.3.3_@types+node@25.3.3": {
       "integrity": "sha512-/XjURQqdRiCG3NpMmWqE9kJwrg9IchIOWHzulCfqg2sRe/8oQ1g5De7xrk9lbqPIQLn7ntBkKdqWXIj4E9YXyg==",
       "dependencies": [
         "@babel/core",
@@ -1026,7 +1055,7 @@
         "@tailwindcss/oxide-win32-x64-msvc"
       ]
     },
-    "@tailwindcss/vite@4.2.1_vite@7.3.1__@types+node@22.19.13__picomatch@4.0.3_@types+node@22.19.13": {
+    "@tailwindcss/vite@4.2.1_vite@7.3.1__@types+node@25.3.3_@types+node@25.3.3": {
       "integrity": "sha512-TBf2sJjYeb28jD2U/OhwdW0bbOsxkWPwQ7SrqGf9sVcoYwZj7rkXljroBO9wKBut9XnmQLXanuDUeqQK0lGg/w==",
       "dependencies": [
         "@tailwindcss/node",
@@ -1038,8 +1067,8 @@
     "@types/estree@1.0.8": {
       "integrity": "sha512-dWHzHa2WqEXI/O1E9OjrocMTKJl2mSrEolh1Iomrv6U+JuNwaHXsXx9bLu5gG7BUWFIN0skIQJQ/L1rIex4X6w=="
     },
-    "@types/node@22.19.13": {
-      "integrity": "sha512-akNQMv0wW5uyRpD2v2IEyRSZiR+BeGuoB6L310EgGObO44HSMNT8z1xzio28V8qOrgYaopIDNA18YgdXd+qTiw==",
+    "@types/node@25.3.3": {
+      "integrity": "sha512-DpzbrH7wIcBaJibpKo9nnSQL0MTRdnWttGyE5haGwK86xgMOkFLp7vEyfQPGLOJh5wNYiJ3V9PmUMDhV9u8kkQ==",
       "dependencies": [
         "undici-types"
       ]
@@ -1405,8 +1434,8 @@
         "picomatch@4.0.3"
       ]
     },
-    "undici-types@6.21.0": {
-      "integrity": "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ=="
+    "undici-types@7.18.2": {
+      "integrity": "sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w=="
     },
     "update-browserslist-db@1.2.3_browserslist@4.28.1": {
       "integrity": "sha512-Js0m9cx+qOgDxo0eMiFGEueWztz+d4+M3rGlmKPT+T4IS/jP4ylw3Nwpu6cpTTP8R1MAC1kF4VbdLt3ARf209w==",
@@ -1417,7 +1446,7 @@
       ],
       "bin": true
     },
-    "vite@7.3.1_@types+node@22.19.13_picomatch@4.0.3": {
+    "vite@7.3.1_@types+node@25.3.3": {
       "integrity": "sha512-w+N7Hifpc3gRjZ63vYBXA56dvvRlNWRczTdmCBBa+CotUzAPf5b7YMdMR/8CQoeYE5LX3W4wj6RYTgonm1b9DA==",
       "dependencies": [
         "@types/node",
@@ -1444,9 +1473,11 @@
     "dependencies": [
       "jsr:@fresh/core@^2.2.0",
       "jsr:@fresh/plugin-vite@^1.0.8",
+      "jsr:@std/assert@^1.0.19",
+      "jsr:@std/testing@^1.0.17",
       "npm:@preact/signals@^2.8.1",
       "npm:@tailwindcss/vite@^4.2.1",
-      "npm:@types/node@22",
+      "npm:@types/node@^25.3.3",
       "npm:preact@^10.28.4",
       "npm:tailwindcss@^4.2.1",
       "npm:vite@^7.3.1"

@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use sqlx::SqlitePool;
 use std::{collections::HashSet, sync::Arc, time::Duration};
-use structopt::StructOpt;
+use clap::Parser;
 use tokio::{
     net::TcpListener,
     sync::{Mutex, broadcast, mpsc::channel},
@@ -57,24 +57,24 @@ impl From<LogLevel> for Level {
     }
 }
 
-#[derive(Debug, Clone, StructOpt)]
+#[derive(Debug, Clone, Parser)]
 pub struct Opts {
-    #[structopt(short, long, default_value = "0.0.0.0:8080")]
+    #[arg(short, long, default_value = "0.0.0.0:8080")]
     host: String,
 
-    #[structopt(short, long, env = "DATABASE_URL", default_value = "sqlite:dev.db")]
+    #[arg(short, long, env = "DATABASE_URL", default_value = "sqlite:dev.db")]
     db_url: String,
 
-    #[structopt(short, long, default_value = "info")]
+    #[arg(short, long, default_value = "info")]
     log_level: LogLevel,
 
-    #[structopt(long, default_value = "30")]
+    #[arg(long, default_value = "30")]
     scheduler_interval_seconds: u64,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let opts = Opts::from_args();
+    let opts = Opts::parse();
     let level: Level = opts.log_level.into();
     let subscriber = FmtSubscriber::builder().with_max_level(level).finish();
     tracing::subscriber::set_global_default(subscriber)

@@ -1,6 +1,6 @@
 import type { FeedItem } from "../types.ts";
 
-function timeAgo(dateStr: string, nowMs: number): string {
+export function timeAgo(dateStr: string, nowMs: number): string {
   const date = new Date(dateStr);
   const seconds = Math.floor((nowMs - date.getTime()) / 1000);
 
@@ -14,7 +14,7 @@ function timeAgo(dateStr: string, nowMs: number): string {
   return date.toLocaleDateString();
 }
 
-function hostname(url: string): string {
+export function hostname(url: string): string {
   try {
     return new URL(url).hostname.replace(/^www\./, "");
   } catch {
@@ -22,11 +22,11 @@ function hostname(url: string): string {
   }
 }
 
-function compactText(value: string): string {
+export function compactText(value: string): string {
   return value.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function previewText(item: FeedItem): string {
+export function previewText(item: FeedItem): string {
   const summary = item.summary ? compactText(item.summary) : "";
   if (summary) {
     return summary;
@@ -40,7 +40,7 @@ function previewText(item: FeedItem): string {
   return "";
 }
 
-function truncate(value: string, maxLength: number): string {
+export function truncate(value: string, maxLength: number): string {
   if (value.length <= maxLength) {
     return value;
   }

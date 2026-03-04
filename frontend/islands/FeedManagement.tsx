@@ -14,11 +14,11 @@ interface FeedManagementProps {
   initialLoadError: boolean;
 }
 
-function sortByNewestId(feeds: FeedSubscription[]): FeedSubscription[] {
+export function sortByNewestId(feeds: FeedSubscription[]): FeedSubscription[] {
   return [...feeds].sort((a, b) => b.id - a.id);
 }
 
-function formatDateTime(value: string | null): string {
+export function formatDateTime(value: string | null): string {
   if (!value) {
     return "Never";
   }
@@ -34,11 +34,11 @@ function formatDateTime(value: string | null): string {
   }).format(date);
 }
 
-function feedName(feed: FeedSubscription): string {
+export function feedName(feed: FeedSubscription): string {
   return feed.title?.trim() || feed.site_url?.trim() || feed.url;
 }
 
-function formatPollInterval(seconds: number): string {
+export function formatPollInterval(seconds: number): string {
   if (seconds < 60) {
     return `${seconds}s`;
   }
