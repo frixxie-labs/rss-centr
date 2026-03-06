@@ -19,7 +19,7 @@ build-frontend:
 
   script:
     - deno --version
-    - cd frontend && deno task install && deno task build
+    - cd frontend && deno install && deno task build
 
 test-backend:
   stage: test
