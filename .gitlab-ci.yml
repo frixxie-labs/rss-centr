@@ -33,7 +33,7 @@ test-backend:
     - cd backend
   script:
     - rustc --version && cargo --version
-    - cargo test --workspace --verbose
+    - cargo test --verbose
   variables:
     SQLX_OFFLINE: 1
 
