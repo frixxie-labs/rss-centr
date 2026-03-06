@@ -6,37 +6,45 @@ stages:
 build-backend:
   stage: build
   image: "rust:latest"
+  before_script:
+    - cd backend
 
   script:
     - rustc --version && cargo --version
-    - cd backend && cargo build --workspace --verbose
+    - cargo build --workspace --verbose
   variables:
     SQLX_OFFLINE: 1
 
 build-frontend:
   stage: build
   image: "denoland/deno:latest"
+  before_script:
+    - cd frontend
 
   script:
     - deno --version
-    - cd frontend && deno install && deno task build
+    - deno install
+    - deno task build
 
 test-backend:
   stage: test
   image: "rust:latest"
+  before_script:
+    - cd backend
   script:
     - rustc --version && cargo --version
-    - cd backend && cargo test --workspace --verbose
+    - cargo test --workspace --verbose
   variables:
     SQLX_OFFLINE: 1
 
 test-frontend:
   stage: test
   image: "denoland/deno:latest"
+  before_script:
+    - cd frontend
 
   script:
     - deno --version
-    - cd frontend 
     - deno install
     - deno task check
     - deno test -A
