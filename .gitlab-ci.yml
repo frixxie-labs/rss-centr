@@ -8,10 +8,9 @@ build-backend:
   image: "rust:latest"
   before_script:
     - cd backend
-
   script:
     - rustc --version && cargo --version
-    - cargo build --workspace --verbose
+    - cargo build --verbose
   variables:
     SQLX_OFFLINE: 1
 
@@ -36,6 +35,7 @@ test-backend:
     - cargo test --verbose
   variables:
     SQLX_OFFLINE: 1
+    DATABASE_URL: "sqlite::memory:"
 
 test-frontend:
   stage: test
