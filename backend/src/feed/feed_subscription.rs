@@ -409,18 +409,18 @@ mod tests {
             .with_timezone(&Utc);
         let poll_interval = 100i64;
 
-        sqlx::query!(
+        sqlx::query(
             r#"
             UPDATE feeds
             SET poll_interval_seconds = $1,
                 last_checked_at = $2
             WHERE id IN ($3, $4)
             "#,
-            poll_interval,
-            checked_at,
-            f1.id,
-            f2.id,
         )
+        .bind(poll_interval)
+        .bind(checked_at)
+        .bind(f1.id)
+        .bind(f2.id)
         .execute(&pool)
         .await
         .unwrap();

@@ -658,55 +658,43 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
 
-        sqlx::query!(
-            r#"UPDATE feed_items SET inserted_at = $1 WHERE id = $2"#,
-            inserted_1,
-            item1.id,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query!(
-            r#"UPDATE feed_items SET inserted_at = $1 WHERE id = $2"#,
-            inserted_2,
-            item2.id,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query!(
-            r#"UPDATE feed_items SET inserted_at = $1 WHERE id = $2"#,
-            inserted_3,
-            item3.id,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query(r#"UPDATE feed_items SET inserted_at = $1 WHERE id = $2"#)
+            .bind(inserted_1)
+            .bind(item1.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"UPDATE feed_items SET inserted_at = $1 WHERE id = $2"#)
+            .bind(inserted_2)
+            .bind(item2.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"UPDATE feed_items SET inserted_at = $1 WHERE id = $2"#)
+            .bind(inserted_3)
+            .bind(item3.id)
+            .execute(&pool)
+            .await
+            .unwrap();
 
-        sqlx::query!(
-            r#"UPDATE feed_item_details SET published_at = $1 WHERE feed_item_id = $2"#,
-            published_1,
-            item1.id,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query!(
-            r#"UPDATE feed_item_details SET published_at = $1 WHERE feed_item_id = $2"#,
-            published_2,
-            item2.id,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query!(
-            r#"UPDATE feed_item_details SET published_at = $1 WHERE feed_item_id = $2"#,
-            published_3,
-            item3.id,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query(r#"UPDATE feed_item_details SET published_at = $1 WHERE feed_item_id = $2"#)
+            .bind(published_1)
+            .bind(item1.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"UPDATE feed_item_details SET published_at = $1 WHERE feed_item_id = $2"#)
+            .bind(published_2)
+            .bind(item2.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"UPDATE feed_item_details SET published_at = $1 WHERE feed_item_id = $2"#)
+            .bind(published_3)
+            .bind(item3.id)
+            .execute(&pool)
+            .await
+            .unwrap();
 
         let cadence = read_feed_cadence_seconds(&pool, feed.id).await.unwrap();
         // inserted_diffs: 1s, 1s — both < 60s, so 0 qualifying samples.
@@ -745,30 +733,24 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
 
-        sqlx::query!(
-            r#"UPDATE feed_items SET inserted_at = $1 WHERE id = $2"#,
-            inserted_1,
-            item1.id,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query!(
-            r#"UPDATE feed_items SET inserted_at = $1 WHERE id = $2"#,
-            inserted_2,
-            item2.id,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query!(
-            r#"UPDATE feed_items SET inserted_at = $1 WHERE id = $2"#,
-            inserted_3,
-            item3.id,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query(r#"UPDATE feed_items SET inserted_at = $1 WHERE id = $2"#)
+            .bind(inserted_1)
+            .bind(item1.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"UPDATE feed_items SET inserted_at = $1 WHERE id = $2"#)
+            .bind(inserted_2)
+            .bind(item2.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"UPDATE feed_items SET inserted_at = $1 WHERE id = $2"#)
+            .bind(inserted_3)
+            .bind(item3.id)
+            .execute(&pool)
+            .await
+            .unwrap();
 
         // Published_at = inserted_at (inferred, no real publication date).
         // This means published_diffs = inserted_diffs = 600s, which IS >= 60s.
