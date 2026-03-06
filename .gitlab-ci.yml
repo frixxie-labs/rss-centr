@@ -24,19 +24,11 @@ build-frontend:
 test-backend:
   stage: test
   image: "rust:latest"
-
-  services:
-    - postgres:latest
   script:
     - rustc --version && cargo --version
     - cd backend && cargo test --workspace --verbose
   variables:
     SQLX_OFFLINE: 1
-    POSTGRES_DB: postgres
-    POSTGRES_USER: postgres
-    POSTGRES_PASSWORD: admin
-    POSTGRES_HOST_AUTH_METHOD: trust
-    DATABASE_URL: postgresql://postgres:admin@postgres:5432/postgres
 
 test-frontend:
   stage: test
@@ -44,9 +36,10 @@ test-frontend:
 
   script:
     - deno --version
-    - cd frontend && deno install
-    - cd frontend && deno task check
-    - cd frontend && deno test .
+    - cd frontend 
+    - deno install
+    - deno task check
+    - deno test -A
 
 deploy-backend:
   stage: deploy
