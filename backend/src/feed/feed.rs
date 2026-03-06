@@ -3,13 +3,6 @@ use feed_rs::model::Feed;
 use feed_rs::parser;
 use reqwest::{StatusCode, header};
 
-pub const FEED_URLS: &[&str] = &[
-    "https://www.nrk.no/nyheter/siste.rss",
-    "https://rss.kode24.no/",
-    "https://www.adressa.no/rss",
-    "https://www.tek.no/api/rss/rss2/medium/collections",
-];
-
 pub enum FetchFeedOutcome {
     NotModified {
         etag: Option<String>,
@@ -92,6 +85,13 @@ fn header_value_to_string(value: Option<&header::HeaderValue>) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    pub const FEED_URLS: &[&str] = &[
+        "https://www.nrk.no/nyheter/siste.rss",
+        "https://rss.kode24.no/",
+        "https://www.adressa.no/rss",
+        "https://www.tek.no/api/rss/rss2/medium/collections",
+    ];
 
     #[tokio::test]
     async fn test_fetch_all_feeds() {
