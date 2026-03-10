@@ -21,6 +21,7 @@ use crate::background_tasks::IngestJob;
 use crate::events::NewFeedItemEvent;
 
 mod error;
+mod feed_title_index;
 mod feeds;
 mod items;
 mod ping;
@@ -61,6 +62,10 @@ pub fn create_router(
 ) -> Router {
     let feeds = Router::new()
         .route("/feeds", get(feeds::fetch_feeds))
+        .route(
+            "/feeds/index",
+            get(feed_title_index::fetch_feed_title_index),
+        )
         .route("/feeds", post(feeds::create_feed))
         .route("/feeds/{feed_id}", get(feeds::fetch_feed_by_id))
         .route("/feeds/{feed_id}", put(feeds::update_feed_enabled))
