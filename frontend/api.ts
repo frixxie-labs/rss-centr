@@ -1,5 +1,10 @@
 import { BACKEND_URL } from "./utils.ts";
-import type { FeedItem, FeedItemDetail, FeedSubscription } from "./types.ts";
+import type {
+  FeedItem,
+  FeedItemDetail,
+  FeedSubscription,
+  ScoredFeedTitleIndexEntry,
+} from "./types.ts";
 
 function apiUrl(path: string): string {
   if (typeof window === "undefined") {
@@ -128,4 +133,14 @@ export async function deleteFeed(feedId: number): Promise<void> {
   if (!res.ok) {
     await throwRequestError("Failed to delete feed", res);
   }
+}
+
+export async function fetchTodaysScoredIndex(): Promise<
+  ScoredFeedTitleIndexEntry[]
+> {
+  const res = await fetch(apiUrl("feeds/index/today/scored"));
+  if (!res.ok) {
+    await throwRequestError("Failed to fetch scored title index", res);
+  }
+  return await res.json();
 }

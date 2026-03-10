@@ -24,12 +24,12 @@
     "@std/testing": "jsr:@std/testing@^1.0.17",
     "fresh": "jsr:@fresh/core@^2.2.0",
     "preact": "npm:preact@^10.28.4",
-    "@preact/signals": "npm:@preact/signals@^2.8.1",
+    "@preact/signals": "npm:@preact/signals@^2.8.2",
     "@fresh/plugin-vite": "jsr:@fresh/plugin-vite@^1.0.8",
     "vite": "npm:vite@^7.3.1",
     "tailwindcss": "npm:tailwindcss@^4.2.1",
     "@tailwindcss/vite": "npm:@tailwindcss/vite@^4.2.1",
-    "@types/node": "npm:@types/node@^25.3.3"
+    "@types/node": "npm:@types/node@^25.4.0"
   },
   "compilerOptions": {
     "lib": [
