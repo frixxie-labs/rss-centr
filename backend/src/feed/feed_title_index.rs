@@ -94,7 +94,7 @@ pub struct FeedTitleIndexEntry {
 }
 
 /// An exported index entry with TF-IDF scores per feed source.
-#[derive(Debug, PartialEq, serde::Serialize)]
+#[derive(Debug, PartialEq, serde::Serialize, utoipa::ToSchema)]
 pub struct ScoredFeedTitleIndexEntry {
     pub word: String,
     pub total_occurences: u64,
@@ -103,7 +103,7 @@ pub struct ScoredFeedTitleIndexEntry {
 }
 
 /// A single feed source's TF-IDF score for a word.
-#[derive(Debug, PartialEq, serde::Serialize)]
+#[derive(Debug, PartialEq, serde::Serialize, utoipa::ToSchema)]
 pub struct ScoredFeedTitleIndexItem {
     pub feed_src_id: i64,
     pub occurences: u64,
