@@ -9,7 +9,10 @@ use nom::{
 };
 use unicode_normalization::UnicodeNormalization;
 
-use crate::feed::feed_item::FeedItem;
+use anyhow::Result;
+use sqlx::SqlitePool;
+
+use crate::feed::feed_item::{read_todays_feed_items, FeedItem};
 
 /// Common English stop words that carry little semantic meaning in titles.
 const ENGLISH_STOP_WORDS: &[&str] = &[
@@ -71,7 +74,7 @@ impl Default for FeedTitleIndexConfig {
     }
 }
 
-#[derive(Debug, Ord, PartialEq, PartialOrd, Eq, serde::Serialize)]
+#[derive(Debug, Ord, PartialEq, PartialOrd, Eq, serde::Serialize, utoipa::ToSchema)]
 pub struct FeedTitleIndexItem {
     pub feed_src_id: i64,
     pub occurences: u64,
@@ -86,7 +89,7 @@ impl FeedTitleIndexItem {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
 pub struct FeedTitleIndexEntry {
     pub word: String,
     pub total_occurences: u64,
@@ -140,6 +143,12 @@ impl FeedTitleIndex {
             total_items: 0,
             config,
         }
+    }
+
+    /// Build an index from today's feed items (inserted since UTC midnight).
+    pub async fn build_from_todays(pool: &SqlitePool) -> Result<Self> {
+        let items = read_todays_feed_items(pool).await?;
+        Ok(Self::from(items))
     }
 
     /// Returns `true` if the normalized word should be indexed (passes
@@ -703,5 +712,49 @@ mod tests {
         assert!(config.stop_words.contains("på"));
         assert!(config.stop_words.contains("og"));
         assert_eq!(config.min_word_length, 2);
+    }
+
+    // ---------------------------------------------------------------
+    // build_from_todays tests
+    // ---------------------------------------------------------------
+
+    #[sqlx::test]
+    async fn test_build_from_todays(pool: sqlx::SqlitePool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
+            .await
+            .unwrap();
+
+        // Items inserted during the test get CURRENT_TIMESTAMP, which is today.
+        insert_feed_item(
+            &pool,
+            feed.id,
+            "today-1",
+            "Breaking Technology News",
+            "https://example.com/1",
+        )
+        .await
+        .unwrap();
+        insert_feed_item(
+            &pool,
+            feed.id,
+            "today-2",
+            "Technology Advances Rapidly",
+            "https://example.com/2",
+        )
+        .await
+        .unwrap();
+
+        let index = FeedTitleIndex::build_from_todays(&pool).await.unwrap();
+
+        assert_eq!(index.get_total_items(), 2);
+        // "technology" appears in both titles
+        let tech_items = index.get_items("technology").unwrap();
+        assert_eq!(tech_items[0].occurences, 2);
+    }
+
+    #[sqlx::test]
+    async fn test_build_from_todays_empty(pool: sqlx::SqlitePool) {
+        let index = FeedTitleIndex::build_from_todays(&pool).await.unwrap();
+        assert_eq!(index.get_total_items(), 0);
     }
 }

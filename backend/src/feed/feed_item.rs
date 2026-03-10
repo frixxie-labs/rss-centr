@@ -303,6 +303,26 @@ pub async fn read_latest_feed_items_with_detail(
     Ok(rows)
 }
 
+pub async fn read_todays_feed_items(pool: &SqlitePool) -> Result<Vec<FeedItem>> {
+    let rows = sqlx::query_as!(
+        FeedItem,
+        r#"
+        SELECT id as "id!: i64",
+               feed_id as "feed_id!: i64",
+               external_id, title, url,
+               inserted_at as "inserted_at: _"
+        FROM feed_items
+        WHERE inserted_at >= date('now')
+        ORDER BY inserted_at DESC, id DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .context("failed to read today's feed items")?;
+
+    Ok(rows)
+}
+
 pub async fn read_all_feed_items(pool: &SqlitePool) -> Result<Vec<FeedItem>> {
     let rows = sqlx::query_as!(
         FeedItem,
