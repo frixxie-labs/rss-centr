@@ -70,6 +70,14 @@ pub fn create_router(
             "/feeds/index/scored",
             get(feed_title_index::fetch_scored_feed_title_index),
         )
+        .route(
+            "/feeds/index/today",
+            get(feed_title_index::fetch_todays_feed_title_index),
+        )
+        .route(
+            "/feeds/index/today/scored",
+            get(feed_title_index::fetch_todays_scored_feed_title_index),
+        )
         .route("/feeds", post(feeds::create_feed))
         .route("/feeds/{feed_id}", get(feeds::fetch_feed_by_id))
         .route("/feeds/{feed_id}", put(feeds::update_feed_enabled))
@@ -127,6 +135,8 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
         feeds::delete_feed,
         feeds::queue_ingest_feed,
         feed_title_index::fetch_scored_feed_title_index,
+        feed_title_index::fetch_todays_feed_title_index,
+        feed_title_index::fetch_todays_scored_feed_title_index,
         items::fetch_items_by_feed,
         items::fetch_latest_items,
         items::fetch_item_by_id,
@@ -142,6 +152,8 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
             crate::feed::feed_item::FeedItemDetail,
             crate::feed::feed_title_index::ScoredFeedTitleIndexEntry,
             crate::feed::feed_title_index::ScoredFeedTitleIndexItem,
+            crate::feed::feed_title_index::FeedTitleIndexEntry,
+            crate::feed::feed_title_index::FeedTitleIndexItem,
             ping::PingResponse,
         )
     ),
