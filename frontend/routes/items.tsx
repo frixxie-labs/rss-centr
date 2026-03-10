@@ -58,6 +58,12 @@ export default define.page<typeof handler>(function ItemsPage({ data }) {
         >
           Feeds
         </a>
+        <a
+          href="/index-words"
+          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
+        >
+          Word Cloud
+        </a>
       </Header>
       <main class="mx-auto w-full max-w-3xl flex-1">
         {data.loadError && (
