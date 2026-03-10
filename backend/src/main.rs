@@ -59,7 +59,7 @@ impl From<LogLevel> for Level {
 
 #[derive(Debug, Clone, Parser)]
 pub struct Opts {
-    #[arg(short, long, default_value = "0.0.0.0:8080")]
+    #[arg(long, default_value = "0.0.0.0:8080")]
     host: String,
 
     #[arg(short, long, env = "DATABASE_URL", default_value = "sqlite:dev.db")]
