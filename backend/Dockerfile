@@ -1,4 +1,4 @@
-FROM rust:latest
+FROM docker.io/library/rust:latest
 
 WORKDIR /app
 
