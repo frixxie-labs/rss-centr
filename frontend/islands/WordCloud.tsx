@@ -1,9 +1,9 @@
 import { useSignal } from "@preact/signals";
-import type { ScoredFeedTitleIndexEntry } from "../types.ts";
-import { fetchRecentScoredIndex } from "../api.ts";
+import type { FeedTitleIndexEntry } from "../types.ts";
+import { fetchRecentIndex } from "../api.ts";
 
 interface WordCloudProps {
-  initialEntries: ScoredFeedTitleIndexEntry[];
+  initialEntries: FeedTitleIndexEntry[];
   feedNames: Record<number, string>;
 }
 
@@ -19,10 +19,13 @@ function scale(
   return outMin + ((value - inMin) / (inMax - inMin)) * (outMax - outMin);
 }
 
-/** Pick a color class based on the highest TF-IDF score for a word. */
-function colorForScore(topTfIdf: number, maxTfIdf: number): string {
-  if (maxTfIdf === 0) return "text-fuji-gray";
-  const ratio = topTfIdf / maxTfIdf;
+/** Pick a color class based on total occurrences for a word. */
+function colorForFrequency(
+  totalOccurrences: number,
+  maxOccurrences: number,
+): string {
+  if (maxOccurrences === 0) return "text-fuji-gray";
+  const ratio = totalOccurrences / maxOccurrences;
   if (ratio > 0.7) return "text-carp-yellow";
   if (ratio > 0.4) return "text-spring-blue";
   if (ratio > 0.2) return "text-spring-green";
@@ -32,8 +35,8 @@ function colorForScore(topTfIdf: number, maxTfIdf: number): string {
 export default function WordCloud(
   { initialEntries, feedNames }: WordCloudProps,
 ) {
-  const entries = useSignal<ScoredFeedTitleIndexEntry[]>(initialEntries);
-  const selected = useSignal<ScoredFeedTitleIndexEntry | null>(null);
+  const entries = useSignal<FeedTitleIndexEntry[]>(initialEntries);
+  const selected = useSignal<FeedTitleIndexEntry | null>(null);
   const loading = useSignal(false);
   const error = useSignal<string | null>(null);
 
@@ -41,7 +44,7 @@ export default function WordCloud(
     loading.value = true;
     error.value = null;
     try {
-      entries.value = await fetchRecentScoredIndex();
+      entries.value = await fetchRecentIndex();
       selected.value = null;
     } catch (err) {
       error.value = err instanceof Error ? err.message : String(err);
@@ -69,12 +72,13 @@ export default function WordCloud(
 
   const maxOccurrences = Math.max(...data.map((e) => e.total_occurences));
   const minOccurrences = Math.min(...data.map((e) => e.total_occurences));
-  const maxTfIdf = Math.max(
-    ...data.flatMap((e) => e.items.map((i) => i.tf_idf)),
-  );
 
   const minFontSize = 0.75;
   const maxFontSize = 3;
+  const selectedEntry = selected.value;
+  const selectedMaxOccurrences = selectedEntry
+    ? Math.max(...selectedEntry.items.map((i) => i.occurences))
+    : 0;
 
   return (
     <div>
@@ -107,8 +111,10 @@ export default function WordCloud(
             minFontSize,
             maxFontSize,
           );
-          const topTfIdf = entry.items.length > 0 ? entry.items[0].tf_idf : 0;
-          const color = colorForScore(topTfIdf, maxTfIdf);
+          const color = colorForFrequency(
+            entry.total_occurences,
+            maxOccurrences,
+          );
           const isSelected = selected.value?.word === entry.word;
 
           return (
@@ -136,40 +142,40 @@ export default function WordCloud(
       <div class="px-4 pb-2 flex items-center justify-center gap-4 text-xs text-fuji-gray">
         <span class="flex items-center gap-1">
           <span class="inline-block w-2 h-2 rounded-full bg-carp-yellow" />
-          high TF-IDF
+          most frequent
         </span>
         <span class="flex items-center gap-1">
           <span class="inline-block w-2 h-2 rounded-full bg-spring-blue" />
-          medium
+          frequent
         </span>
         <span class="flex items-center gap-1">
           <span class="inline-block w-2 h-2 rounded-full bg-spring-green" />
-          low
+          occasional
         </span>
         <span class="flex items-center gap-1">
           <span class="inline-block w-2 h-2 rounded-full bg-old-white" />
-          common
+          rare
         </span>
       </div>
 
       {/* Detail panel */}
-      {selected.value && (
+      {selectedEntry && (
         <div class="mx-4 mb-4 rounded-lg border border-sumi-ink3 bg-sumi-ink2/60 p-4">
           <div class="flex items-baseline justify-between mb-3">
             <h3 class="text-lg font-semibold text-fuji-white">
-              {selected.value.word}
+              {selectedEntry.word}
             </h3>
             <span class="text-sm text-fuji-gray">
-              {selected.value.total_occurences} total occurrences across{" "}
-              {selected.value.items.length} feed
-              {selected.value.items.length !== 1 ? "s" : ""}
+              {selectedEntry.total_occurences} total occurrences across{" "}
+              {selectedEntry.items.length} feed
+              {selectedEntry.items.length !== 1 ? "s" : ""}
             </span>
           </div>
 
           <div class="space-y-2">
-            {selected.value.items.map((item) => {
-              const barWidth = maxTfIdf > 0
-                ? (item.tf_idf / maxTfIdf) * 100
+            {selectedEntry.items.map((item) => {
+              const barWidth = selectedMaxOccurrences > 0
+                ? (item.occurences / selectedMaxOccurrences) * 100
                 : 0;
               const feedName = feedNames[item.feed_src_id] ??
                 `Feed #${item.feed_src_id}`;
@@ -181,8 +187,7 @@ export default function WordCloud(
                       {feedName}
                     </span>
                     <span class="text-fuji-gray font-mono text-xs">
-                      {item.occurences}x &middot; TF-IDF{" "}
-                      {item.tf_idf.toFixed(3)}
+                      {item.occurences}x
                     </span>
                   </div>
                   <div class="h-1.5 w-full rounded-full bg-sumi-ink3">

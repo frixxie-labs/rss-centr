@@ -3,7 +3,7 @@ import type {
   FeedItem,
   FeedItemDetail,
   FeedSubscription,
-  ScoredFeedTitleIndexEntry,
+  FeedTitleIndexEntry,
 } from "./types.ts";
 
 function apiUrl(path: string): string {
@@ -135,12 +135,10 @@ export async function deleteFeed(feedId: number): Promise<void> {
   }
 }
 
-export async function fetchRecentScoredIndex(): Promise<
-  ScoredFeedTitleIndexEntry[]
-> {
-  const res = await fetch(apiUrl("feeds/index/today/scored"));
+export async function fetchRecentIndex(): Promise<FeedTitleIndexEntry[]> {
+  const res = await fetch(apiUrl("feeds/index/today"));
   if (!res.ok) {
-    await throwRequestError("Failed to fetch scored title index", res);
+    await throwRequestError("Failed to fetch title index", res);
   }
   return await res.json();
 }
