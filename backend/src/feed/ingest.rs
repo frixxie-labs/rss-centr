@@ -6,7 +6,7 @@ use tokio::sync::broadcast;
 
 use crate::events::NewFeedItemEvent;
 
-use super::feed::{FetchFeedOutcome, fetch_feed_with_cache};
+use super::fetch::{FetchFeedOutcome, fetch_feed_with_cache};
 use super::feed_item::{
     insert_feed_item_dedup, insert_feed_item_detail_dedup, read_feed_cadence_seconds,
 };

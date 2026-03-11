@@ -1,44 +1,44 @@
 use std::collections::{HashMap, HashSet};
 
 use nom::{
+    IResult, Parser,
     bytes::complete::take_while1,
     character::complete::{multispace0, multispace1},
     multi::separated_list0,
     sequence::preceded,
-    IResult, Parser,
 };
-use unicode_normalization::UnicodeNormalization;
-
 use anyhow::Result;
 use sqlx::SqlitePool;
 
-use crate::feed::feed_item::{read_todays_feed_items, FeedItem};
+use crate::feed::feed_item::{FeedItem, read_recent_feed_items};
 
 /// Common English stop words that carry little semantic meaning in titles.
 const ENGLISH_STOP_WORDS: &[&str] = &[
     "a", "an", "the", "is", "it", "in", "on", "at", "to", "of", "and", "or", "but", "not", "no",
-    "for", "by", "with", "from", "up", "as", "do", "if", "be", "so", "we", "he", "she", "me",
-    "my", "am", "are", "was", "has", "had", "its", "you", "your", "they", "them", "our", "us",
-    "this", "that", "will", "can", "how", "what", "when", "who", "all", "been", "have", "were",
-    "which", "their", "there", "about", "would", "could", "should", "just", "than", "then",
-    "also", "into", "only", "very", "some", "more", "over", "such", "after", "does",
+    "for", "by", "with", "from", "up", "as", "do", "if", "be", "so", "we", "he", "she", "me", "my",
+    "am", "are", "was", "has", "had", "its", "you", "your", "they", "them", "our", "us", "this",
+    "that", "will", "can", "how", "what", "when", "who", "all", "been", "have", "were", "which",
+    "their", "there", "about", "would", "could", "should", "just", "than", "then", "also", "into",
+    "only", "very", "some", "more", "over", "such", "after", "does",
 ];
 
 /// Common Norwegian (Bokmål) stop words.
 const NORWEGIAN_STOP_WORDS: &[&str] = &[
-    "og", "i", "å", "en", "et", "det", "som", "på", "er", "av", "for", "med", "til", "den",
-    "har", "de", "ikke", "om", "var", "jeg", "vi", "kan", "fra", "så", "men", "nå", "skal",
-    "han", "hun", "man", "seg", "sin", "sine", "sitt", "der", "her", "denne", "disse", "eller",
-    "etter", "ved", "mot", "under", "uten", "over", "alle", "andre", "hadde", "hvor", "mer",
-    "mye", "når", "også", "da", "bli", "blir", "ble", "blitt", "meg", "deg", "oss", "dem",
-    "noe", "noen", "hva", "hvilke", "hvilken", "hvilket", "hos", "ut", "inn", "opp", "ned",
+    "og", "i", "å", "en", "et", "det", "som", "på", "er", "av", "for", "med", "til", "den", "har",
+    "de", "ikke", "om", "var", "jeg", "vi", "kan", "fra", "så", "men", "nå", "skal", "han", "hun",
+    "man", "seg", "sin", "sine", "sitt", "der", "her", "denne", "disse", "eller", "etter", "ved",
+    "mot", "under", "uten", "over", "alle", "andre", "hadde", "hvor", "mer", "mye", "når", "også",
+    "da", "bli", "blir", "ble", "blitt", "meg", "deg", "oss", "dem", "noe", "noen", "hva",
+    "hvilke", "hvilken", "hvilket", "hos", "ut", "inn", "opp", "ned",
 ];
 
 fn normalize_word(word: &str) -> String {
-    word.nfc()
-        .filter(|c| c.is_alphanumeric())
+    word.chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-')
         .collect::<String>()
         .to_lowercase()
+        .trim_matches('-')
+        .to_string()
 }
 
 fn parse_word(input: &str) -> IResult<&str, &str> {
@@ -145,9 +145,9 @@ impl FeedTitleIndex {
         }
     }
 
-    /// Build an index from today's feed items (inserted since UTC midnight).
-    pub async fn build_from_todays(pool: &SqlitePool) -> Result<Self> {
-        let items = read_todays_feed_items(pool).await?;
+    /// Build an index from recent feed items (inserted in the last 24 hours).
+    pub async fn build_from_recent(pool: &SqlitePool) -> Result<Self> {
+        let items = read_recent_feed_items(pool).await?;
         Ok(Self::from(items))
     }
 
@@ -715,11 +715,11 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // build_from_todays tests
+    // build_from_recent tests
     // ---------------------------------------------------------------
 
     #[sqlx::test]
-    async fn test_build_from_todays(pool: sqlx::SqlitePool) {
+    async fn test_build_from_recent(pool: sqlx::SqlitePool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -744,7 +744,7 @@ mod tests {
         .await
         .unwrap();
 
-        let index = FeedTitleIndex::build_from_todays(&pool).await.unwrap();
+        let index = FeedTitleIndex::build_from_recent(&pool).await.unwrap();
 
         assert_eq!(index.get_total_items(), 2);
         // "technology" appears in both titles
@@ -753,8 +753,8 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_build_from_todays_empty(pool: sqlx::SqlitePool) {
-        let index = FeedTitleIndex::build_from_todays(&pool).await.unwrap();
+    async fn test_build_from_recent_empty(pool: sqlx::SqlitePool) {
+        let index = FeedTitleIndex::build_from_recent(&pool).await.unwrap();
         assert_eq!(index.get_total_items(), 0);
     }
 }

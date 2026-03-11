@@ -55,21 +55,21 @@ pub async fn fetch_scored_feed_title_index(
     get,
     path = "/api/feeds/index/today",
     responses(
-        (status = 200, description = "Title index built from today's feed items", body = [FeedTitleIndexEntry]),
+        (status = 200, description = "Title index built from feed items in the last 24 hours", body = [FeedTitleIndexEntry]),
         (status = 500, description = "Internal server error"),
     ),
     tag = "feeds"
 )]
 #[instrument]
-pub async fn fetch_todays_feed_title_index(
+pub async fn fetch_recent_feed_title_index(
     State(app_state): FeedState,
 ) -> Result<Json<Vec<FeedTitleIndexEntry>>, HandlerError> {
     let (pool, _tx) = app_state;
-    let index = FeedTitleIndex::build_from_todays(&pool)
+    let index = FeedTitleIndex::build_from_recent(&pool)
         .await
         .map_err(|e| {
             warn!("failed with error: {e:#}");
-            HandlerError::from_db(e, "Failed to build today's title index")
+            HandlerError::from_db(e, "Failed to build recent title index")
         })?;
     Ok(Json(index.export_index()))
 }
@@ -78,21 +78,21 @@ pub async fn fetch_todays_feed_title_index(
     get,
     path = "/api/feeds/index/today/scored",
     responses(
-        (status = 200, description = "Scored title index with TF-IDF weights from today's feed items", body = [ScoredFeedTitleIndexEntry]),
+        (status = 200, description = "Scored title index with TF-IDF weights from feed items in the last 24 hours", body = [ScoredFeedTitleIndexEntry]),
         (status = 500, description = "Internal server error"),
     ),
     tag = "feeds"
 )]
 #[instrument]
-pub async fn fetch_todays_scored_feed_title_index(
+pub async fn fetch_recent_scored_feed_title_index(
     State(app_state): FeedState,
 ) -> Result<Json<Vec<ScoredFeedTitleIndexEntry>>, HandlerError> {
     let (pool, _tx) = app_state;
-    let index = FeedTitleIndex::build_from_todays(&pool)
+    let index = FeedTitleIndex::build_from_recent(&pool)
         .await
         .map_err(|e| {
             warn!("failed with error: {e:#}");
-            HandlerError::from_db(e, "Failed to build today's scored title index")
+            HandlerError::from_db(e, "Failed to build recent scored title index")
         })?;
     Ok(Json(index.scored_export_index()))
 }
