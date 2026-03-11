@@ -135,7 +135,7 @@ export async function deleteFeed(feedId: number): Promise<void> {
   }
 }
 
-export async function fetchTodaysScoredIndex(): Promise<
+export async function fetchRecentScoredIndex(): Promise<
   ScoredFeedTitleIndexEntry[]
 > {
   const res = await fetch(apiUrl("feeds/index/today/scored"));

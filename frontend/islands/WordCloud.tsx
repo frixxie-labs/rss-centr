@@ -1,6 +1,6 @@
 import { useSignal } from "@preact/signals";
 import type { ScoredFeedTitleIndexEntry } from "../types.ts";
-import { fetchTodaysScoredIndex } from "../api.ts";
+import { fetchRecentScoredIndex } from "../api.ts";
 
 interface WordCloudProps {
   initialEntries: ScoredFeedTitleIndexEntry[];
@@ -41,7 +41,7 @@ export default function WordCloud(
     loading.value = true;
     error.value = null;
     try {
-      entries.value = await fetchTodaysScoredIndex();
+      entries.value = await fetchRecentScoredIndex();
       selected.value = null;
     } catch (err) {
       error.value = err instanceof Error ? err.message : String(err);
@@ -54,7 +54,7 @@ export default function WordCloud(
   if (data.length === 0) {
     return (
       <div class="px-4 py-12 text-center text-sumi-ink4">
-        No title index data available for today.
+        No title index data available for the last 24 hours.
         <button
           type="button"
           onClick={refresh}
@@ -80,7 +80,7 @@ export default function WordCloud(
     <div>
       {/* Header bar */}
       <div class="px-4 py-2 border-b border-sumi-ink3 flex items-center justify-between text-xs text-fuji-gray">
-        <span>{data.length} words indexed today</span>
+        <span>{data.length} words indexed in the last 24 hours</span>
         <button
           type="button"
           onClick={refresh}

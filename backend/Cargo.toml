@@ -22,5 +22,4 @@ tokio-stream = { version = "0.1.18", features = ["sync"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["json", "tracing"] }
 utoipa = { version = "5.4.0", features = ["chrono"] }
-unicode-normalization = "0.1.25"
-nom = "8"
+nom = "8.0.0"

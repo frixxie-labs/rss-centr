@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "\n        SELECT id as \"id!: i64\",\n               feed_id as \"feed_id!: i64\",\n               external_id, title, url,\n               inserted_at as \"inserted_at: _\"\n        FROM feed_items\n        WHERE inserted_at >= date('now')\n        ORDER BY inserted_at DESC, id DESC\n        ",
+  "query": "\n        SELECT id as \"id!: i64\",\n               feed_id as \"feed_id!: i64\",\n               external_id, title, url,\n               inserted_at as \"inserted_at: _\"\n        FROM feed_items\n        WHERE inserted_at >= datetime('now', '-24 hours')\n        ORDER BY inserted_at DESC, id DESC\n        ",
   "describe": {
     "columns": [
       {
@@ -46,5 +46,5 @@
       false
     ]
   },
-  "hash": "6e3cbb623006393731c382a67fe435c106ae4f58c5f924007b1ce9c656f33555"
+  "hash": "4f94e9f737173afa15058d5e2e5e3d3a397d813dc97dce47ae87be00f1811636"
 }

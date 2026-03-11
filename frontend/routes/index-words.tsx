@@ -1,5 +1,5 @@
 import { Head } from "fresh/runtime";
-import { fetchFeeds, fetchTodaysScoredIndex } from "../api.ts";
+import { fetchFeeds, fetchRecentScoredIndex } from "../api.ts";
 import { Header } from "../components/Header.tsx";
 import WordCloud from "../islands/WordCloud.tsx";
 import { getLogger } from "../logger.ts";
@@ -16,7 +16,7 @@ export const handler = define.handlers({
 
     try {
       const [indexResult, feeds] = await Promise.all([
-        fetchTodaysScoredIndex(),
+        fetchRecentScoredIndex(),
         fetchFeeds(),
       ]);
       entries = indexResult;
