@@ -28,7 +28,7 @@ spec:
       - env:
         - name: BACKEND_URL
           value: http://backend:8080
-        image: registry.gitlab.com/frixxie1/rss-centr:frontend-0.2.0
+        image: registry.gitlab.com/frixxie1/rss-centr:frontend-0.2.1
         imagePullPolicy: IfNotPresent
         name: frontend
         ports:
