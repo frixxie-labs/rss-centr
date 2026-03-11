@@ -60,7 +60,7 @@ deploy-backend:
     BUILDAH_ISOLATION: chroot
     BUILDAH_FORMAT: docker
   before_script:
-    - cd frontend
+    - cd backend
   script:
     - buildah login -u "${CI_REGISTRY_USER}" -p "${CI_REGISTRY_PASSWORD}" "${CI_REGISTRY}"
     - buildah build
@@ -87,7 +87,6 @@ deploy-frontend:
     - buildah build
       --file Dockerfile
       --tag "${CI_REGISTRY_IMAGE}:frontend-${CI_COMMIT_TAG}"
-      frontend
     - buildah push "${CI_REGISTRY_IMAGE}:frontend-${CI_COMMIT_TAG}"
   rules:
     - if: $CI_COMMIT_TAG
