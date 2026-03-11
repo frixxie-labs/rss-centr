@@ -43,14 +43,13 @@ export interface NewFeedItemEvent {
   inserted_at: string;
 }
 
-export interface ScoredFeedTitleIndexItem {
+export interface FeedTitleIndexItem {
   feed_src_id: number;
   occurences: number;
-  tf_idf: number;
 }
 
-export interface ScoredFeedTitleIndexEntry {
+export interface FeedTitleIndexEntry {
   word: string;
   total_occurences: number;
-  items: ScoredFeedTitleIndexItem[];
+  items: FeedTitleIndexItem[];
 }

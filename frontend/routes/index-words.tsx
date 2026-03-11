@@ -1,22 +1,22 @@
 import { Head } from "fresh/runtime";
-import { fetchFeeds, fetchRecentScoredIndex } from "../api.ts";
+import { fetchFeeds, fetchRecentIndex } from "../api.ts";
 import { Header } from "../components/Header.tsx";
 import WordCloud from "../islands/WordCloud.tsx";
 import { getLogger } from "../logger.ts";
-import type { ScoredFeedTitleIndexEntry } from "../types.ts";
+import type { FeedTitleIndexEntry } from "../types.ts";
 import { define } from "../utils.ts";
 
 const log = getLogger("ssr");
 
 export const handler = define.handlers({
   async GET(_ctx) {
-    let entries: ScoredFeedTitleIndexEntry[] = [];
+    let entries: FeedTitleIndexEntry[] = [];
     let feedNames: Record<number, string> = {};
     let loadError = false;
 
     try {
       const [indexResult, feeds] = await Promise.all([
-        fetchRecentScoredIndex(),
+        fetchRecentIndex(),
         fetchFeeds(),
       ]);
       entries = indexResult;
