@@ -30,8 +30,8 @@ spec:
       containers:
       - env:
         - name: DATABASE_URL
-          value: sqlite:/app/data/dev.db
-        image: ${CI_REGISTRY_IMAGE}:${CI_COMMIT_TAG}
+          value: sqlite:///app/data/dev.db?mode=rwc
+        image: registry.gitlab.com/frixxie1/rss-centr:0.2.0
         imagePullPolicy: IfNotPresent
         name: backend
         ports:
