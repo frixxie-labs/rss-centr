@@ -31,7 +31,7 @@ spec:
       - env:
         - name: DATABASE_URL
           value: sqlite:///app/data/dev.db?mode=rwc
-        image: registry.gitlab.com/frixxie1/rss-centr:0.2.0
+        image: registry.gitlab.com/frixxie1/rss-centr:0.2.1
         imagePullPolicy: IfNotPresent
         name: backend
         ports:

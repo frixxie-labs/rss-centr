@@ -9,5 +9,13 @@ WHERE url IN (
     'https://this-week-in-rust.org/rss.xml',
     'https://planet.rust-lang.org/rss20.xml',
     'https://hnrss.org/frontpage',
-    'https://github.blog/feed/'
+    'https://github.blog/feed/',
+    'https://feeds.zencastr.com/f/oSn1i316.rss',
+    'https://letscast.fm/podcasts/rust-in-production-82281512/feed',
+    'https://feeds.simplecast.com/7y1CbAbN',
+    'https://e24.no/rss2/',
+    'https://www.jeffgeerling.com/blog.xml',
+    'https://services.dn.no/api/feed/rss/',
+    'https://www.tv2.no/rss/nyheter',
+    'https://softskills.audio/feed.xml'
 );
