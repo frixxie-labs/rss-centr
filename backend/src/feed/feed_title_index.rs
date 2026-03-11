@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use anyhow::Result;
 use nom::{
     IResult, Parser,
     bytes::complete::take_while1,
@@ -7,7 +8,6 @@ use nom::{
     multi::separated_list0,
     sequence::preceded,
 };
-use anyhow::Result;
 use sqlx::SqlitePool;
 
 use crate::feed::feed_item::{FeedItem, read_recent_feed_items};
@@ -29,7 +29,7 @@ const NORWEGIAN_STOP_WORDS: &[&str] = &[
     "man", "seg", "sin", "sine", "sitt", "der", "her", "denne", "disse", "eller", "etter", "ved",
     "mot", "under", "uten", "over", "alle", "andre", "hadde", "hvor", "mer", "mye", "når", "også",
     "da", "bli", "blir", "ble", "blitt", "meg", "deg", "oss", "dem", "noe", "noen", "hva",
-    "hvilke", "hvilken", "hvilket", "hos", "ut", "inn", "opp", "ned",
+    "hvilke", "hvilken", "hvilket", "hos", "ut", "inn", "opp", "ned", "vil", "hvem", "må",
 ];
 
 fn normalize_word(word: &str) -> String {
