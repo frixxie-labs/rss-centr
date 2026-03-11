@@ -110,7 +110,7 @@ pub struct ScoredFeedTitleIndexEntry {
 pub struct ScoredFeedTitleIndexItem {
     pub feed_src_id: i64,
     pub occurences: u64,
-    /// TF-IDF score: `tf * log(total_feeds / feeds_with_word)`.
+    /// TF-IDF score: `(occurrences_in_feed / total_words_in_feed) * ln(total_feeds / feeds_with_word)`.
     pub tf_idf: f64,
 }
 
@@ -118,6 +118,8 @@ pub struct ScoredFeedTitleIndexItem {
 pub struct FeedTitleIndex {
     pub items: HashMap<String, Vec<FeedTitleIndexItem>>,
     pub total_items: i32,
+    /// Total number of indexed words per feed source (for TF normalization).
+    feed_word_counts: HashMap<i64, u64>,
     config: FeedTitleIndexConfig,
 }
 
@@ -132,6 +134,7 @@ impl FeedTitleIndex {
         Self {
             items: HashMap::new(),
             total_items: 0,
+            feed_word_counts: HashMap::new(),
             config: FeedTitleIndexConfig::default(),
         }
     }
@@ -141,6 +144,7 @@ impl FeedTitleIndex {
         Self {
             items: HashMap::new(),
             total_items: 0,
+            feed_word_counts: HashMap::new(),
             config,
         }
     }
@@ -176,6 +180,7 @@ impl FeedTitleIndex {
             } else {
                 entry.push(FeedTitleIndexItem::new(feed_src_id, 1));
             }
+            *self.feed_word_counts.entry(feed_src_id).or_insert(0) += 1;
         }
         self.total_items += 1;
     }
@@ -199,6 +204,9 @@ impl FeedTitleIndex {
             if let Some(entry) = self.items.get_mut(&key) {
                 if let Some(item) = entry.iter_mut().find(|i| i.feed_src_id == feed_src_id) {
                     item.occurences = item.occurences.saturating_sub(1);
+                    if let Some(count) = self.feed_word_counts.get_mut(&feed_src_id) {
+                        *count = count.saturating_sub(1);
+                    }
                 }
                 entry.retain(|i| i.occurences > 0);
                 if entry.is_empty() {
@@ -206,6 +214,8 @@ impl FeedTitleIndex {
                 }
             }
         }
+        // Clean up feeds with zero word counts.
+        self.feed_word_counts.retain(|_, count| *count > 0);
         self.total_items -= 1;
         true
     }
@@ -236,8 +246,8 @@ impl FeedTitleIndex {
     /// Export the index with TF-IDF scores.
     ///
     /// For each word, the score for a feed source is computed as:
-    ///   `tf * log(total_feeds / feeds_containing_word)`
-    /// where `tf = occurrences_in_feed / total_occurrences_of_word`.
+    ///   `tf * ln(total_feeds / feeds_containing_word)`
+    /// where `tf = occurrences_of_word_in_feed / total_words_in_feed`.
     ///
     /// The number of distinct feed sources across the entire index is used as
     /// `total_feeds`.
@@ -246,6 +256,8 @@ impl FeedTitleIndex {
         if total_feeds == 0.0 {
             return Vec::new();
         }
+
+        let feed_word_counts = &self.feed_word_counts;
 
         let mut entries: Vec<ScoredFeedTitleIndexEntry> = self
             .items
@@ -258,7 +270,9 @@ impl FeedTitleIndex {
                 let mut scored_items: Vec<ScoredFeedTitleIndexItem> = items
                     .into_iter()
                     .map(|item| {
-                        let tf = item.occurences as f64 / total_occurences as f64;
+                        let total_words_in_feed =
+                            feed_word_counts.get(&item.feed_src_id).copied().unwrap_or(1) as f64;
+                        let tf = item.occurences as f64 / total_words_in_feed;
                         ScoredFeedTitleIndexItem {
                             feed_src_id: item.feed_src_id,
                             occurences: item.occurences,
@@ -643,22 +657,24 @@ mod tests {
         }
 
         // "world" appears in 1 feed out of 2 → IDF = ln(2/1) = ln(2) ≈ 0.693
-        // TF = 1/1 = 1.0 (only occurrence of "world")
+        // TF = 1/2 (1 occurrence out of 2 total words in feed 1)
+        // Score = (1/2) * ln(2) ≈ 0.347
         assert_eq!(world_entry.items.len(), 1);
         let expected_idf = (2.0_f64).ln();
+        let expected_score = 0.5 * expected_idf;
         assert!(
-            (world_entry.items[0].tf_idf - expected_idf).abs() < 1e-10,
+            (world_entry.items[0].tf_idf - expected_score).abs() < 1e-10,
             "expected tf_idf ≈ {}, got {}",
-            expected_idf,
+            expected_score,
             world_entry.items[0].tf_idf
         );
 
-        // "rust" same as "world"
+        // "rust" same as "world": TF = 1/2, IDF = ln(2)
         assert_eq!(rust_entry.items.len(), 1);
         assert!(
-            (rust_entry.items[0].tf_idf - expected_idf).abs() < 1e-10,
+            (rust_entry.items[0].tf_idf - expected_score).abs() < 1e-10,
             "expected tf_idf ≈ {}, got {}",
-            expected_idf,
+            expected_score,
             rust_entry.items[0].tf_idf
         );
     }
@@ -675,9 +691,9 @@ mod tests {
         let rust_entry = scored.iter().find(|e| e.word == "rust").unwrap();
 
         // Items should be sorted by tf_idf descending.
-        // Feed 1 has tf = 3/4 for "rust", feed 2 has tf = 1/4.
+        // Feed 1 has tf = 3/4 for "rust", feed 2 has tf = 1/2.
         // IDF is the same for both: ln(2/2) = 0 since both feeds have "rust".
-        // Actually both will be 0 since both feeds contain "rust".
+        // Both will be 0 since both feeds contain "rust".
         // Let's just verify sorting works.
         assert_eq!(rust_entry.items.len(), 2);
         assert!(rust_entry.items[0].tf_idf >= rust_entry.items[1].tf_idf);
