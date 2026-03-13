@@ -88,19 +88,23 @@ pub fn create_router(
         .route("/items/stream", get(sse::stream_new_items))
         .with_state((pool.clone(), new_item_tx));
 
-    Router::new()
+    let api_routes = Router::new()
         .nest("/api", feeds)
         .nest("/api", items)
         .nest("/api", item_events)
-        .route("/status/ping", get(ping::ping))
-        .route("/metrics", get(metrics))
-        .route("/openapi", get(get_openapi))
-        .with_state(metrics_handler)
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
                 .layer(middleware::from_fn(profile_endpoint)),
-        )
+        );
+
+    let system_routes = Router::new()
+        .route("/status/ping", get(ping::ping))
+        .route("/metrics", get(metrics))
+        .route("/openapi", get(get_openapi))
+        .with_state(metrics_handler);
+
+    api_routes.merge(system_routes)
 }
 
 #[utoipa::path(
@@ -110,7 +114,6 @@ pub fn create_router(
         (status = 200, description = "Prometheus metrics in exposition format", body = String),
     )
 )]
-#[instrument]
 async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHandle>) -> String {
     handle.render()
 }
