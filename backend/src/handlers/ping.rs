@@ -1,6 +1,5 @@
 use axum::Json;
 use serde::Serialize;
-use tracing::instrument;
 use utoipa::ToSchema;
 
 use super::error::HandlerError;
@@ -19,7 +18,6 @@ pub struct PingResponse {
     ),
     tag = "system"
 )]
-#[instrument]
 pub async fn ping() -> Result<Json<PingResponse>, HandlerError> {
     let timestamp = chrono::Utc::now().to_rfc3339();
     Ok(Json(PingResponse {
