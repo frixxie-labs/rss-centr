@@ -355,6 +355,46 @@ Recommended:
 
 ---
 
+## 📋 Known Issues & TODOs
+
+Issues identified via code review, grouped by priority.
+
+### High Priority
+
+- [ ] **Fragile 404 detection** — `backend/src/handlers/error.rs:57` uses `starts_with("no ")` string matching to decide 404 vs 500. Replace with a typed error enum or dedicated `NotFound` variant.
+- [ ] **Scheduler dies on transient DB errors** — `backend/src/background_tasks.rs:85` propagates errors with `?`, permanently killing the scheduler on any transient SQLite failure. Wrap in a retry loop with logging.
+- [ ] **Unbounded metric cardinality** — `backend/src/handlers/mod.rs:37` uses raw URI path as a Prometheus label for unmatched routes. Bot traffic creates infinite label combinations. Use a fixed label like `"unmatched"`.
+
+### Medium Priority
+
+- [ ] **No default limit on `fetchLatestItems`** — `backend/src/handlers/items.rs:62` returns ALL items with details when no `limit` is provided. Add a default cap.
+- [ ] **Title index rebuilds from scratch per request** — `backend/src/handlers/feed_title_index.rs:15-27` loads all items into memory on each call. Add caching or incremental build.
+- [ ] **SSE replay has no cap** — `backend/src/handlers/sse.rs:42` replays the entire item history for a very old `Last-Event-ID`. Add a maximum replay window.
+- [ ] **`COALESCE` prevents clearing stale cache headers** — `backend/src/feed/feed_subscription.rs:225-228` means old ETag/Last-Modified values persist even when a feed stops sending them.
+- [ ] **No URL format validation on feed creation** — `backend/src/handlers/feeds.rs:69-71` only checks for empty string. Use `Url::parse()`.
+- [ ] **`NotModified` triggers exponential backoff** — `backend/src/feed/ingest.rs:71-72` doubles poll interval on 304. Infrequently-updated feeds quickly hit MAX_POLL_INTERVAL. Consider using cadence-based intervals instead.
+- [ ] **Navigation duplicated across all routes** — `frontend/routes/index.tsx`, `items.tsx`, `feeds.tsx`, `index-words.tsx` each have ~24 lines of identical nav markup. Extract to a shared component.
+- [ ] **`localStorage` access without try/catch** — `frontend/islands/Timeline.tsx:79,112-113` can throw in restricted contexts or when quota is exceeded.
+- [ ] **`updateFeedEnabled` retry hack** — `frontend/api.ts:85-118` retries with a different field name on 400 status. Resolve at the API contract level.
+- [ ] **No pagination on items page** — `frontend/routes/items.tsx:20` calls `fetchLatestItems()` with no limit.
+
+### Low Priority
+
+- [ ] **`nom` used only for whitespace splitting** — `backend/src/feed/feed_title_index.rs:297-303` could use `split_whitespace()` and eliminate the `nom` dependency.
+- [ ] **Typo: `occurences`** — `backend/src/feed/feed_title_index.rs:334` should be `occurrences`. Appears in JSON API output — fixing is a breaking change (consider serde rename).
+- [ ] **Custom `LogLevel` duplicates `tracing::Level`** — `backend/src/main.rs:24-58`.
+- [ ] **Metric name not namespaced** — `backend/src/handlers/mod.rs:46` uses `"handler"` instead of `rss_centr_handler_*`.
+- [ ] **Error responses are plain text** — `backend/src/handlers/error.rs:47-49` is inconsistent with the JSON API convention.
+- [ ] **Dead code: `list_enabled_feeds`** — `backend/src/feed/feed_subscription.rs:23` is never called.
+- [ ] **Missing `#[utoipa::path]` annotations** — `backend/src/handlers/feed_title_index.rs` and `sse.rs` have undocumented endpoints.
+- [ ] **Duplicated sort utilities** — `frontend/islands/Timeline.tsx:18-27` and `FeedItemsView.tsx:12-21` share identical `effectiveDate`/`sortByNewest` functions. Extract to shared module.
+- [ ] **SSR/client locale mismatch** — `frontend/components/FeedItemCard.tsx:14,52` uses `toLocaleString()` which may differ between server and client, risking hydration mismatches.
+- [ ] **No SSRF protection** — `create_feed` accepts any URL including internal network addresses. Consider URL filtering.
+- [ ] **`total_items: i32` inconsistency** — `backend/src/feed/feed_title_index.rs:355` uses `i32` while the rest of the codebase uses `i64`.
+- [ ] **Unused re-export** — `backend/src/feed/mod.rs:7` re-exports `ingest_feed_url` but it's never used externally.
+
+---
+
 ## 📜 License
 
 MIT
