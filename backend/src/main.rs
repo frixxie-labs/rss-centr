@@ -7,7 +7,7 @@ use tokio::{
     net::TcpListener,
     sync::{Mutex, broadcast, mpsc::channel},
 };
-use tracing::{Level, info};
+use tracing::{Level, info, error};
 use tracing_subscriber::FmtSubscriber;
 
 use crate::{
@@ -107,7 +107,7 @@ async fn main() -> Result<()> {
     let ingest_client = client.clone();
     let ingest_new_item_tx = new_item_tx.clone();
     let ingest_in_flight = in_flight.clone();
-    tokio::spawn(async move {
+    let ingest_handle = tokio::spawn(async move {
         handle_ingest_bg_thread(
             rx,
             ingest_pool,
@@ -122,15 +122,32 @@ async fn main() -> Result<()> {
     let sched_tx = tx.clone();
     let sched_in_flight = in_flight.clone();
     let every = std::time::Duration::from_secs(opts.scheduler_interval_seconds);
-    tokio::spawn(async move {
-        if let Err(e) = enqueue_due_feeds_loop(sched_pool, sched_tx, every, sched_in_flight).await {
-            tracing::warn!("scheduler stopped: {e:#}");
-        }
+    let scheduler_handle = tokio::spawn(async move {
+        enqueue_due_feeds_loop(sched_pool, sched_tx, every, sched_in_flight).await
     });
 
     let app = create_router(pool, metrics_handler, tx, new_item_tx);
 
     let listener = TcpListener::bind(&opts.host).await?;
-    axum::serve(listener, app).await?;
+    tokio::select! {
+        result = axum::serve(listener, app) => {
+            result.context("server exited unexpectedly")?;
+        }
+        result = ingest_handle => {
+            match result {
+                Ok(()) => error!("ingest worker exited unexpectedly"),
+                Err(e) => error!("ingest worker panicked: {e}"),
+            }
+            anyhow::bail!("ingest worker stopped, shutting down");
+        }
+        result = scheduler_handle => {
+            match result {
+                Ok(Ok(())) => error!("scheduler exited unexpectedly"),
+                Ok(Err(e)) => error!("scheduler failed: {e:#}"),
+                Err(e) => error!("scheduler panicked: {e}"),
+            }
+            anyhow::bail!("scheduler stopped, shutting down");
+        }
+    }
     Ok(())
 }
