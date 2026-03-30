@@ -23,6 +23,7 @@ use crate::events::NewFeedItemEvent;
 mod error;
 mod feed_title_index;
 mod feeds;
+mod health;
 mod items;
 mod ping;
 mod sse;
@@ -98,11 +99,16 @@ pub fn create_router(
                 .layer(middleware::from_fn(profile_endpoint)),
         );
 
+    let health_routes = Router::new()
+        .route("/status/health", get(health::health))
+        .with_state(pool);
+
     let system_routes = Router::new()
         .route("/status/ping", get(ping::ping))
         .route("/metrics", get(metrics))
         .route("/openapi", get(get_openapi))
-        .with_state(metrics_handler);
+        .with_state(metrics_handler)
+        .merge(health_routes);
 
     api_routes.merge(system_routes)
 }
@@ -123,6 +129,7 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
     paths(
         metrics,
         ping::ping,
+        health::health,
         feeds::fetch_feeds,
         feeds::create_feed,
         feeds::fetch_feed_by_id,
@@ -146,6 +153,9 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
             crate::feed::feed_title_index::FeedTitleIndexEntry,
             crate::feed::feed_title_index::FeedTitleIndexItem,
             ping::PingResponse,
+            health::HealthResponse,
+            health::HealthChecks,
+            health::CheckResult,
         )
     ),
     tags(
