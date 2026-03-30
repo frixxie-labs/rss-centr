@@ -5,9 +5,9 @@
     "jsr:@deno/loader@~0.3.10": "0.3.12",
     "jsr:@deno/loader@~0.3.2": "0.3.12",
     "jsr:@fresh/build-id@1": "1.0.1",
-    "jsr:@fresh/core@2": "2.2.1",
-    "jsr:@fresh/core@^2.2.0": "2.2.1",
-    "jsr:@fresh/core@^2.2.1": "2.2.1",
+    "jsr:@fresh/core@2": "2.2.2",
+    "jsr:@fresh/core@^2.2.0": "2.2.2",
+    "jsr:@fresh/core@^2.2.2": "2.2.2",
     "jsr:@fresh/plugin-vite@^1.0.8": "1.0.8",
     "jsr:@std/assert@^1.0.17": "1.0.19",
     "jsr:@std/assert@^1.0.19": "1.0.19",
@@ -66,8 +66,8 @@
         "jsr:@std/encoding"
       ]
     },
-    "@fresh/core@2.2.1": {
-      "integrity": "67de4a37aba679c16c8a90e5ab4545efebf8d7dd4b4453ced60af8d1d52cf01d",
+    "@fresh/core@2.2.2": {
+      "integrity": "c34873df58457720f7b915a65fef6fe5cd7215f237cf4d1064d1925b320de96c",
       "dependencies": [
         "jsr:@deno/esbuild-plugin",
         "jsr:@fresh/build-id",
@@ -1288,7 +1288,7 @@
   },
   "workspace": {
     "dependencies": [
-      "jsr:@fresh/core@^2.2.1",
+      "jsr:@fresh/core@^2.2.2",
       "jsr:@fresh/plugin-vite@^1.0.8",
       "jsr:@std/assert@^1.0.19",
       "jsr:@std/testing@^1.0.17",
