@@ -17,12 +17,12 @@ sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite", "chrono", "mi
 tower = { version = "0.5.3", features = ["tracing"] }
 tower-http = { version = "0.6.8", features = ["trace"] }
 clap = { version = "4.6.0", features = ["derive", "env"] }
-tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1.18", features = ["sync"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["json", "tracing"] }
 utoipa = { version = "5.4.0", features = ["chrono"] }
 nom = "8.0.0"
+tokio = { version = "1.51.0", features = ["full", "tracing"] }
 
 [dev-dependencies]
 http-body-util = "0.1.3"
