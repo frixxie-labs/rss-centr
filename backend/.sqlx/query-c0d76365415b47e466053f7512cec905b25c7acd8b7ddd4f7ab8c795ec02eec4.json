@@ -1,0 +1,78 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT f.id as \"id!: i64\",\n               f.feed_id as \"feed_id!: i64\",\n               f.external_id,\n               f.title,\n               f.url,\n               f.inserted_at as \"inserted_at: _\",\n               d.summary,\n               d.content,\n               d.author,\n               d.published_at as \"published_at: _\"\n        FROM feed_items f\n        LEFT JOIN feed_item_details d ON d.feed_item_id = f.id\n        INNER JOIN feeds s ON s.id = f.feed_id\n        CROSS JOIN LATERAL (SELECT websearch_to_tsquery('simple', $3) AS query) search\n        WHERE ($2::BIGINT IS NULL OR f.feed_id = $2)\n          AND (\n              $3::TEXT IS NULL\n              OR to_tsvector('simple', f.title || ' ' || f.url) @@ search.query\n              OR to_tsvector(\n                  'simple',\n                  COALESCE(d.summary, '') || ' ' || COALESCE(d.content, '') || ' ' || COALESCE(d.author, '')\n              ) @@ search.query\n              OR to_tsvector('simple', COALESCE(s.title, '') || ' ' || s.url) @@ search.query\n          )\n        ORDER BY COALESCE(d.published_at, f.inserted_at) DESC, f.id DESC\n        LIMIT $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: i64",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "feed_id!: i64",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "external_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "inserted_at: _",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "summary",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "content",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "author",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "published_at: _",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c0d76365415b47e466053f7512cec905b25c7acd8b7ddd4f7ab8c795ec02eec4"
+}

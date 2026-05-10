@@ -16,7 +16,7 @@ export const handler = define.handlers({
     const initialNowIso = new Date().toISOString();
     try {
       const [itemsResult, feeds] = await Promise.all([
-        fetchLatestItems(100),
+        fetchLatestItems({ limit: 100 }),
         fetchFeeds(),
       ]);
       items = itemsResult;
