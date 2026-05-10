@@ -6,7 +6,7 @@ use axum::{
     response::sse::{Event, Sse},
 };
 use serde::Deserialize;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use tokio::sync::broadcast;
 use tokio::time::interval;
 use tokio_stream::{StreamExt, wrappers::BroadcastStream, wrappers::IntervalStream};
@@ -21,7 +21,7 @@ pub struct SseQuery {
 }
 
 pub async fn stream_new_items(
-    State((pool, tx)): State<(SqlitePool, broadcast::Sender<NewFeedItemEvent>)>,
+    State((pool, tx)): State<(PgPool, broadcast::Sender<NewFeedItemEvent>)>,
     headers: HeaderMap,
     Query(query): Query<SseQuery>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {

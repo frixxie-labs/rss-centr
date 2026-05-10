@@ -2,7 +2,7 @@ use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use chrono::Utc;
 use metrics::{counter, gauge};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use tokio::sync::Mutex;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -19,7 +19,7 @@ pub enum IngestJob {
 
 pub async fn handle_ingest_bg_thread(
     mut rx: Receiver<IngestJob>,
-    pool: SqlitePool,
+    pool: PgPool,
     client: reqwest::Client,
     new_item_tx: broadcast::Sender<NewFeedItemEvent>,
     in_flight: Arc<Mutex<HashSet<i64>>>,
@@ -75,7 +75,7 @@ pub async fn handle_ingest_bg_thread(
 }
 
 pub async fn enqueue_due_feeds_loop(
-    pool: SqlitePool,
+    pool: PgPool,
     tx: Sender<IngestJob>,
     every: Duration,
     in_flight: Arc<Mutex<HashSet<i64>>>,

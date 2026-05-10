@@ -1,9 +1,9 @@
 -- Seed a small set of default RSS feeds.
 --
--- NOTE: Use INSERT OR IGNORE so this migration is safe to re-run
+-- NOTE: Use ON CONFLICT DO NOTHING so this migration is safe to re-run
 -- in dev/test environments.
 
-INSERT OR IGNORE INTO feeds (url)
+INSERT INTO feeds (url)
 VALUES
     ('https://www.nrk.no/nyheter/siste.rss'),
     ('https://rss.kode24.no/'),
@@ -22,4 +22,5 @@ VALUES
     ('https://www.jeffgeerling.com/blog.xml'),
     ('https://services.dn.no/api/feed/rss/'),
     ('https://www.tv2.no/rss/nyheter'),
-    ('https://softskills.audio/feed.xml');
+    ('https://softskills.audio/feed.xml')
+ON CONFLICT (url) DO NOTHING;

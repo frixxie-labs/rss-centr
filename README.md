@@ -7,7 +7,7 @@ Built with:
 - 🦀 Rust
 - ⚡ Tokio
 - 🧭 Axum
-- 🗄️ sqlx + SQLite
+- 🗄️ sqlx + PostgreSQL
 - 🌿 Deno + Fresh (frontend)
 - 📡 Server-Sent Events (SSE)
 
@@ -18,7 +18,7 @@ Built with:
 This project is a lightweight, self-hostable RSS/Atom aggregator that:
 
 - Polls RSS and Atom feeds
-- Stores items in SQLite
+- Stores items in PostgreSQL
 - Deduplicates at the database level
 - Serves an aggregated timeline via REST
 - Pushes live updates to the browser using SSE
@@ -26,7 +26,7 @@ This project is a lightweight, self-hostable RSS/Atom aggregator that:
 
 ### Architecture Philosophy
 
-> SQLite is the source of truth.  
+> PostgreSQL is the source of truth.  
 > SSE is the live tail.
 
 ---
@@ -40,7 +40,7 @@ Poller (Tokio tasks)
         ↓
 Parser (feed-rs)
         ↓
-SQLite (sqlx)
+PostgreSQL (sqlx)
         ↓
 Broadcast (tokio::broadcast)
         ↓
@@ -54,7 +54,7 @@ Fresh Frontend
 **Backend**
 - Axum HTTP server
 - Tokio background poll scheduler
-- sqlx + SQLite (WAL mode)
+- sqlx + PostgreSQL
 - SSE endpoint with reconnect support (`Last-Event-ID`)
 
 **Frontend**
@@ -78,7 +78,7 @@ Fresh Frontend
 - Monotonic `feed_items.id` for:
   - Cursor pagination
   - SSE replay
-- `INSERT OR IGNORE` dedupe
+- `ON CONFLICT DO NOTHING` dedupe
 - Broadcast channel fanout
 - DB-backed replay on reconnect
 
@@ -130,7 +130,7 @@ content for detail views.
 
 ### Phase 1 — MVP (Current Goal)
 - [x] Core ingest pipeline
-- [x] SQLite schema + migrations
+- [x] PostgreSQL schema + migrations
 - [x] REST + SSE API
 - [x] Fresh SSR + live island
 
@@ -145,11 +145,11 @@ content for detail views.
 - OPML import/export
 - Feed groups/folders
 - Retention policies
-- Full-text search (SQLite FTS5)
+- Full-text search
 - Combined RSS export
 
 ### Phase 4 — Scaling & Ops
-- Postgres support
+- SQLite import/migration tooling
 - Horizontal SSE scaling
 - Metrics endpoint
 - Feed health dashboard
@@ -161,9 +161,10 @@ content for detail views.
 ### Requirements
 
 - Rust (stable)
-- SQLite
+- PostgreSQL
 - Deno ≥ 2.x
 - Fresh ≥ 2.x
+- Docker Compose
 
 ---
 
@@ -171,15 +172,23 @@ content for detail views.
 
 ```bash
 git clone <repo>
+docker compose up -d db
 cd backend
 ```
 
-The backend uses `DATABASE_URL` (SQLite) and defaults to `sqlite:dev.db` if unset.
+The backend uses `DATABASE_URL` and defaults to the local Postgres instance in `backend/.env`.
 
 Example:
 
 ```bash
-export DATABASE_URL='sqlite:dev.db'
+export DATABASE_URL='postgres://postgres:postgres@localhost:5432/rss_centr'
+```
+
+Initialize or refresh the local database schema:
+
+```bash
+sqlx database create
+sqlx migrate run
 ```
 
 Run:
@@ -188,7 +197,7 @@ Run:
 cargo run
 ```
 
-SQLite will be created automatically if it does not exist.
+The backend listens on `http://localhost:8080`.
 
 ---
 
@@ -325,19 +334,19 @@ Notes:
 
 ## 📦 Deployment Model
 
-Single binary + SQLite file.
+Single backend binary + PostgreSQL service.
 
 Recommended:
 - Run behind reverse proxy
-- Enable SQLite WAL mode
-- Regular SQLite backups
+- Run PostgreSQL with persistent storage
+- Regular PostgreSQL backups
 
 ---
 
 ## 📈 Design Principles
 
 - Keep it simple
-- SQLite first
+- Postgres-backed
 - Database is canonical history
 - SSE is best-effort live view
 - Recover from lag using DB replay
@@ -350,7 +359,7 @@ Recommended:
 - **Axum**: ergonomic async HTTP + built-in SSE
 - **Tokio**: robust async runtime + broadcast channels
 - **sqlx**: compile-time query validation + migrations
-- **SQLite**: perfect for single-user self-hosting
+- **PostgreSQL**: reliable relational storage with strong tooling
 - **Fresh**: SSR + islands = ideal for timeline + live updates
 
 ---
@@ -362,7 +371,7 @@ Issues identified via code review, grouped by priority.
 ### High Priority
 
 - [ ] **Fragile 404 detection** — `backend/src/handlers/error.rs:57` uses `starts_with("no ")` string matching to decide 404 vs 500. Replace with a typed error enum or dedicated `NotFound` variant.
-- [ ] **Scheduler dies on transient DB errors** — `backend/src/background_tasks.rs:85` propagates errors with `?`, permanently killing the scheduler on any transient SQLite failure. Wrap in a retry loop with logging.
+- [ ] **Scheduler dies on transient DB errors** — `backend/src/background_tasks.rs:85` propagates errors with `?`, permanently killing the scheduler on any transient database failure. Wrap in a retry loop with logging.
 - [ ] **Unbounded metric cardinality** — `backend/src/handlers/mod.rs:37` uses raw URI path as a Prometheus label for unmatched routes. Bot traffic creates infinite label combinations. Use a fixed label like `"unmatched"`.
 
 ### Medium Priority

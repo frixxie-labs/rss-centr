@@ -1,10 +1,18 @@
 {
-  "db_name": "SQLite",
+  "db_name": "PostgreSQL",
   "query": "\n        UPDATE feeds\n        SET title = COALESCE($1, title),\n            site_url = COALESCE($2, site_url),\n            etag = COALESCE($3, etag),\n            last_modified = COALESCE($4, last_modified),\n            poll_interval_seconds = COALESCE($5, poll_interval_seconds),\n            last_checked_at = $6,\n            last_success_at = $6,\n            failure_count = 0\n        WHERE id = $7\n        ",
   "describe": {
     "columns": [],
     "parameters": {
-      "Right": 7
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Timestamptz",
+        "Int8"
+      ]
     },
     "nullable": []
   },

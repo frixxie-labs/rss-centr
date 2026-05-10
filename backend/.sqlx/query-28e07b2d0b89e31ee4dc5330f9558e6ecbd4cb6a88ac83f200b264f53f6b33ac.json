@@ -1,44 +1,44 @@
 {
-  "db_name": "SQLite",
+  "db_name": "PostgreSQL",
   "query": "\n        SELECT id as \"id!: i64\",\n               feed_id as \"feed_id!: i64\",\n               external_id, title, url,\n               inserted_at as \"inserted_at: _\"\n        FROM feed_items\n        ORDER BY inserted_at DESC, id DESC\n        ",
   "describe": {
     "columns": [
       {
-        "name": "id!: i64",
         "ordinal": 0,
-        "type_info": "Integer"
+        "name": "id!: i64",
+        "type_info": "Int8"
       },
       {
-        "name": "feed_id!: i64",
         "ordinal": 1,
-        "type_info": "Integer"
+        "name": "feed_id!: i64",
+        "type_info": "Int8"
       },
       {
-        "name": "external_id",
         "ordinal": 2,
+        "name": "external_id",
         "type_info": "Text"
       },
       {
-        "name": "title",
         "ordinal": 3,
+        "name": "title",
         "type_info": "Text"
       },
       {
-        "name": "url",
         "ordinal": 4,
+        "name": "url",
         "type_info": "Text"
       },
       {
-        "name": "inserted_at: _",
         "ordinal": 5,
-        "type_info": "Datetime"
+        "name": "inserted_at: _",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
-      "Right": 0
+      "Left": []
     },
     "nullable": [
-      true,
+      false,
       false,
       false,
       false,

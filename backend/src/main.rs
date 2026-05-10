@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use metrics_exporter_prometheus::PrometheusBuilder;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::{collections::HashSet, sync::Arc, time::Duration};
 use clap::Parser;
 use tokio::{
@@ -62,7 +62,12 @@ pub struct Opts {
     #[arg(long, default_value = "0.0.0.0:8080")]
     host: String,
 
-    #[arg(short, long, env = "DATABASE_URL", default_value = "sqlite:dev.db")]
+    #[arg(
+        short,
+        long,
+        env = "DATABASE_URL",
+        default_value = "postgres://postgres:postgres@localhost:5432/rss_centr"
+    )]
     db_url: String,
 
     #[arg(short, long, default_value = "info")]
@@ -85,7 +90,7 @@ async fn main() -> Result<()> {
         .context("failed to install metrics recorder/exporter")?;
 
     info!("Connecting to DB at {}", opts.db_url);
-    let pool = SqlitePool::connect(&opts.db_url)
+    let pool = PgPool::connect(&opts.db_url)
         .await
         .with_context(|| format!("failed to connect to {}", opts.db_url))?;
 

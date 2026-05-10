@@ -4,7 +4,7 @@ check:
 prepare:
     sqlx database create
     sqlx migrate run
-    cargo sqlx prepare
+    cargo sqlx prepare --workspace
 
 # Build the project
 build: prepare check

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id as \"id!: i64\",\n               url,\n               title,\n               site_url,\n               etag,\n               last_modified,\n               poll_interval_seconds,\n               is_enabled as \"is_enabled!: bool\",\n               last_checked_at as \"last_checked_at: _\",\n               last_success_at as \"last_success_at: _\",\n               failure_count\n        FROM feeds\n        ORDER BY id ASC\n        ",
+  "query": "\n        SELECT id as \"id!: i64\",\n               url,\n               title,\n               site_url,\n               etag,\n               last_modified,\n               poll_interval_seconds,\n               is_enabled as \"is_enabled!: bool\",\n               last_checked_at as \"last_checked_at: _\",\n               last_success_at as \"last_success_at: _\",\n               failure_count\n        FROM feeds\n        WHERE is_enabled = TRUE\n        ORDER BY id ASC\n        ",
   "describe": {
     "columns": [
       {
@@ -76,5 +76,5 @@
       false
     ]
   },
-  "hash": "7c671158c680cee5dca7e2b167e22084ad30b01843be06b115cf11a88d0434ca"
+  "hash": "d6a2671be383df6ee0fbee7ec7903ddd4cd1b539c46a11b74e1679329826343b"
 }

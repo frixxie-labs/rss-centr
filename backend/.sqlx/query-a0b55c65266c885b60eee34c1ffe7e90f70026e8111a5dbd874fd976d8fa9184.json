@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO feed_items (feed_id, external_id, title, url)\n        VALUES ($1, $2, $3, $4)\n        RETURNING id as \"id!: i64\", feed_id, external_id, title, url,\n                  inserted_at as \"inserted_at: _\"\n        ",
+  "query": "\n        SELECT id as \"id!: i64\",\n               feed_id as \"feed_id!: i64\",\n               external_id, title, url,\n               inserted_at as \"inserted_at: _\"\n        FROM feed_items\n        WHERE inserted_at >= NOW() - INTERVAL '24 hours'\n        ORDER BY inserted_at DESC, id DESC\n        ",
   "describe": {
     "columns": [
       {
@@ -10,7 +10,7 @@
       },
       {
         "ordinal": 1,
-        "name": "feed_id",
+        "name": "feed_id!: i64",
         "type_info": "Int8"
       },
       {
@@ -35,12 +35,7 @@
       }
     ],
     "parameters": {
-      "Left": [
-        "Int8",
-        "Text",
-        "Text",
-        "Text"
-      ]
+      "Left": []
     },
     "nullable": [
       false,
@@ -51,5 +46,5 @@
       false
     ]
   },
-  "hash": "ca4ce0f8c618de14c4b35c87c93683db0cc396f5af758fa117685b60d6f69571"
+  "hash": "a0b55c65266c885b60eee34c1ffe7e90f70026e8111a5dbd874fd976d8fa9184"
 }

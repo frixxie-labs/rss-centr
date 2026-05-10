@@ -1,7 +1,7 @@
 use tokio::sync::mpsc::Sender;
 
 use axum::{Json, extract::State};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use tracing::{instrument, warn};
 
 use crate::{
@@ -10,7 +10,7 @@ use crate::{
     handlers::error::HandlerError,
 };
 
-type FeedState = State<(SqlitePool, Sender<IngestJob>)>;
+type FeedState = State<(PgPool, Sender<IngestJob>)>;
 
 #[instrument]
 pub async fn fetch_feed_title_index(
