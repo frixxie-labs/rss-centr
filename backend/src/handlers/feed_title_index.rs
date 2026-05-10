@@ -6,7 +6,7 @@ use tracing::{instrument, warn};
 
 use crate::{
     background_tasks::IngestJob,
-    feed::feed_title_index::{FeedTitleIndex, FeedTitleIndexEntry},
+    feed::feed_title_index::{FeedTitleIndexEntry, FeedTitleIndexRepository},
     handlers::error::HandlerError,
 };
 
@@ -17,14 +17,11 @@ pub async fn fetch_feed_title_index(
     State(app_state): FeedState,
 ) -> Result<Json<Vec<FeedTitleIndexEntry>>, HandlerError> {
     let (pool, _tx) = app_state;
-    let items = crate::feed::feed_item::read_all_feed_items(&pool)
-        .await
-        .map_err(|e| {
-            warn!("failed with error: {e:#}");
-            HandlerError::from_db(e, "Failed to read feed items")
-        })?;
-    let index = FeedTitleIndex::from(items);
-    Ok(Json(index.export_index()))
+    let index = pool.read_feed_title_index().await.map_err(|e| {
+        warn!("failed with error: {e:#}");
+        HandlerError::from_db(e, "Failed to read title index")
+    })?;
+    Ok(Json(index))
 }
 
 #[utoipa::path(
@@ -41,11 +38,9 @@ pub async fn fetch_recent_feed_title_index(
     State(app_state): FeedState,
 ) -> Result<Json<Vec<FeedTitleIndexEntry>>, HandlerError> {
     let (pool, _tx) = app_state;
-    let index = FeedTitleIndex::build_from_recent(&pool)
-        .await
-        .map_err(|e| {
-            warn!("failed with error: {e:#}");
-            HandlerError::from_db(e, "Failed to build recent title index")
-        })?;
-    Ok(Json(index.export_index()))
+    let index = pool.read_recent_feed_title_index().await.map_err(|e| {
+        warn!("failed with error: {e:#}");
+        HandlerError::from_db(e, "Failed to read recent title index")
+    })?;
+    Ok(Json(index))
 }

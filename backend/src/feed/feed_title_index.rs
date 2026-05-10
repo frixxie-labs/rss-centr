@@ -1,16 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::future::Future;
 
-use anyhow::Result;
-use nom::{
-    IResult, Parser,
-    bytes::complete::take_while1,
-    character::complete::{multispace0, multispace1},
-    multi::separated_list0,
-    sequence::preceded,
-};
-use sqlx::PgPool;
-
-use crate::feed::feed_item::{FeedItem, read_recent_feed_items};
+use anyhow::{Context, Result};
+use sqlx::{PgPool, Row};
 
 /// Common English stop words that carry little semantic meaning in titles.
 const ENGLISH_STOP_WORDS: &[&str] = &[
@@ -22,7 +13,7 @@ const ENGLISH_STOP_WORDS: &[&str] = &[
     "only", "very", "some", "more", "over", "such", "after", "does",
 ];
 
-/// Common Norwegian (Bokmål) stop words.
+/// Common Norwegian (Bokmal/Nynorsk) stop words.
 const NORWEGIAN_STOP_WORDS: &[&str] = &[
     "og",
     "i",
@@ -92,7 +83,6 @@ const NORWEGIAN_STOP_WORDS: &[&str] = &[
     "noe",
     "ville",
     "dere",
-    "som",
     "deres",
     "kun",
     "ja",
@@ -137,7 +127,6 @@ const NORWEGIAN_STOP_WORDS: &[&str] = &[
     "også",
     "slik",
     "vært",
-    "være",
     "begge",
     "siden",
     "dykk",
@@ -162,7 +151,6 @@ const NORWEGIAN_STOP_WORDS: &[&str] = &[
     "hennes",
     "hoss",
     "hossen",
-    "ikkje",
     "ingi",
     "inkje",
     "korleis",
@@ -184,7 +172,6 @@ const NORWEGIAN_STOP_WORDS: &[&str] = &[
     "nokor",
     "noko",
     "nokre",
-    "si",
     "sia",
     "sidan",
     "so",
@@ -198,17 +185,12 @@ const NORWEGIAN_STOP_WORDS: &[&str] = &[
     "vort",
     "varte",
     "vart",
-    "vere",
-    "verte",
-    "vore",
-    "mot",
     "tilbake",
     "igjen",
     "enda",
     "allerede",
     "alltid",
     "ofte",
-    "av",
     "bort",
     "bra",
     "deles",
@@ -217,7 +199,6 @@ const NORWEGIAN_STOP_WORDS: &[&str] = &[
     "derfor",
     "dermed",
     "derimot",
-    "deretter",
     "derfra",
     "derinne",
     "deroppe",
@@ -237,7 +218,6 @@ const NORWEGIAN_STOP_WORDS: &[&str] = &[
     "heller",
     "helt",
     "hittil",
-    "hver",
     "hverandre",
     "imidlertid",
     "innen",
@@ -246,7 +226,6 @@ const NORWEGIAN_STOP_WORDS: &[&str] = &[
     "like",
     "likevel",
     "litt",
-    "mange",
     "mer",
     "mest",
     "mindre",
@@ -258,9 +237,6 @@ const NORWEGIAN_STOP_WORDS: &[&str] = &[
     "nylig",
     "nær",
     "nærmere",
-    "ofte",
-    "opp",
-    "over",
     "rundt",
     "samtlige",
     "senere",
@@ -285,61 +261,12 @@ const NORWEGIAN_STOP_WORDS: &[&str] = &[
     "ytterligere",
 ];
 
-fn normalize_word(word: &str) -> String {
-    word.chars()
-        .filter(|c| c.is_alphanumeric() || *c == '-')
-        .collect::<String>()
-        .to_lowercase()
-        .trim_matches('-')
-        .to_string()
-}
-
-fn parse_word(input: &str) -> IResult<&str, &str> {
-    take_while1(|c: char| !c.is_whitespace()).parse(input)
-}
-
-fn parse_words(input: &str) -> IResult<&str, Vec<&str>> {
-    preceded(multispace0, separated_list0(multispace1, parse_word)).parse(input)
-}
-
-/// Configuration for word filtering in the title index.
-#[derive(Debug, Clone)]
-pub struct FeedTitleIndexConfig {
-    /// Minimum number of characters a normalized word must have to be indexed.
-    pub min_word_length: usize,
-    /// Words to exclude from indexing (should be pre-normalized/lowercased).
-    pub stop_words: HashSet<String>,
-}
-
-impl Default for FeedTitleIndexConfig {
-    fn default() -> Self {
-        let mut stop_words = HashSet::new();
-        for w in ENGLISH_STOP_WORDS {
-            stop_words.insert(normalize_word(w));
-        }
-        for w in NORWEGIAN_STOP_WORDS {
-            stop_words.insert(normalize_word(w));
-        }
-        Self {
-            min_word_length: 2,
-            stop_words,
-        }
-    }
-}
+const MIN_WORD_LENGTH: i32 = 2;
 
 #[derive(Debug, Ord, PartialEq, PartialOrd, Eq, serde::Serialize, utoipa::ToSchema)]
 pub struct FeedTitleIndexItem {
     pub feed_src_id: i64,
     pub occurences: u64,
-}
-
-impl FeedTitleIndexItem {
-    pub fn new(feed_src_id: i64, occurences: u64) -> Self {
-        Self {
-            feed_src_id,
-            occurences,
-        }
-    }
 }
 
 #[derive(Debug, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
@@ -349,171 +276,149 @@ pub struct FeedTitleIndexEntry {
     pub items: Vec<FeedTitleIndexItem>,
 }
 
-#[derive(Debug)]
-pub struct FeedTitleIndex {
-    pub items: HashMap<String, Vec<FeedTitleIndexItem>>,
-    pub total_items: i32,
-    config: FeedTitleIndexConfig,
+struct FeedTitleIndexRow {
+    word: String,
+    feed_src_id: i64,
+    occurences: u64,
+    total_occurences: u64,
 }
 
-impl Default for FeedTitleIndex {
-    fn default() -> Self {
-        Self::new()
+pub trait FeedTitleIndexRepository {
+    fn read_feed_title_index(
+        &self,
+    ) -> impl Future<Output = Result<Vec<FeedTitleIndexEntry>>> + Send;
+
+    fn read_recent_feed_title_index(
+        &self,
+    ) -> impl Future<Output = Result<Vec<FeedTitleIndexEntry>>> + Send;
+}
+
+impl FeedTitleIndexRepository for PgPool {
+    async fn read_feed_title_index(&self) -> Result<Vec<FeedTitleIndexEntry>> {
+        read_feed_title_index_filtered(self, false).await
+    }
+
+    async fn read_recent_feed_title_index(&self) -> Result<Vec<FeedTitleIndexEntry>> {
+        read_feed_title_index_filtered(self, true).await
     }
 }
 
-impl FeedTitleIndex {
-    pub fn new() -> Self {
-        Self {
-            items: HashMap::new(),
-            total_items: 0,
-            config: FeedTitleIndexConfig::default(),
-        }
-    }
+pub async fn read_feed_title_index(pool: &PgPool) -> Result<Vec<FeedTitleIndexEntry>> {
+    pool.read_feed_title_index().await
+}
 
-    /// Create a new index with custom configuration.
-    pub fn with_config(config: FeedTitleIndexConfig) -> Self {
-        Self {
-            items: HashMap::new(),
-            total_items: 0,
-            config,
-        }
-    }
+pub async fn read_recent_feed_title_index(pool: &PgPool) -> Result<Vec<FeedTitleIndexEntry>> {
+    pool.read_recent_feed_title_index().await
+}
 
-    /// Build an index from recent feed items (inserted in the last 24 hours).
-    pub async fn build_from_recent(pool: &PgPool) -> Result<Self> {
-        let items = read_recent_feed_items(pool).await?;
-        Ok(Self::from(items))
-    }
+async fn read_feed_title_index_filtered(
+    pool: &PgPool,
+    recent_only: bool,
+) -> Result<Vec<FeedTitleIndexEntry>> {
+    let stop_words = stop_words();
+    let rows = sqlx::query(
+        r#"
+        WITH indexed_feeds AS (
+            SELECT DISTINCT feed_id
+            FROM feed_items
+            WHERE ($1::BOOLEAN IS FALSE OR inserted_at >= NOW() - INTERVAL '24 hours')
+        ),
+        counted_words AS (
+            SELECT
+                indexed_feeds.feed_id,
+                stats.word,
+                stats.nentry::BIGINT AS occurences
+            FROM indexed_feeds
+            CROSS JOIN LATERAL ts_stat(format(
+                'SELECT to_tsvector(''simple'', title) FROM feed_items WHERE feed_id = %s AND (%L IS FALSE OR inserted_at >= NOW() - INTERVAL ''24 hours'')',
+                indexed_feeds.feed_id,
+                $1::BOOLEAN
+            )) AS stats
+            WHERE length(stats.word) >= $2
+              AND NOT (stats.word = ANY($3::TEXT[]))
+        )
+        SELECT
+            word,
+            feed_id AS feed_src_id,
+            occurences,
+            SUM(occurences) OVER (PARTITION BY word)::BIGINT AS total_occurences
+        FROM counted_words
+        ORDER BY total_occurences DESC, word ASC, occurences DESC, feed_src_id ASC
+        "#,
+    )
+    .bind(recent_only)
+    .bind(MIN_WORD_LENGTH)
+    .bind(stop_words)
+    .fetch_all(pool)
+    .await
+    .context("failed to read feed title index")?;
 
-    /// Returns `true` if the normalized word should be indexed (passes
-    /// minimum-length and stop-word filters).
-    fn should_index_word(&self, normalized: &str) -> bool {
-        normalized.len() >= self.config.min_word_length
-            && !self.config.stop_words.contains(normalized)
-    }
-
-    pub fn add_item(&mut self, title: String, feed_src_id: i64) {
-        let words = parse_words(&title)
-            .map(|(_, words)| words)
-            .unwrap_or_default();
-        for word in words {
-            let key = normalize_word(word);
-            if key.is_empty() || !self.should_index_word(&key) {
-                continue;
-            }
-            let entry = self.items.entry(key).or_default();
-            if let Some(item) = entry
-                .iter_mut()
-                .find(|item| item.feed_src_id == feed_src_id)
-            {
-                item.occurences += 1;
-            } else {
-                entry.push(FeedTitleIndexItem::new(feed_src_id, 1));
-            }
-        }
-        self.total_items += 1;
-    }
-
-    /// Remove a previously added title from the index, decrementing word
-    /// counts. Words whose count reaches zero are pruned. Returns `true` if
-    /// `total_items` was decremented (i.e. the call had an effect on the item
-    /// count).
-    pub fn remove_item(&mut self, title: &str, feed_src_id: i64) -> bool {
-        if self.total_items == 0 {
-            return false;
-        }
-        let words = parse_words(title)
-            .map(|(_, words)| words)
-            .unwrap_or_default();
-        for word in words {
-            let key = normalize_word(word);
-            if key.is_empty() || !self.should_index_word(&key) {
-                continue;
-            }
-            if let Some(entry) = self.items.get_mut(&key) {
-                if let Some(item) = entry.iter_mut().find(|i| i.feed_src_id == feed_src_id) {
-                    item.occurences = item.occurences.saturating_sub(1);
-                }
-                entry.retain(|i| i.occurences > 0);
-                if entry.is_empty() {
-                    self.items.remove(&key);
-                }
-            }
-        }
-        self.total_items -= 1;
-        true
-    }
-
-    pub fn get_items(&self, word: &str) -> Option<&Vec<FeedTitleIndexItem>> {
-        let key = normalize_word(word);
-        self.items.get(&key)
-    }
-
-    pub fn export_index(self) -> Vec<FeedTitleIndexEntry> {
-        let mut entries: Vec<FeedTitleIndexEntry> = self
-            .items
-            .into_iter()
-            .map(|(word, mut items)| {
-                let total_occurences: u64 = items.iter().map(|i| i.occurences).sum();
-                items.sort_by(|a, b| b.occurences.cmp(&a.occurences));
-                FeedTitleIndexEntry {
-                    word,
-                    total_occurences,
-                    items,
-                }
+    let rows = rows
+        .into_iter()
+        .map(|row| -> Result<FeedTitleIndexRow> {
+            Ok(FeedTitleIndexRow {
+                word: row.try_get("word")?,
+                feed_src_id: row.try_get("feed_src_id")?,
+                occurences: count_to_u64(row.try_get("occurences")?)?,
+                total_occurences: count_to_u64(row.try_get("total_occurences")?)?,
             })
-            .collect();
-        entries.sort_by(|a, b| b.total_occurences.cmp(&a.total_occurences));
-        entries
-    }
+        })
+        .collect::<Result<Vec<_>>>()?;
 
-    pub fn get_total_items(&self) -> i32 {
-        self.total_items
-    }
+    Ok(group_rows(rows))
 }
 
-impl From<Vec<FeedItem>> for FeedTitleIndex {
-    fn from(items: Vec<FeedItem>) -> Self {
-        let mut index = FeedTitleIndex::new();
-        for item in items {
-            index.add_item(item.title, item.feed_id);
+fn stop_words() -> Vec<String> {
+    ENGLISH_STOP_WORDS
+        .iter()
+        .chain(NORWEGIAN_STOP_WORDS.iter())
+        .map(|word| word.to_string())
+        .collect()
+}
+
+fn count_to_u64(value: i64) -> Result<u64> {
+    u64::try_from(value).context("title index count was negative")
+}
+
+fn group_rows(rows: Vec<FeedTitleIndexRow>) -> Vec<FeedTitleIndexEntry> {
+    let mut entries: Vec<FeedTitleIndexEntry> = Vec::new();
+    for row in rows {
+        if let Some(entry) = entries.last_mut()
+            && entry.word == row.word
+        {
+            entry.items.push(FeedTitleIndexItem {
+                feed_src_id: row.feed_src_id,
+                occurences: row.occurences,
+            });
+            continue;
         }
-        index
+
+        entries.push(FeedTitleIndexEntry {
+            word: row.word,
+            total_occurences: row.total_occurences,
+            items: vec![FeedTitleIndexItem {
+                feed_src_id: row.feed_src_id,
+                occurences: row.occurences,
+            }],
+        });
     }
+    entries
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::feed::{
-        feed_item::{insert_feed_item, read_all_feed_items},
-        feed_subscription::upsert_feed_by_url,
-    };
+    use crate::feed::{feed_item::insert_feed_item, feed_subscription::upsert_feed_by_url};
 
-    /// Helper: create an index with no filtering so legacy tests keep working
-    /// with short/stop words.
-    fn unfiltered_config() -> FeedTitleIndexConfig {
-        FeedTitleIndexConfig {
-            min_word_length: 0,
-            stop_words: HashSet::new(),
-        }
+    fn find_entry<'a>(
+        index: &'a [FeedTitleIndexEntry],
+        word: &str,
+    ) -> Option<&'a FeedTitleIndexEntry> {
+        index.iter().find(|entry| entry.word == word)
     }
-
-    fn unfiltered_index_from(items: Vec<FeedItem>) -> FeedTitleIndex {
-        let mut index = FeedTitleIndex::with_config(unfiltered_config());
-        for item in items {
-            index.add_item(item.title, item.feed_id);
-        }
-        index
-    }
-
-    // ---------------------------------------------------------------
-    // Original tests (use unfiltered config to keep expectations stable)
-    // ---------------------------------------------------------------
 
     #[sqlx::test]
-    pub async fn test_feed_title_index(pool: sqlx::PgPool) {
+    async fn test_feed_title_index(pool: sqlx::PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -521,42 +426,17 @@ mod tests {
         insert_feed_item(&pool, feed.id, "ext-1", "Title", "https://example.com")
             .await
             .unwrap();
-        let items = read_all_feed_items(&pool).await.unwrap();
-        let index = unfiltered_index_from(items);
 
-        assert_eq!(index.get_total_items(), 1);
-        let title_items = index.get_items("Title").unwrap();
-        assert_eq!(title_items.len(), 1);
-        assert_eq!(title_items[0].feed_src_id, feed.id);
+        let index = read_feed_title_index(&pool).await.unwrap();
+        let title = find_entry(&index, "title").unwrap();
+
+        assert_eq!(title.total_occurences, 1);
+        assert_eq!(title.items.len(), 1);
+        assert_eq!(title.items[0].feed_src_id, feed.id);
     }
 
     #[sqlx::test]
-    pub async fn test_feed_title_index_multiple_items(pool: sqlx::PgPool) {
-        let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
-            .await
-            .unwrap();
-
-        insert_feed_item(&pool, feed.id, "ext-1", "Title One", "https://example.com")
-            .await
-            .unwrap();
-        insert_feed_item(&pool, feed.id, "ext-2", "Title Two", "https://example.com")
-            .await
-            .unwrap();
-        let items = read_all_feed_items(&pool).await.unwrap();
-        let index = unfiltered_index_from(items);
-
-        assert_eq!(index.get_total_items(), 2);
-        let title_one_items = index.get_items("One").unwrap();
-        assert_eq!(title_one_items.len(), 1);
-        assert_eq!(title_one_items[0].feed_src_id, feed.id);
-
-        let title_two_items = index.get_items("Two").unwrap();
-        assert_eq!(title_two_items.len(), 1);
-        assert_eq!(title_two_items[0].feed_src_id, feed.id);
-    }
-
-    #[sqlx::test]
-    pub async fn test_feed_title_index_multiple_feeds(pool: sqlx::PgPool) {
+    async fn test_feed_title_index_multiple_feeds(pool: sqlx::PgPool) {
         let feed1 = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -570,60 +450,22 @@ mod tests {
         insert_feed_item(&pool, feed2.id, "ext-2", "Title One", "https://example.com")
             .await
             .unwrap();
-        let items = read_all_feed_items(&pool).await.unwrap();
-        let index = unfiltered_index_from(items);
 
-        assert_eq!(index.get_total_items(), 2);
-        let title_one_items = index.get_items("One").unwrap();
-        assert_eq!(title_one_items.len(), 2);
-        assert!(
-            title_one_items
-                .iter()
-                .any(|item| item.feed_src_id == feed1.id)
-        );
-        assert!(
-            title_one_items
-                .iter()
-                .any(|item| item.feed_src_id == feed2.id)
-        );
+        let index = read_feed_title_index(&pool).await.unwrap();
+        let title = find_entry(&index, "title").unwrap();
+
+        assert_eq!(title.total_occurences, 2);
+        assert_eq!(title.items.len(), 2);
+        assert!(title.items.iter().any(|item| item.feed_src_id == feed1.id));
+        assert!(title.items.iter().any(|item| item.feed_src_id == feed2.id));
     }
 
     #[sqlx::test]
-    pub async fn test_feed_title_index_no_items(_pool: sqlx::PgPool) {
-        let index = FeedTitleIndex::new();
-        assert_eq!(index.get_total_items(), 0);
-        assert!(index.get_items("Nonexistent").is_none());
-    }
-
-    #[sqlx::test]
-    pub async fn test_export_index(pool: sqlx::PgPool) {
+    async fn test_feed_title_index_sorted_by_total_occurences(pool: sqlx::PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
 
-        insert_feed_item(&pool, feed.id, "ext-1", "Title One", "https://example.com")
-            .await
-            .unwrap();
-        let items = read_all_feed_items(&pool).await.unwrap();
-        let index = unfiltered_index_from(items);
-        let exported = index.export_index();
-
-        assert_eq!(exported.len(), 2); // "title" and "one"
-        assert!(exported.iter().any(|e| e.word == "title"));
-        assert!(exported.iter().any(|e| e.word == "one"));
-        for entry in &exported {
-            assert_eq!(entry.total_occurences, 1);
-            assert_eq!(entry.items.len(), 1);
-        }
-    }
-
-    #[sqlx::test]
-    pub async fn test_export_index_sorted_by_total_occurences(pool: sqlx::PgPool) {
-        let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
-            .await
-            .unwrap();
-
-        // "title" appears 3 times, "one" 1 time, "two" 1 time
         insert_feed_item(&pool, feed.id, "ext-1", "Title One", "https://example.com")
             .await
             .unwrap();
@@ -633,187 +475,83 @@ mod tests {
         insert_feed_item(&pool, feed.id, "ext-3", "Title", "https://example.com")
             .await
             .unwrap();
-        let items = read_all_feed_items(&pool).await.unwrap();
-        let index = unfiltered_index_from(items);
-        let exported = index.export_index();
 
-        assert_eq!(exported.len(), 3);
-        // First entry should be "title" with total 3
-        assert_eq!(exported[0].word, "title");
-        assert_eq!(exported[0].total_occurences, 3);
-        // Remaining entries each have total 1
-        assert_eq!(exported[1].total_occurences, 1);
-        assert_eq!(exported[2].total_occurences, 1);
+        let index = read_feed_title_index(&pool).await.unwrap();
+
+        assert_eq!(index[0].word, "title");
+        assert_eq!(index[0].total_occurences, 3);
     }
-
-    // ---------------------------------------------------------------
-    // Stop-word filtering tests
-    // ---------------------------------------------------------------
-
-    #[test]
-    fn test_stop_words_filtered_english() {
-        let mut index = FeedTitleIndex::new();
-        index.add_item("The quick and brown fox".to_string(), 1);
-
-        // "the" and "and" are English stop words
-        assert!(index.get_items("the").is_none());
-        assert!(index.get_items("and").is_none());
-        // "quick", "brown", "fox" should be indexed
-        assert!(index.get_items("quick").is_some());
-        assert!(index.get_items("brown").is_some());
-        assert!(index.get_items("fox").is_some());
-    }
-
-    #[test]
-    fn test_stop_words_filtered_norwegian() {
-        let mut index = FeedTitleIndex::new();
-        index.add_item("Nyheter på norsk og engelsk".to_string(), 1);
-
-        // "på" and "og" are Norwegian stop words
-        assert!(index.get_items("på").is_none());
-        assert!(index.get_items("og").is_none());
-        // Content words should be indexed
-        assert!(index.get_items("nyheter").is_some());
-        assert!(index.get_items("norsk").is_some());
-        assert!(index.get_items("engelsk").is_some());
-    }
-
-    // ---------------------------------------------------------------
-    // Minimum word length tests
-    // ---------------------------------------------------------------
-
-    #[test]
-    fn test_min_word_length_default() {
-        let mut index = FeedTitleIndex::new();
-        // Default min_word_length is 2
-        index.add_item("I x am ok".to_string(), 1);
-
-        // "i" is a stop word anyway, but "x" has length 1 -- too short
-        assert!(index.get_items("x").is_none());
-        // "am" is a stop word; "ok" is 2 chars and not a stop word
-        assert!(index.get_items("ok").is_some());
-    }
-
-    #[test]
-    fn test_min_word_length_custom() {
-        let config = FeedTitleIndexConfig {
-            min_word_length: 4,
-            stop_words: HashSet::new(),
-        };
-        let mut index = FeedTitleIndex::with_config(config);
-        index.add_item("Big old wonderful day".to_string(), 1);
-
-        // "big" (3) and "old" (3) and "day" (3) are too short
-        assert!(index.get_items("big").is_none());
-        assert!(index.get_items("old").is_none());
-        assert!(index.get_items("day").is_none());
-        // "wonderful" (9) passes
-        assert!(index.get_items("wonderful").is_some());
-    }
-
-    // ---------------------------------------------------------------
-    // Remove item tests
-    // ---------------------------------------------------------------
-
-    #[test]
-    fn test_remove_item_basic() {
-        let mut index = FeedTitleIndex::with_config(unfiltered_config());
-        index.add_item("Hello World".to_string(), 1);
-        assert_eq!(index.get_total_items(), 1);
-        assert!(index.get_items("hello").is_some());
-
-        let removed = index.remove_item("Hello World", 1);
-        assert!(removed);
-        assert_eq!(index.get_total_items(), 0);
-        // Words should be fully pruned
-        assert!(index.get_items("hello").is_none());
-        assert!(index.get_items("world").is_none());
-    }
-
-    #[test]
-    fn test_remove_item_partial() {
-        let mut index = FeedTitleIndex::with_config(unfiltered_config());
-        index.add_item("Hello World".to_string(), 1);
-        index.add_item("Hello Rust".to_string(), 1);
-
-        // "hello" has 2 occurrences for feed 1
-        let items = index.get_items("hello").unwrap();
-        assert_eq!(items[0].occurences, 2);
-
-        index.remove_item("Hello World", 1);
-        assert_eq!(index.get_total_items(), 1);
-        // "hello" should still exist with 1 occurrence
-        let items = index.get_items("hello").unwrap();
-        assert_eq!(items[0].occurences, 1);
-        // "world" should be gone
-        assert!(index.get_items("world").is_none());
-        // "rust" should remain
-        assert!(index.get_items("rust").is_some());
-    }
-
-    #[test]
-    fn test_remove_item_multi_feed() {
-        let mut index = FeedTitleIndex::with_config(unfiltered_config());
-        index.add_item("Hello World".to_string(), 1);
-        index.add_item("Hello World".to_string(), 2);
-
-        index.remove_item("Hello World", 1);
-        // Feed 2's entry should remain
-        let items = index.get_items("hello").unwrap();
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].feed_src_id, 2);
-    }
-
-    #[test]
-    fn test_remove_item_empty_index() {
-        let mut index = FeedTitleIndex::with_config(unfiltered_config());
-        let removed = index.remove_item("Hello World", 1);
-        assert!(!removed);
-        assert_eq!(index.get_total_items(), 0);
-    }
-
-    // ---------------------------------------------------------------
-    // Config tests
-    // ---------------------------------------------------------------
-
-    #[test]
-    fn test_with_config() {
-        let config = FeedTitleIndexConfig {
-            min_word_length: 5,
-            stop_words: HashSet::from(["custom".to_string()]),
-        };
-        let mut index = FeedTitleIndex::with_config(config);
-        index.add_item("Custom longword short".to_string(), 1);
-
-        // "custom" is a stop word
-        assert!(index.get_items("custom").is_none());
-        // "short" is 5 chars, passes min length
-        assert!(index.get_items("short").is_some());
-        // "longword" is 8 chars, passes
-        assert!(index.get_items("longword").is_some());
-    }
-
-    #[test]
-    fn test_default_config_has_stop_words() {
-        let config = FeedTitleIndexConfig::default();
-        assert!(config.stop_words.contains("the"));
-        assert!(config.stop_words.contains("and"));
-        assert!(config.stop_words.contains("på"));
-        assert!(config.stop_words.contains("og"));
-        assert_eq!(config.min_word_length, 2);
-    }
-
-    // ---------------------------------------------------------------
-    // build_from_recent tests
-    // ---------------------------------------------------------------
 
     #[sqlx::test]
-    async fn test_build_from_recent(pool: sqlx::PgPool) {
+    async fn test_feed_title_index_filters_stop_words(pool: sqlx::PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
 
-        // Items inserted during the test get CURRENT_TIMESTAMP, which is today.
+        insert_feed_item(
+            &pool,
+            feed.id,
+            "ext-1",
+            "The quick and brown fox på norsk og engelsk",
+            "https://example.com",
+        )
+        .await
+        .unwrap();
+
+        let index = read_feed_title_index(&pool).await.unwrap();
+
+        assert!(find_entry(&index, "the").is_none());
+        assert!(find_entry(&index, "and").is_none());
+        assert!(find_entry(&index, "på").is_none());
+        assert!(find_entry(&index, "og").is_none());
+        assert!(find_entry(&index, "quick").is_some());
+        assert!(find_entry(&index, "norsk").is_some());
+    }
+
+    #[sqlx::test]
+    async fn test_feed_title_index_normalizes_words_with_postgresql(pool: sqlx::PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
+            .await
+            .unwrap();
+
+        insert_feed_item(
+            &pool,
+            feed.id,
+            "ext-1",
+            "Rust, rust! state of the art --rust--",
+            "https://example.com",
+        )
+        .await
+        .unwrap();
+
+        let index = read_feed_title_index(&pool).await.unwrap();
+        let rust = find_entry(&index, "rust").unwrap();
+
+        assert_eq!(rust.total_occurences, 3);
+        assert!(find_entry(&index, "state").is_some());
+    }
+
+    #[sqlx::test]
+    async fn test_recent_feed_title_index(pool: sqlx::PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
+            .await
+            .unwrap();
+
+        let old_item = insert_feed_item(
+            &pool,
+            feed.id,
+            "old-1",
+            "Archived Technology",
+            "https://example.com/old",
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE feed_items SET inserted_at = NOW() - INTERVAL '2 days' WHERE id = $1")
+            .bind(old_item.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
         insert_feed_item(
             &pool,
             feed.id,
@@ -823,27 +561,17 @@ mod tests {
         )
         .await
         .unwrap();
-        insert_feed_item(
-            &pool,
-            feed.id,
-            "today-2",
-            "Technology Advances Rapidly",
-            "https://example.com/2",
-        )
-        .await
-        .unwrap();
 
-        let index = FeedTitleIndex::build_from_recent(&pool).await.unwrap();
+        let index = read_recent_feed_title_index(&pool).await.unwrap();
 
-        assert_eq!(index.get_total_items(), 2);
-        // "technology" appears in both titles
-        let tech_items = index.get_items("technology").unwrap();
-        assert_eq!(tech_items[0].occurences, 2);
+        assert!(find_entry(&index, "archived").is_none());
+        let technology = find_entry(&index, "technology").unwrap();
+        assert_eq!(technology.total_occurences, 1);
     }
 
     #[sqlx::test]
-    async fn test_build_from_recent_empty(pool: sqlx::PgPool) {
-        let index = FeedTitleIndex::build_from_recent(&pool).await.unwrap();
-        assert_eq!(index.get_total_items(), 0);
+    async fn test_recent_feed_title_index_empty(pool: sqlx::PgPool) {
+        let index = read_recent_feed_title_index(&pool).await.unwrap();
+        assert!(index.is_empty());
     }
 }
