@@ -1,44 +1,50 @@
 {
-  "db_name": "SQLite",
+  "db_name": "PostgreSQL",
   "query": "\n        UPDATE feed_item_details\n        SET summary = $1, content = $2, author = $3, published_at = $4\n        WHERE feed_item_id = $5\n        RETURNING id as \"id!: i64\", feed_item_id as \"feed_item_id!: i64\",\n                  summary, content, author,\n                  published_at as \"published_at: _\"\n        ",
   "describe": {
     "columns": [
       {
-        "name": "id!: i64",
         "ordinal": 0,
-        "type_info": "Integer"
+        "name": "id!: i64",
+        "type_info": "Int8"
       },
       {
-        "name": "feed_item_id!: i64",
         "ordinal": 1,
-        "type_info": "Integer"
+        "name": "feed_item_id!: i64",
+        "type_info": "Int8"
       },
       {
-        "name": "summary",
         "ordinal": 2,
+        "name": "summary",
         "type_info": "Text"
       },
       {
-        "name": "content",
         "ordinal": 3,
+        "name": "content",
         "type_info": "Text"
       },
       {
-        "name": "author",
         "ordinal": 4,
+        "name": "author",
         "type_info": "Text"
       },
       {
-        "name": "published_at: _",
         "ordinal": 5,
-        "type_info": "Datetime"
+        "name": "published_at: _",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
-      "Right": 5
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Int8"
+      ]
     },
     "nullable": [
-      true,
+      false,
       false,
       false,
       false,

@@ -1,10 +1,14 @@
 {
-  "db_name": "SQLite",
+  "db_name": "PostgreSQL",
   "query": "\n        UPDATE feeds\n        SET last_checked_at = $1,\n            failure_count = failure_count + 1,\n            poll_interval_seconds = COALESCE($2, poll_interval_seconds)\n        WHERE id = $3\n        ",
   "describe": {
     "columns": [],
     "parameters": {
-      "Right": 3
+      "Left": [
+        "Timestamptz",
+        "Int8",
+        "Int8"
+      ]
     },
     "nullable": []
   },

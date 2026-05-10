@@ -8,7 +8,7 @@ use axum::{
 };
 use metrics::histogram;
 use metrics_exporter_prometheus::PrometheusHandle;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::Sender;
 use tokio::time::Instant;
@@ -56,7 +56,7 @@ pub async fn profile_endpoint(request: Request, next: Next) -> Response {
 }
 
 pub fn create_router(
-    pool: SqlitePool,
+    pool: PgPool,
     metrics_handler: PrometheusHandle,
     tx: Sender<IngestJob>,
     new_item_tx: broadcast::Sender<NewFeedItemEvent>,

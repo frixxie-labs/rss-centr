@@ -3,7 +3,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use tracing::{instrument, warn};
 use utoipa::ToSchema;
 
@@ -36,7 +36,7 @@ pub struct CheckResult {
     tag = "system"
 )]
 #[instrument(skip(pool))]
-pub async fn health(State(pool): State<SqlitePool>) -> impl IntoResponse {
+pub async fn health(State(pool): State<PgPool>) -> impl IntoResponse {
     let timestamp = chrono::Utc::now().to_rfc3339();
 
     match sqlx::query_scalar::<_, i32>("SELECT 1")
@@ -83,17 +83,17 @@ mod tests {
     use axum::routing::get;
     use axum::Router;
     use http_body_util::BodyExt;
-    use sqlx::SqlitePool;
+    use sqlx::postgres::PgPoolOptions;
     use tower::ServiceExt;
 
-    fn app(pool: SqlitePool) -> Router {
+    fn app(pool: PgPool) -> Router {
         Router::new()
             .route("/status/health", get(health))
             .with_state(pool)
     }
 
     #[sqlx::test]
-    async fn test_health_returns_200_when_db_is_reachable(pool: SqlitePool) {
+    async fn test_health_returns_200_when_db_is_reachable(pool: PgPool) {
         let response = app(pool)
             .oneshot(
                 Request::builder()
@@ -116,7 +116,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_health_response_timestamp_is_rfc3339(pool: SqlitePool) {
+    async fn test_health_response_timestamp_is_rfc3339(pool: PgPool) {
         let response = app(pool)
             .oneshot(
                 Request::builder()
@@ -135,7 +135,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_health_response_content_type_is_json(pool: SqlitePool) {
+    async fn test_health_response_content_type_is_json(pool: PgPool) {
         let response = app(pool)
             .oneshot(
                 Request::builder()
@@ -160,8 +160,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_health_returns_503_when_db_is_closed() {
-        let pool = SqlitePool::connect("sqlite::memory:")
-            .await
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://postgres:postgres@localhost:5432/rss_centr")
             .unwrap();
         pool.close().await;
 

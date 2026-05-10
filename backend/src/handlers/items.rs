@@ -1,6 +1,6 @@
 use axum::{Json, extract::Path, extract::Query, extract::State};
 use serde::Deserialize;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use tracing::{instrument, warn};
 
 use crate::feed::feed_item::{FeedItem, FeedItemDetail, FeedItemWithDetail};
@@ -25,7 +25,7 @@ use super::error::HandlerError;
 )]
 #[instrument]
 pub async fn fetch_items_by_feed(
-    State(pool): State<SqlitePool>,
+    State(pool): State<PgPool>,
     Path(feed_id): Path<i64>,
 ) -> Result<Json<Vec<FeedItem>>, HandlerError> {
     let items = read_feed_items_by_feed(&pool, feed_id).await.map_err(|e| {
@@ -54,7 +54,7 @@ pub struct LatestItemsQuery {
 )]
 #[instrument]
 pub async fn fetch_latest_items(
-    State(pool): State<SqlitePool>,
+    State(pool): State<PgPool>,
     Query(query): Query<LatestItemsQuery>,
 ) -> Result<Json<Vec<FeedItemWithDetail>>, HandlerError> {
     let items = match query.limit {
@@ -82,7 +82,7 @@ pub async fn fetch_latest_items(
 )]
 #[instrument]
 pub async fn fetch_item_by_id(
-    State(pool): State<SqlitePool>,
+    State(pool): State<PgPool>,
     Path(item_id): Path<i64>,
 ) -> Result<Json<FeedItem>, HandlerError> {
     let item = read_feed_item(&pool, item_id).await.map_err(|e| {
@@ -106,7 +106,7 @@ pub async fn fetch_item_by_id(
 )]
 #[instrument]
 pub async fn fetch_item_detail(
-    State(pool): State<SqlitePool>,
+    State(pool): State<PgPool>,
     Path(item_id): Path<i64>,
 ) -> Result<Json<FeedItemDetail>, HandlerError> {
     let detail = read_feed_item_detail(&pool, item_id).await.map_err(|e| {

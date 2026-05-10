@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::prelude::FromRow;
-use sqlx::{Sqlite, SqlitePool};
+use sqlx::{PgPool, Postgres};
 use utoipa::ToSchema;
 
 #[derive(Serialize, Deserialize, FromRow, ToSchema)]
@@ -74,7 +74,7 @@ fn cadence_seconds(row: &FeedCadenceStats) -> Option<i64> {
 }
 
 pub async fn insert_feed_item(
-    pool: &SqlitePool,
+    pool: &PgPool,
     feed_id: i64,
     external_id: &str,
     title: &str,
@@ -108,7 +108,7 @@ pub async fn insert_feed_item_dedup<'e, E>(
     url: &str,
 ) -> Result<Option<FeedItem>>
 where
-    E: sqlx::Executor<'e, Database = Sqlite>,
+    E: sqlx::Executor<'e, Database = Postgres>,
 {
     let row = sqlx::query_as!(
         FeedItem,
@@ -135,7 +135,7 @@ where
     Ok(row)
 }
 
-pub async fn read_feed_item(pool: &SqlitePool, id: i64) -> Result<FeedItem> {
+pub async fn read_feed_item(pool: &PgPool, id: i64) -> Result<FeedItem> {
     let row = sqlx::query_as!(
         FeedItem,
         r#"
@@ -157,7 +157,7 @@ pub async fn read_feed_item(pool: &SqlitePool, id: i64) -> Result<FeedItem> {
     Ok(row)
 }
 
-pub async fn read_feed_items_by_feed(pool: &SqlitePool, feed_id: i64) -> Result<Vec<FeedItem>> {
+pub async fn read_feed_items_by_feed(pool: &PgPool, feed_id: i64) -> Result<Vec<FeedItem>> {
     let rows = sqlx::query_as!(
         FeedItem,
         r#"
@@ -178,25 +178,21 @@ pub async fn read_feed_items_by_feed(pool: &SqlitePool, feed_id: i64) -> Result<
     Ok(rows)
 }
 
-pub async fn read_feed_cadence_seconds(pool: &SqlitePool, feed_id: i64) -> Result<Option<i64>> {
+pub async fn read_feed_cadence_seconds(pool: &PgPool, feed_id: i64) -> Result<Option<i64>> {
     let row = sqlx::query_as!(
         FeedCadenceStats,
         r#"
         WITH inserted_diffs AS (
-            SELECT CAST(
-                strftime('%s', inserted_at)
-                - strftime('%s', LAG(inserted_at) OVER (ORDER BY inserted_at ASC, id ASC))
-                AS REAL
-            ) AS diff_seconds
+            SELECT EXTRACT(EPOCH FROM (
+                       inserted_at - LAG(inserted_at) OVER (ORDER BY inserted_at ASC, id ASC)
+                   ))::DOUBLE PRECISION AS diff_seconds
             FROM feed_items
             WHERE feed_id = $1
         ),
         published_diffs AS (
-            SELECT CAST(
-                strftime('%s', d.published_at)
-                - strftime('%s', LAG(d.published_at) OVER (ORDER BY d.published_at ASC, d.id ASC))
-                AS REAL
-            ) AS diff_seconds
+            SELECT EXTRACT(EPOCH FROM (
+                       d.published_at - LAG(d.published_at) OVER (ORDER BY d.published_at ASC, d.id ASC)
+                   ))::DOUBLE PRECISION AS diff_seconds
             FROM feed_items f
             JOIN feed_item_details d ON d.feed_item_id = f.id
             WHERE f.feed_id = $1
@@ -230,7 +226,7 @@ pub async fn read_feed_cadence_seconds(pool: &SqlitePool, feed_id: i64) -> Resul
     Ok(cadence_seconds(&row))
 }
 
-pub async fn read_latest_feed_items(pool: &SqlitePool, limit: i64) -> Result<Vec<FeedItem>> {
+pub async fn read_latest_feed_items(pool: &PgPool, limit: i64) -> Result<Vec<FeedItem>> {
     let rows = sqlx::query_as!(
         FeedItem,
         r#"
@@ -251,7 +247,7 @@ pub async fn read_latest_feed_items(pool: &SqlitePool, limit: i64) -> Result<Vec
     Ok(rows)
 }
 
-pub async fn read_feed_items_after_id(pool: &SqlitePool, id: i64) -> Result<Vec<FeedItem>> {
+pub async fn read_feed_items_after_id(pool: &PgPool, id: i64) -> Result<Vec<FeedItem>> {
     let rows = sqlx::query_as!(
         FeedItem,
         r#"
@@ -273,7 +269,7 @@ pub async fn read_feed_items_after_id(pool: &SqlitePool, id: i64) -> Result<Vec<
 }
 
 pub async fn read_latest_feed_items_with_detail(
-    pool: &SqlitePool,
+    pool: &PgPool,
     limit: i64,
 ) -> Result<Vec<FeedItemWithDetail>> {
     let rows = sqlx::query_as!(
@@ -303,7 +299,7 @@ pub async fn read_latest_feed_items_with_detail(
     Ok(rows)
 }
 
-pub async fn read_recent_feed_items(pool: &SqlitePool) -> Result<Vec<FeedItem>> {
+pub async fn read_recent_feed_items(pool: &PgPool) -> Result<Vec<FeedItem>> {
     let rows = sqlx::query_as!(
         FeedItem,
         r#"
@@ -312,7 +308,7 @@ pub async fn read_recent_feed_items(pool: &SqlitePool) -> Result<Vec<FeedItem>> 
                external_id, title, url,
                inserted_at as "inserted_at: _"
         FROM feed_items
-        WHERE inserted_at >= datetime('now', '-24 hours')
+        WHERE inserted_at >= NOW() - INTERVAL '24 hours'
         ORDER BY inserted_at DESC, id DESC
         "#,
     )
@@ -323,7 +319,7 @@ pub async fn read_recent_feed_items(pool: &SqlitePool) -> Result<Vec<FeedItem>> 
     Ok(rows)
 }
 
-pub async fn read_all_feed_items(pool: &SqlitePool) -> Result<Vec<FeedItem>> {
+pub async fn read_all_feed_items(pool: &PgPool) -> Result<Vec<FeedItem>> {
     let rows = sqlx::query_as!(
         FeedItem,
         r#"
@@ -342,7 +338,7 @@ pub async fn read_all_feed_items(pool: &SqlitePool) -> Result<Vec<FeedItem>> {
     Ok(rows)
 }
 
-pub async fn read_all_feed_items_with_detail(pool: &SqlitePool) -> Result<Vec<FeedItemWithDetail>> {
+pub async fn read_all_feed_items_with_detail(pool: &PgPool) -> Result<Vec<FeedItemWithDetail>> {
     let rows = sqlx::query_as!(
         FeedItemWithDetail,
         r#"
@@ -369,7 +365,7 @@ pub async fn read_all_feed_items_with_detail(pool: &SqlitePool) -> Result<Vec<Fe
 }
 
 pub async fn update_feed_item(
-    pool: &SqlitePool,
+    pool: &PgPool,
     id: i64,
     title: &str,
     url: &str,
@@ -394,7 +390,7 @@ pub async fn update_feed_item(
     Ok(row)
 }
 
-pub async fn delete_feed_item(pool: &SqlitePool, id: i64) -> Result<()> {
+pub async fn delete_feed_item(pool: &PgPool, id: i64) -> Result<()> {
     let result = sqlx::query!(
         r#"
         DELETE FROM feed_items
@@ -414,7 +410,7 @@ pub async fn delete_feed_item(pool: &SqlitePool, id: i64) -> Result<()> {
 }
 
 pub async fn insert_feed_item_detail(
-    pool: &SqlitePool,
+    pool: &PgPool,
     feed_item_id: i64,
     summary: &str,
     content: &str,
@@ -454,7 +450,7 @@ pub async fn insert_feed_item_detail_dedup<'e, E>(
     published_at: DateTime<Utc>,
 ) -> Result<Option<FeedItemDetail>>
 where
-    E: sqlx::Executor<'e, Database = Sqlite>,
+    E: sqlx::Executor<'e, Database = Postgres>,
 {
     let row = sqlx::query_as!(
         FeedItemDetail,
@@ -481,7 +477,7 @@ where
     Ok(row)
 }
 
-pub async fn read_feed_item_detail(pool: &SqlitePool, feed_item_id: i64) -> Result<FeedItemDetail> {
+pub async fn read_feed_item_detail(pool: &PgPool, feed_item_id: i64) -> Result<FeedItemDetail> {
     let row = sqlx::query_as!(
         FeedItemDetail,
         r#"
@@ -505,7 +501,7 @@ pub async fn read_feed_item_detail(pool: &SqlitePool, feed_item_id: i64) -> Resu
 }
 
 pub async fn update_feed_item_detail(
-    pool: &SqlitePool,
+    pool: &PgPool,
     feed_item_id: i64,
     summary: &str,
     content: &str,
@@ -537,7 +533,7 @@ pub async fn update_feed_item_detail(
     Ok(row)
 }
 
-pub async fn delete_feed_item_detail(pool: &SqlitePool, feed_item_id: i64) -> Result<()> {
+pub async fn delete_feed_item_detail(pool: &PgPool, feed_item_id: i64) -> Result<()> {
     let result = sqlx::query!(
         r#"
         DELETE FROM feed_item_details
@@ -621,7 +617,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[sqlx::test]
-    async fn test_read_feed_cadence_seconds_prefers_published_over_inserted(pool: SqlitePool) {
+    async fn test_read_feed_cadence_seconds_prefers_published_over_inserted(pool: PgPool) {
         // Scenario: feed was just subscribed to, so inserted_at values are
         // close together (bulk ingest), but published_at values reflect the
         // real publishing cadence.
@@ -724,7 +720,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_read_feed_cadence_seconds_falls_back_to_inserted_diffs(pool: SqlitePool) {
+    async fn test_read_feed_cadence_seconds_falls_back_to_inserted_diffs(pool: PgPool) {
         // Scenario: feed items have no real published_at (all inferred to
         // insertion time), so published_diffs are all < 60s. Falls back to
         // inserted_diffs which have a real cadence.
@@ -792,7 +788,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_insert_feed_item(pool: SqlitePool) {
+    async fn test_insert_feed_item(pool: PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -808,7 +804,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_insert_feed_item_dedup(pool: SqlitePool) {
+    async fn test_insert_feed_item_dedup(pool: PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -825,7 +821,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_read_feed_item(pool: SqlitePool) {
+    async fn test_read_feed_item(pool: PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -842,13 +838,13 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_read_feed_item_not_found(pool: SqlitePool) {
+    async fn test_read_feed_item_not_found(pool: PgPool) {
         let result = read_feed_item(&pool, 999).await;
         assert!(result.is_err());
     }
 
     #[sqlx::test]
-    async fn test_read_feed_items_by_feed(pool: SqlitePool) {
+    async fn test_read_feed_items_by_feed(pool: PgPool) {
         let feed1 = upsert_feed_by_url(&pool, "https://example.com/a.xml")
             .await
             .unwrap();
@@ -881,13 +877,13 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_read_feed_items_by_feed_empty(pool: SqlitePool) {
+    async fn test_read_feed_items_by_feed_empty(pool: PgPool) {
         let items = read_feed_items_by_feed(&pool, 42).await.unwrap();
         assert!(items.is_empty());
     }
 
     #[sqlx::test]
-    async fn test_read_latest_feed_items_limit_and_order(pool: SqlitePool) {
+    async fn test_read_latest_feed_items_limit_and_order(pool: PgPool) {
         let feed1 = upsert_feed_by_url(&pool, "https://example.com/a.xml")
             .await
             .unwrap();
@@ -912,7 +908,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_update_feed_item(pool: SqlitePool) {
+    async fn test_update_feed_item(pool: PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -932,7 +928,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_delete_feed_item(pool: SqlitePool) {
+    async fn test_delete_feed_item(pool: PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -948,7 +944,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_delete_feed_item_not_found(pool: SqlitePool) {
+    async fn test_delete_feed_item_not_found(pool: PgPool) {
         let result = delete_feed_item(&pool, 999).await;
         assert!(result.is_err());
     }
@@ -958,7 +954,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[sqlx::test]
-    async fn test_insert_feed_item_detail(pool: SqlitePool) {
+    async fn test_insert_feed_item_detail(pool: PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -979,7 +975,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_insert_feed_item_detail_dedup(pool: SqlitePool) {
+    async fn test_insert_feed_item_detail_dedup(pool: PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -1001,7 +997,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_read_feed_item_detail(pool: SqlitePool) {
+    async fn test_read_feed_item_detail(pool: PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -1021,13 +1017,13 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_read_feed_item_detail_not_found(pool: SqlitePool) {
+    async fn test_read_feed_item_detail_not_found(pool: PgPool) {
         let result = read_feed_item_detail(&pool, 999).await;
         assert!(result.is_err());
     }
 
     #[sqlx::test]
-    async fn test_update_feed_item_detail(pool: SqlitePool) {
+    async fn test_update_feed_item_detail(pool: PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -1067,7 +1063,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_delete_feed_item_detail(pool: SqlitePool) {
+    async fn test_delete_feed_item_detail(pool: PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -1088,13 +1084,13 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_delete_feed_item_detail_not_found(pool: SqlitePool) {
+    async fn test_delete_feed_item_detail_not_found(pool: PgPool) {
         let result = delete_feed_item_detail(&pool, 999).await;
         assert!(result.is_err());
     }
 
     #[sqlx::test]
-    async fn test_cascade_delete_removes_detail(pool: SqlitePool) {
+    async fn test_cascade_delete_removes_detail(pool: PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();

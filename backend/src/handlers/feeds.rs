@@ -4,7 +4,7 @@ use axum::{
     http::StatusCode,
 };
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use tokio::sync::mpsc::Sender;
 use tracing::{instrument, warn};
 use utoipa::ToSchema;
@@ -16,7 +16,7 @@ use crate::{
 
 use super::error::HandlerError;
 
-type FeedState = State<(SqlitePool, Sender<IngestJob>)>;
+type FeedState = State<(PgPool, Sender<IngestJob>)>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct NewFeed {

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use feed_rs::model::{Entry, Text};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use tokio::sync::broadcast;
 
 use crate::events::NewFeedItemEvent;
@@ -23,7 +23,7 @@ pub struct IngestResult {
 }
 
 pub async fn ingest_feed_url(
-    pool: &SqlitePool,
+    pool: &PgPool,
     client: &reqwest::Client,
     url: &str,
     new_item_tx: &broadcast::Sender<NewFeedItemEvent>,
@@ -120,7 +120,7 @@ pub async fn ingest_feed_url(
 }
 
 async fn ingest_entry(
-    pool: &SqlitePool,
+    pool: &PgPool,
     feed_id: i64,
     entry: &Entry,
     new_item_tx: &broadcast::Sender<NewFeedItemEvent>,

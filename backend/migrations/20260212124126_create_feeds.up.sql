@@ -1,13 +1,13 @@
 CREATE TABLE feeds (
-    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-    url                   TEXT      NOT NULL UNIQUE,
+    id                    BIGSERIAL PRIMARY KEY,
+    url                   TEXT        NOT NULL UNIQUE,
     title                 TEXT,
     site_url              TEXT,
     etag                  TEXT,
     last_modified         TEXT,
-    poll_interval_seconds INTEGER   NOT NULL DEFAULT 300,
-    is_enabled            INTEGER   NOT NULL DEFAULT 1,
-    last_checked_at       TIMESTAMP,
-    last_success_at       TIMESTAMP,
-    failure_count         INTEGER   NOT NULL DEFAULT 0
+    poll_interval_seconds BIGINT      NOT NULL DEFAULT 300,
+    is_enabled            BOOLEAN     NOT NULL DEFAULT TRUE,
+    last_checked_at       TIMESTAMPTZ,
+    last_success_at       TIMESTAMPTZ,
+    failure_count         BIGINT      NOT NULL DEFAULT 0
 );

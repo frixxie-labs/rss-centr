@@ -8,7 +8,7 @@ use nom::{
     multi::separated_list0,
     sequence::preceded,
 };
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 use crate::feed::feed_item::{FeedItem, read_recent_feed_items};
 
@@ -381,7 +381,7 @@ impl FeedTitleIndex {
     }
 
     /// Build an index from recent feed items (inserted in the last 24 hours).
-    pub async fn build_from_recent(pool: &SqlitePool) -> Result<Self> {
+    pub async fn build_from_recent(pool: &PgPool) -> Result<Self> {
         let items = read_recent_feed_items(pool).await?;
         Ok(Self::from(items))
     }
@@ -513,7 +513,7 @@ mod tests {
     // ---------------------------------------------------------------
 
     #[sqlx::test]
-    pub async fn test_feed_title_index(pool: sqlx::SqlitePool) {
+    pub async fn test_feed_title_index(pool: sqlx::PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -531,7 +531,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    pub async fn test_feed_title_index_multiple_items(pool: sqlx::SqlitePool) {
+    pub async fn test_feed_title_index_multiple_items(pool: sqlx::PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -556,7 +556,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    pub async fn test_feed_title_index_multiple_feeds(pool: sqlx::SqlitePool) {
+    pub async fn test_feed_title_index_multiple_feeds(pool: sqlx::PgPool) {
         let feed1 = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -589,14 +589,14 @@ mod tests {
     }
 
     #[sqlx::test]
-    pub async fn test_feed_title_index_no_items(_pool: sqlx::SqlitePool) {
+    pub async fn test_feed_title_index_no_items(_pool: sqlx::PgPool) {
         let index = FeedTitleIndex::new();
         assert_eq!(index.get_total_items(), 0);
         assert!(index.get_items("Nonexistent").is_none());
     }
 
     #[sqlx::test]
-    pub async fn test_export_index(pool: sqlx::SqlitePool) {
+    pub async fn test_export_index(pool: sqlx::PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -618,7 +618,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    pub async fn test_export_index_sorted_by_total_occurences(pool: sqlx::SqlitePool) {
+    pub async fn test_export_index_sorted_by_total_occurences(pool: sqlx::PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -808,7 +808,7 @@ mod tests {
     // ---------------------------------------------------------------
 
     #[sqlx::test]
-    async fn test_build_from_recent(pool: sqlx::SqlitePool) {
+    async fn test_build_from_recent(pool: sqlx::PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -842,7 +842,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_build_from_recent_empty(pool: sqlx::SqlitePool) {
+    async fn test_build_from_recent_empty(pool: sqlx::PgPool) {
         let index = FeedTitleIndex::build_from_recent(&pool).await.unwrap();
         assert_eq!(index.get_total_items(), 0);
     }

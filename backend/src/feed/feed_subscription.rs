@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use sqlx::prelude::FromRow;
 use utoipa::ToSchema;
 
@@ -20,7 +20,7 @@ pub struct FeedSubscription {
     pub failure_count: i64,
 }
 
-pub async fn list_enabled_feeds(pool: &SqlitePool) -> Result<Vec<FeedSubscription>> {
+pub async fn list_enabled_feeds(pool: &PgPool) -> Result<Vec<FeedSubscription>> {
     let rows = sqlx::query_as!(
         FeedSubscription,
         r#"
@@ -36,7 +36,7 @@ pub async fn list_enabled_feeds(pool: &SqlitePool) -> Result<Vec<FeedSubscriptio
                last_success_at as "last_success_at: _",
                failure_count
         FROM feeds
-        WHERE is_enabled = 1
+        WHERE is_enabled = TRUE
         ORDER BY id ASC
         "#,
     )
@@ -48,7 +48,7 @@ pub async fn list_enabled_feeds(pool: &SqlitePool) -> Result<Vec<FeedSubscriptio
 }
 
 pub async fn list_due_feeds(
-    pool: &SqlitePool,
+    pool: &PgPool,
     now: DateTime<Utc>,
 ) -> Result<Vec<FeedSubscription>> {
     let rows = sqlx::query_as!(
@@ -66,16 +66,16 @@ pub async fn list_due_feeds(
                last_success_at as "last_success_at: _",
                failure_count
         FROM feeds
-        WHERE is_enabled = 1
+        WHERE is_enabled = TRUE
           AND (
               last_checked_at IS NULL
-              OR (strftime('%s', $1) - strftime('%s', last_checked_at)) >= (
-                  poll_interval_seconds
-                  + (
-                      id % (
-                          MIN(30, MAX(1, poll_interval_seconds / 10)) + 1
-                      )
-                  )
+              OR EXTRACT(EPOCH FROM ($1 - last_checked_at)) >= (
+                   poll_interval_seconds
+                   + (
+                       id % (
+                          LEAST(30, GREATEST(1, poll_interval_seconds / 10)) + 1
+                       )
+                   )
               )
           )
         ORDER BY id ASC
@@ -89,7 +89,7 @@ pub async fn list_due_feeds(
     Ok(rows)
 }
 
-pub async fn upsert_feed_by_url(pool: &SqlitePool, url: &str) -> Result<FeedSubscription> {
+pub async fn upsert_feed_by_url(pool: &PgPool, url: &str) -> Result<FeedSubscription> {
     let row = sqlx::query_as!(
         FeedSubscription,
         r#"
@@ -118,7 +118,7 @@ pub async fn upsert_feed_by_url(pool: &SqlitePool, url: &str) -> Result<FeedSubs
     Ok(row)
 }
 
-pub async fn read_feed(pool: &SqlitePool, id: i64) -> Result<FeedSubscription> {
+pub async fn read_feed(pool: &PgPool, id: i64) -> Result<FeedSubscription> {
     let row = sqlx::query_as!(
         FeedSubscription,
         r#"
@@ -149,7 +149,7 @@ pub async fn read_feed(pool: &SqlitePool, id: i64) -> Result<FeedSubscription> {
     Ok(row)
 }
 
-pub async fn list_feeds(pool: &SqlitePool) -> Result<Vec<FeedSubscription>> {
+pub async fn list_feeds(pool: &PgPool) -> Result<Vec<FeedSubscription>> {
     let rows = sqlx::query_as!(
         FeedSubscription,
         r#"
@@ -175,7 +175,7 @@ pub async fn list_feeds(pool: &SqlitePool) -> Result<Vec<FeedSubscription>> {
     Ok(rows)
 }
 
-pub async fn set_feed_enabled(pool: &SqlitePool, id: i64, is_enabled: bool) -> Result<()> {
+pub async fn set_feed_enabled(pool: &PgPool, id: i64, is_enabled: bool) -> Result<()> {
     let result = sqlx::query!(
         r#"
         UPDATE feeds
@@ -206,7 +206,7 @@ pub struct FeedSuccessUpdate<'a> {
 }
 
 pub async fn touch_feed_success(
-    pool: &SqlitePool,
+    pool: &PgPool,
     id: i64,
     update: FeedSuccessUpdate<'_>,
 ) -> Result<()> {
@@ -252,7 +252,7 @@ pub async fn touch_feed_success(
 }
 
 pub async fn touch_feed_failure(
-    pool: &SqlitePool,
+    pool: &PgPool,
     id: i64,
     checked_at: DateTime<Utc>,
     poll_interval_seconds: Option<i64>,
@@ -280,7 +280,7 @@ pub async fn touch_feed_failure(
     Ok(())
 }
 
-pub async fn delete_feed(pool: &SqlitePool, id: i64) -> Result<()> {
+pub async fn delete_feed(pool: &PgPool, id: i64) -> Result<()> {
     let result = sqlx::query!(
         r#"
         DELETE FROM feeds
@@ -309,7 +309,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_upsert_feed_by_url_is_idempotent(pool: SqlitePool) {
+    async fn test_upsert_feed_by_url_is_idempotent(pool: PgPool) {
         let a = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -322,7 +322,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_list_and_read_feeds(pool: SqlitePool) {
+    async fn test_list_and_read_feeds(pool: PgPool) {
         let f1 = upsert_feed_by_url(&pool, "https://example.com/a.xml")
             .await
             .unwrap();
@@ -340,7 +340,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_set_feed_enabled(pool: SqlitePool) {
+    async fn test_set_feed_enabled(pool: PgPool) {
         let f = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -351,7 +351,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_touch_success_and_failure(pool: SqlitePool) {
+    async fn test_touch_success_and_failure(pool: PgPool) {
         let f = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -362,7 +362,7 @@ mod tests {
             .unwrap();
         let r1 = read_feed(&pool, f.id).await.unwrap();
         assert_eq!(r1.failure_count, 1);
-        assert_eq!(r1.last_checked_at.unwrap(), t1);
+        assert_eq!(r1.last_checked_at.unwrap().timestamp_micros(), t1.timestamp_micros());
         assert_eq!(r1.poll_interval_seconds, 1200);
 
         let t2 = Utc::now();
@@ -383,8 +383,8 @@ mod tests {
 
         let r2 = read_feed(&pool, f.id).await.unwrap();
         assert_eq!(r2.failure_count, 0);
-        assert_eq!(r2.last_checked_at.unwrap(), t2);
-        assert_eq!(r2.last_success_at.unwrap(), t2);
+        assert_eq!(r2.last_checked_at.unwrap().timestamp_micros(), t2.timestamp_micros());
+        assert_eq!(r2.last_success_at.unwrap().timestamp_micros(), t2.timestamp_micros());
         assert_eq!(r2.title.as_deref(), Some("Example"));
         assert_eq!(r2.site_url.as_deref(), Some("https://example.com"));
         assert_eq!(r2.etag.as_deref(), Some("\"etag-123\""));
@@ -396,7 +396,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_list_due_feeds_applies_per_feed_jitter(pool: SqlitePool) {
+    async fn test_list_due_feeds_applies_per_feed_jitter(pool: PgPool) {
         let f1 = upsert_feed_by_url(&pool, "https://example.com/jitter-a.xml")
             .await
             .unwrap();

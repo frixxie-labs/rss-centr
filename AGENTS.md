@@ -52,12 +52,18 @@ cargo test --manifest-path backend/Cargo.toml test_insert_feed_item -- --nocaptu
 cargo test --manifest-path backend/Cargo.toml -- --list
 ```
 
-### Environment & Database (sqlx + SQLite)
+### Environment & Database (sqlx + PostgreSQL)
 
-`sqlx` macros (`query!`, `query_as!`) require `DATABASE_URL` at compile time. A `.env` in `backend/` sets `DATABASE_URL=sqlite:dev.db`, but sqlx does **not** auto-load it. If builds fail:
+`sqlx` macros (`query!`, `query_as!`) require `DATABASE_URL` at compile time. A `.env` in `backend/` sets `DATABASE_URL=postgres://postgres:postgres@localhost:5432/rss_centr`, but sqlx does **not** auto-load it. If builds fail:
 
 ```bash
-export DATABASE_URL='sqlite:dev.db'
+export DATABASE_URL='postgres://postgres:postgres@localhost:5432/rss_centr'
+```
+
+Start the local database from the repo root before running backend commands:
+
+```bash
+docker compose up -d db
 ```
 
 Migrations live in `backend/migrations/` and are auto-applied on server startup. Tests using `#[sqlx::test]` get an isolated DB per test with migrations applied.
@@ -107,7 +113,7 @@ Prefer following existing patterns over introducing new ones.
 
 ### Types and Data Modeling
 
-- `i64` for SQLite integer PKs (matches existing schema).
+- `i64` for Postgres `BIGINT`/`BIGSERIAL` primary keys.
 - DB row models derive `sqlx::FromRow`; add `serde::{Serialize, Deserialize}` and `utoipa::ToSchema` for API payloads.
 - `chrono::DateTime<Utc>` for timestamps.
 
@@ -135,7 +141,7 @@ Prefer following existing patterns over introducing new ones.
 - Keep SQL close to the function that uses it; no string concatenation for SQL.
 - Always bind parameters (no string interpolation into SQL).
 - Check `rows_affected()` and convert zero rows to a domain error.
-- Use column type annotations (`"id!: i64"`) for SQLite type coercion when needed.
+- Use column type annotations (`"id!: i64"`) when SQLx needs explicit Postgres type coercion.
 
 ### Handlers
 
@@ -178,5 +184,5 @@ Prefer following existing patterns over introducing new ones.
 ## Repo Hygiene
 
 - Do not commit secrets or `backend/.env` changes.
-- Do not commit databases (`dev.db`) or build artifacts (`*/target/`, `_fresh/`).
+- Do not commit build artifacts (`*/target/`, `_fresh/`).
 - If you add Cursor/Copilot rules, update this file to mirror them.
