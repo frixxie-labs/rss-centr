@@ -28,14 +28,21 @@ build-frontend:
 test-backend:
   stage: test
   image: "rust:latest"
+  services:
+    - name: "postgres:latest"
+      alias: postgres
   before_script:
+    - apt-get update && apt-get install -y postgresql-client
+    - until pg_isready -h postgres -p 5432 -U postgres; do sleep 1; done
     - cd backend
   script:
     - rustc --version && cargo --version
     - cargo test --verbose
   variables:
-    SQLX_OFFLINE: 1
-    DATABASE_URL: "sqlite::memory:"
+    POSTGRES_DB: "rss_centr"
+    POSTGRES_USER: "postgres"
+    POSTGRES_PASSWORD: "postgres"
+    DATABASE_URL: "postgres://postgres:postgres@postgres:5432/rss_centr"
 
 test-frontend:
   stage: test
