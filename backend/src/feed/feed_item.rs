@@ -270,7 +270,9 @@ pub async fn read_feed_items_after_id(pool: &PgPool, id: i64) -> Result<Vec<Feed
 
 pub async fn read_latest_feed_items_with_detail(
     pool: &PgPool,
-    limit: i64,
+    limit: Option<i64>,
+    feed_id: Option<i64>,
+    query: Option<&str>,
 ) -> Result<Vec<FeedItemWithDetail>> {
     let rows = sqlx::query_as!(
         FeedItemWithDetail,
@@ -287,14 +289,32 @@ pub async fn read_latest_feed_items_with_detail(
                d.published_at as "published_at: _"
         FROM feed_items f
         LEFT JOIN feed_item_details d ON d.feed_item_id = f.id
+        INNER JOIN feeds s ON s.id = f.feed_id
+        CROSS JOIN LATERAL (SELECT websearch_to_tsquery('simple', $3) AS query) search
+        WHERE ($2::BIGINT IS NULL OR f.feed_id = $2)
+          AND (
+              $3::TEXT IS NULL
+              OR to_tsvector('simple', f.title || ' ' || f.url) @@ search.query
+              OR to_tsvector(
+                  'simple',
+                  COALESCE(d.summary, '') || ' ' || COALESCE(d.content, '') || ' ' || COALESCE(d.author, '')
+              ) @@ search.query
+              OR to_tsvector('simple', COALESCE(s.title, '') || ' ' || s.url) @@ search.query
+          )
         ORDER BY COALESCE(d.published_at, f.inserted_at) DESC, f.id DESC
         LIMIT $1
         "#,
         limit,
+        feed_id,
+        query,
     )
     .fetch_all(pool)
     .await
-    .with_context(|| format!("failed to read latest feed items with detail with limit={limit}"))?;
+    .with_context(|| {
+        format!(
+            "failed to read latest feed items with detail with limit={limit:?} feed_id={feed_id:?} query={query:?}"
+        )
+    })?;
 
     Ok(rows)
 }
@@ -364,12 +384,7 @@ pub async fn read_all_feed_items_with_detail(pool: &PgPool) -> Result<Vec<FeedIt
     Ok(rows)
 }
 
-pub async fn update_feed_item(
-    pool: &PgPool,
-    id: i64,
-    title: &str,
-    url: &str,
-) -> Result<FeedItem> {
+pub async fn update_feed_item(pool: &PgPool, id: i64, title: &str, url: &str) -> Result<FeedItem> {
     let row = sqlx::query_as!(
         FeedItem,
         r#"
@@ -905,6 +920,62 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].title, "Third");
         assert_eq!(items[1].title, "Second");
+    }
+
+    #[sqlx::test]
+    async fn test_read_latest_feed_items_with_detail_filters(pool: PgPool) {
+        let feed1 = upsert_feed_by_url(&pool, "https://example.com/rust.xml")
+            .await
+            .unwrap();
+        let feed2 = upsert_feed_by_url(&pool, "https://example.com/db.xml")
+            .await
+            .unwrap();
+        let now = Utc::now();
+
+        let rust_item = insert_feed_item(
+            &pool,
+            feed1.id,
+            "ext-1",
+            "Rust release",
+            "https://example.com/1",
+        )
+        .await
+        .unwrap();
+        insert_feed_item_detail(
+            &pool,
+            rust_item.id,
+            "Compiler improvements",
+            "",
+            "Ferris",
+            now,
+        )
+        .await
+        .unwrap();
+
+        let db_item = insert_feed_item(
+            &pool,
+            feed2.id,
+            "ext-2",
+            "Postgres news",
+            "https://example.com/2",
+        )
+        .await
+        .unwrap();
+        insert_feed_item_detail(&pool, db_item.id, "Index tuning", "", "Pg", now)
+            .await
+            .unwrap();
+
+        let by_feed = read_latest_feed_items_with_detail(&pool, Some(10), Some(feed1.id), None)
+            .await
+            .unwrap();
+        assert_eq!(by_feed.len(), 1);
+        assert_eq!(by_feed[0].title, "Rust release");
+
+        let by_query = read_latest_feed_items_with_detail(&pool, Some(10), None, Some("index"))
+            .await
+            .unwrap();
+        assert_eq!(by_query.len(), 1);
+        assert_eq!(by_query[0].title, "Postgres news");
     }
 
     #[sqlx::test]

@@ -1,5 +1,6 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
+import { fetchLatestItems } from "../api.ts";
 import { FeedItemCard } from "../components/FeedItemCard.tsx";
 import type { FeedItem } from "../types.ts";
 
@@ -7,6 +8,7 @@ interface FeedItemsViewProps {
   initialItems: FeedItem[];
   feedNames: Record<number, string>;
   initialNowIso: string;
+  limit: number;
 }
 
 function effectiveDate(item: FeedItem): number {
@@ -21,10 +23,13 @@ function sortByNewest(items: FeedItem[]): FeedItem[] {
 }
 
 export default function FeedItemsView(
-  { initialItems, feedNames, initialNowIso }: FeedItemsViewProps,
+  { initialItems, feedNames, initialNowIso, limit }: FeedItemsViewProps,
 ) {
   const query = useSignal("");
   const selectedFeedId = useSignal<string>("all");
+  const items = useSignal(sortByNewest(initialItems));
+  const isLoading = useSignal(false);
+  const loadError = useSignal(false);
   const nowMs = useSignal(new Date(initialNowIso).getTime());
 
   useEffect(() => {
@@ -34,28 +39,42 @@ export default function FeedItemsView(
     return () => clearInterval(id);
   }, []);
 
-  const items = sortByNewest(initialItems);
   const normalizedQuery = query.value.trim().toLowerCase();
   const selectedId = selectedFeedId.value === "all"
     ? null
     : Number(selectedFeedId.value);
 
-  const visibleItems = items.filter((item) => {
-    if (selectedId !== null && item.feed_id !== selectedId) {
-      return false;
-    }
-    if (!normalizedQuery) {
-      return true;
-    }
-    const name = (feedNames[item.feed_id] || "").toLowerCase();
-    const summary = (item.summary || "").toLowerCase();
-    const author = (item.author || "").toLowerCase();
-    return item.title.toLowerCase().includes(normalizedQuery) ||
-      item.url.toLowerCase().includes(normalizedQuery) ||
-      summary.includes(normalizedQuery) ||
-      author.includes(normalizedQuery) ||
-      name.includes(normalizedQuery);
-  });
+  useEffect(() => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(async () => {
+      isLoading.value = true;
+      loadError.value = false;
+
+      try {
+        const result = await fetchLatestItems({
+          limit,
+          feedId: selectedId ?? undefined,
+          query: normalizedQuery || undefined,
+          signal: controller.signal,
+        });
+        items.value = sortByNewest(result);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          return;
+        }
+        loadError.value = true;
+      } finally {
+        if (!controller.signal.aborted) {
+          isLoading.value = false;
+        }
+      }
+    }, 250);
+
+    return () => {
+      clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [limit, normalizedQuery, selectedId]);
 
   const feedOptions = Object.entries(feedNames)
     .map(([id, name]) => ({ id, name }))
@@ -67,7 +86,7 @@ export default function FeedItemsView(
         <div class="flex flex-wrap items-center justify-between gap-2">
           <h2 class="text-sm font-semibold text-fuji-white">Feed items</h2>
           <span class="text-xs text-katana-gray">
-            {visibleItems.length} shown
+            {isLoading.value ? "Loading..." : `${items.value.length} shown`}
           </span>
         </div>
         <div class="grid gap-2 sm:grid-cols-[1fr_180px]">
@@ -98,7 +117,12 @@ export default function FeedItemsView(
       </div>
 
       <div class="border-y border-sumi-ink3">
-        {visibleItems.map((item) => (
+        {loadError.value && (
+          <div class="border-b border-sumi-ink3 px-4 py-3 text-sm text-ronin-yellow">
+            Could not load matching items.
+          </div>
+        )}
+        {items.value.map((item) => (
           <FeedItemCard
             key={item.id}
             item={item}
@@ -106,7 +130,7 @@ export default function FeedItemsView(
             nowMs={nowMs.value}
           />
         ))}
-        {visibleItems.length === 0 && (
+        {items.value.length === 0 && !isLoading.value && (
           <div class="px-4 py-12 text-center text-katana-gray">
             No items match the current filters.
           </div>

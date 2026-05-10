@@ -13,6 +13,13 @@ function apiUrl(path: string): string {
   return `/api/${path}`;
 }
 
+export interface LatestItemsOptions {
+  limit?: number;
+  feedId?: number;
+  query?: string;
+  signal?: AbortSignal;
+}
+
 async function throwRequestError(
   prefix: string,
   res: Response,
@@ -22,11 +29,25 @@ async function throwRequestError(
   throw new Error(`${prefix}: ${res.status}${suffix}`);
 }
 
-export async function fetchLatestItems(limit?: number): Promise<FeedItem[]> {
-  const url = limit === undefined
-    ? apiUrl("items/latest")
-    : `${apiUrl("items/latest")}?limit=${limit}`;
-  const res = await fetch(url);
+export async function fetchLatestItems(
+  options: LatestItemsOptions = {},
+): Promise<FeedItem[]> {
+  const params = new URLSearchParams();
+  if (options.limit !== undefined) {
+    params.set("limit", String(options.limit));
+  }
+  if (options.feedId !== undefined) {
+    params.set("feed_id", String(options.feedId));
+  }
+  const query = options.query?.trim();
+  if (query) {
+    params.set("q", query);
+  }
+
+  const suffix = params.size > 0 ? `?${params}` : "";
+  const res = await fetch(`${apiUrl("items/latest")}${suffix}`, {
+    signal: options.signal,
+  });
   if (!res.ok) {
     await throwRequestError("Failed to fetch latest items", res);
   }

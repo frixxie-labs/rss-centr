@@ -7,6 +7,7 @@ import type { FeedItem } from "../types.ts";
 import { define } from "../utils.ts";
 
 const log = getLogger("ssr");
+const ITEMS_LIMIT = 500;
 
 export const handler = define.handlers({
   async GET(_ctx) {
@@ -17,7 +18,7 @@ export const handler = define.handlers({
 
     try {
       const [itemsResult, feeds] = await Promise.all([
-        fetchLatestItems(),
+        fetchLatestItems({ limit: ITEMS_LIMIT }),
         fetchFeeds(),
       ]);
       items = itemsResult;
@@ -75,6 +76,7 @@ export default define.page<typeof handler>(function ItemsPage({ data }) {
           initialItems={data.items}
           feedNames={data.feedNames}
           initialNowIso={data.initialNowIso}
+          limit={ITEMS_LIMIT}
         />
       </main>
     </div>
