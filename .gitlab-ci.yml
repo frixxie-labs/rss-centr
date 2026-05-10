@@ -43,6 +43,7 @@ test-backend:
     POSTGRES_USER: "postgres"
     POSTGRES_PASSWORD: "postgres"
     DATABASE_URL: "postgres://postgres:postgres@postgres:5432/rss_centr"
+    SQLX_OFFLINE: 1
 
 test-frontend:
   stage: test
