@@ -26,10 +26,10 @@
     "preact": "npm:preact@^10.29.1",
     "@preact/signals": "npm:@preact/signals@^2.9.0",
     "@fresh/plugin-vite": "jsr:@fresh/plugin-vite@^1.1.2",
-    "vite": "npm:vite@^7.3.2",
-    "tailwindcss": "npm:tailwindcss@^4.2.4",
-    "@tailwindcss/vite": "npm:@tailwindcss/vite@^4.2.4",
-    "@types/node": "npm:@types/node@^25.6.0"
+    "vite": "npm:vite@^7.3.3",
+    "tailwindcss": "npm:tailwindcss@^4.3.0",
+    "@tailwindcss/vite": "npm:@tailwindcss/vite@^4.3.0",
+    "@types/node": "npm:@types/node@^25.6.2"
   },
   "compilerOptions": {
     "lib": [
