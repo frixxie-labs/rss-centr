@@ -3,264 +3,6 @@ use std::future::Future;
 use anyhow::{Context, Result};
 use sqlx::{PgPool, Row};
 
-/// Common English stop words that carry little semantic meaning in titles.
-const ENGLISH_STOP_WORDS: &[&str] = &[
-    "a", "an", "the", "is", "it", "in", "on", "at", "to", "of", "and", "or", "but", "not", "no",
-    "for", "by", "with", "from", "up", "as", "do", "if", "be", "so", "we", "he", "she", "me", "my",
-    "am", "are", "was", "has", "had", "its", "you", "your", "they", "them", "our", "us", "this",
-    "that", "will", "can", "how", "what", "when", "who", "all", "been", "have", "were", "which",
-    "their", "there", "about", "would", "could", "should", "just", "than", "then", "also", "into",
-    "only", "very", "some", "more", "over", "such", "after", "does",
-];
-
-/// Common Norwegian (Bokmal/Nynorsk) stop words.
-const NORWEGIAN_STOP_WORDS: &[&str] = &[
-    "og",
-    "i",
-    "jeg",
-    "det",
-    "at",
-    "en",
-    "et",
-    "den",
-    "til",
-    "er",
-    "som",
-    "på",
-    "de",
-    "med",
-    "han",
-    "av",
-    "ikke",
-    "ikkje",
-    "der",
-    "så",
-    "var",
-    "meg",
-    "seg",
-    "men",
-    "ett",
-    "har",
-    "om",
-    "vi",
-    "min",
-    "mitt",
-    "ha",
-    "hadde",
-    "hun",
-    "nå",
-    "over",
-    "da",
-    "ved",
-    "fra",
-    "du",
-    "ut",
-    "sin",
-    "dem",
-    "oss",
-    "opp",
-    "man",
-    "kan",
-    "hans",
-    "hvor",
-    "eller",
-    "hva",
-    "skal",
-    "selv",
-    "sjøl",
-    "her",
-    "alle",
-    "vil",
-    "bli",
-    "ble",
-    "blitt",
-    "kunne",
-    "inn",
-    "når",
-    "være",
-    "kom",
-    "noen",
-    "noe",
-    "ville",
-    "dere",
-    "deres",
-    "kun",
-    "ja",
-    "etter",
-    "ned",
-    "skulle",
-    "denne",
-    "for",
-    "deg",
-    "si",
-    "sine",
-    "sitt",
-    "mot",
-    "å",
-    "meget",
-    "hvorfor",
-    "dette",
-    "disse",
-    "uten",
-    "hvordan",
-    "ingen",
-    "din",
-    "ditt",
-    "blir",
-    "samme",
-    "hvilken",
-    "hvilke",
-    "sånn",
-    "inni",
-    "mellom",
-    "vår",
-    "hver",
-    "hvem",
-    "vors",
-    "hvis",
-    "både",
-    "bare",
-    "enn",
-    "fordi",
-    "før",
-    "mange",
-    "også",
-    "slik",
-    "vært",
-    "begge",
-    "siden",
-    "dykk",
-    "dykkar",
-    "dei",
-    "deira",
-    "deires",
-    "deim",
-    "di",
-    "då",
-    "eg",
-    "ein",
-    "eit",
-    "eitt",
-    "elles",
-    "honom",
-    "hjå",
-    "ho",
-    "hoe",
-    "henne",
-    "hennar",
-    "hennes",
-    "hoss",
-    "hossen",
-    "ingi",
-    "inkje",
-    "korleis",
-    "korso",
-    "kva",
-    "kvar",
-    "kvarhelst",
-    "kven",
-    "kvi",
-    "kvifor",
-    "me",
-    "medan",
-    "mi",
-    "mine",
-    "mykje",
-    "no",
-    "nokon",
-    "noka",
-    "nokor",
-    "noko",
-    "nokre",
-    "sia",
-    "sidan",
-    "so",
-    "somt",
-    "somme",
-    "um",
-    "upp",
-    "vere",
-    "vore",
-    "verte",
-    "vort",
-    "varte",
-    "vart",
-    "tilbake",
-    "igjen",
-    "enda",
-    "allerede",
-    "alltid",
-    "ofte",
-    "bort",
-    "bra",
-    "deles",
-    "dessuten",
-    "deretter",
-    "derfor",
-    "dermed",
-    "derimot",
-    "derfra",
-    "derinne",
-    "deroppe",
-    "derute",
-    "derved",
-    "etterpå",
-    "frem",
-    "fremfor",
-    "ganske",
-    "gjennom",
-    "gjorde",
-    "gjort",
-    "gjør",
-    "gjøre",
-    "gjerne",
-    "hele",
-    "heller",
-    "helt",
-    "hittil",
-    "hverandre",
-    "imidlertid",
-    "innen",
-    "langs",
-    "lenge",
-    "like",
-    "likevel",
-    "litt",
-    "mer",
-    "mest",
-    "mindre",
-    "mulig",
-    "muligens",
-    "nemlig",
-    "nok",
-    "noenlunde",
-    "nylig",
-    "nær",
-    "nærmere",
-    "rundt",
-    "samtlige",
-    "senere",
-    "sist",
-    "sjelden",
-    "snart",
-    "stadig",
-    "straks",
-    "svært",
-    "tidligere",
-    "tillegg",
-    "tilsammen",
-    "under",
-    "underveis",
-    "vanlig",
-    "vanligvis",
-    "vel",
-    "veldig",
-    "videre",
-    "virkelig",
-    "visst",
-    "ytterligere",
-];
-
 const MIN_WORD_LENGTH: i32 = 2;
 
 #[derive(Debug, Ord, PartialEq, PartialOrd, Eq, serde::Serialize, utoipa::ToSchema)]
@@ -315,40 +57,45 @@ async fn read_feed_title_index_filtered(
     pool: &PgPool,
     recent_only: bool,
 ) -> Result<Vec<FeedTitleIndexEntry>> {
-    let stop_words = stop_words();
     let rows = sqlx::query(
         r#"
-        WITH indexed_feeds AS (
-            SELECT DISTINCT feed_id
+        WITH words AS (
+            SELECT
+                feed_id,
+                (unnest(
+                    to_tsvector('english', title) || to_tsvector('norwegian', title)
+                )).lexeme AS word
             FROM feed_items
-            WHERE ($1::BOOLEAN IS FALSE OR inserted_at >= NOW() - INTERVAL '24 hours')
+            WHERE $1::BOOLEAN IS FALSE OR inserted_at >= NOW() - INTERVAL '24 hours'
         ),
         counted_words AS (
             SELECT
-                indexed_feeds.feed_id,
-                stats.word,
-                stats.nentry::BIGINT AS occurences
-            FROM indexed_feeds
-            CROSS JOIN LATERAL ts_stat(format(
-                'SELECT to_tsvector(''simple'', title) FROM feed_items WHERE feed_id = %s AND (%L IS FALSE OR inserted_at >= NOW() - INTERVAL ''24 hours'')',
-                indexed_feeds.feed_id,
-                $1::BOOLEAN
-            )) AS stats
-            WHERE length(stats.word) >= $2
-              AND NOT (stats.word = ANY($3::TEXT[]))
+                feed_id,
+                word,
+                COUNT(*)::BIGINT AS occurences
+            FROM words
+            WHERE length(word) >= $2
+            GROUP BY feed_id, word
+        ),
+        totals AS (
+            SELECT
+                word,
+                SUM(occurences)::BIGINT AS total_occurences
+            FROM counted_words
+            GROUP BY word
         )
         SELECT
-            word,
-            feed_id AS feed_src_id,
-            occurences,
-            SUM(occurences) OVER (PARTITION BY word)::BIGINT AS total_occurences
-        FROM counted_words
-        ORDER BY total_occurences DESC, word ASC, occurences DESC, feed_src_id ASC
+            cw.word,
+            cw.feed_id AS feed_src_id,
+            cw.occurences,
+            t.total_occurences
+        FROM counted_words cw
+        JOIN totals t USING (word)
+        ORDER BY t.total_occurences DESC, cw.word ASC, cw.occurences DESC, cw.feed_src_id ASC
         "#,
     )
     .bind(recent_only)
     .bind(MIN_WORD_LENGTH)
-    .bind(stop_words)
     .fetch_all(pool)
     .await
     .context("failed to read feed title index")?;
@@ -366,14 +113,6 @@ async fn read_feed_title_index_filtered(
         .collect::<Result<Vec<_>>>()?;
 
     Ok(group_rows(rows))
-}
-
-fn stop_words() -> Vec<String> {
-    ENGLISH_STOP_WORDS
-        .iter()
-        .chain(NORWEGIAN_STOP_WORDS.iter())
-        .map(|word| word.to_string())
-        .collect()
 }
 
 fn count_to_u64(value: i64) -> Result<u64> {
