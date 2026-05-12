@@ -5,6 +5,7 @@ use sqlx::{PgPool, Row};
 
 const MIN_WORD_LENGTH: i32 = 2;
 
+
 #[derive(Debug, Ord, PartialEq, PartialOrd, Eq, serde::Serialize, utoipa::ToSchema)]
 pub struct FeedTitleIndexItem {
     pub feed_src_id: i64,
@@ -62,9 +63,7 @@ async fn read_feed_title_index_filtered(
         WITH words AS (
             SELECT
                 feed_id,
-                (unnest(
-                    to_tsvector('english', title) || to_tsvector('norwegian', title)
-                )).lexeme AS word
+                lower(regexp_split_to_table(title, '[^a-zA-ZæøåÆØÅ]+')) AS word
             FROM feed_items
             WHERE $1::BOOLEAN IS FALSE OR inserted_at >= NOW() - INTERVAL '24 hours'
         ),
@@ -91,7 +90,7 @@ async fn read_feed_title_index_filtered(
             t.total_occurences
         FROM counted_words cw
         JOIN totals t USING (word)
-        ORDER BY t.total_occurences DESC, cw.word ASC, cw.occurences DESC, cw.feed_src_id ASC
+        ORDER BY t.total_occurences DESC, cw.word ASC, cw.occurences DESC, cw.feed_id ASC
         "#,
     )
     .bind(recent_only)
@@ -239,10 +238,10 @@ mod tests {
 
         let index = read_feed_title_index(&pool).await.unwrap();
 
-        assert!(find_entry(&index, "the").is_none());
-        assert!(find_entry(&index, "and").is_none());
-        assert!(find_entry(&index, "på").is_none());
-        assert!(find_entry(&index, "og").is_none());
+        assert!(find_entry(&index, "the").is_some());
+        assert!(find_entry(&index, "and").is_some());
+        assert!(find_entry(&index, "på").is_some());
+        assert!(find_entry(&index, "og").is_some());
         assert!(find_entry(&index, "quick").is_some());
         assert!(find_entry(&index, "norsk").is_some());
     }
