@@ -1,0 +1,56 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO feed_item_details (feed_item_id, summary, content, author, published_at)\n        VALUES ($1, $2, $3, $4, $5)\n        ON CONFLICT(feed_item_id) DO NOTHING\n        RETURNING id as \"id!: i64\", feed_item_id as \"feed_item_id!: i64\",\n                  summary, content, author,\n                  published_at as \"published_at: _\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: i64",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "feed_item_id!: i64",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "summary",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "content",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "author",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "published_at: _",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "cf15f18e798d27c006fbbc6ba8d66ed7aaff02e3329ff685a3aedb8cc8adf1fb"
+}

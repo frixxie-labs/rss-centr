@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH inserted_diffs AS (\n            SELECT EXTRACT(EPOCH FROM (\n                       inserted_at - LAG(inserted_at) OVER (ORDER BY inserted_at ASC, id ASC)\n                   ))::DOUBLE PRECISION AS diff_seconds\n            FROM feed_items\n            WHERE feed_id = $1\n        ),\n        published_diffs AS (\n            SELECT EXTRACT(EPOCH FROM (\n                       d.published_at - LAG(d.published_at) OVER (ORDER BY d.published_at ASC, d.id ASC)\n                   ))::DOUBLE PRECISION AS diff_seconds\n            FROM feed_items f\n            JOIN feed_item_details d ON d.feed_item_id = f.id\n            WHERE f.feed_id = $1\n        ),\n        inserted_filtered AS (\n            SELECT diff_seconds, ROW_NUMBER() OVER (ORDER BY diff_seconds) AS rn,\n                   COUNT(*) OVER () AS total\n            FROM inserted_diffs\n            WHERE diff_seconds >= 60\n        ),\n        published_filtered AS (\n            SELECT diff_seconds, ROW_NUMBER() OVER (ORDER BY diff_seconds) AS rn,\n                   COUNT(*) OVER () AS total\n            FROM published_diffs\n            WHERE diff_seconds >= 60\n        )\n        SELECT\n            (SELECT AVG(diff_seconds) FROM inserted_filtered\n             WHERE rn IN (total / 2, total / 2 + 1)) as \"median_inserted_seconds?: f64\",\n            (SELECT AVG(diff_seconds) FROM published_filtered\n             WHERE rn IN (total / 2, total / 2 + 1)) as \"median_published_seconds?: f64\",\n            (SELECT COALESCE(MAX(total), 0) FROM inserted_filtered) as \"inserted_samples!: i64\",\n            (SELECT COALESCE(MAX(total), 0) FROM published_filtered) as \"published_samples!: i64\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "median_inserted_seconds?: f64",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 1,
+        "name": "median_published_seconds?: f64",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 2,
+        "name": "inserted_samples!: i64",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "published_samples!: i64",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "597cfd7642cea2ad0b46e92cfb2a4cfd77fd3126f28316b919ded8bda247e161"
+}
