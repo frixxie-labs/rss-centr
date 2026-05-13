@@ -1,0 +1,171 @@
+name: CI/CD
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "*"
+  pull_request:
+
+permissions:
+  contents: read
+  packages: write
+  pull-requests: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-backend:
+    name: Build backend
+    runs-on: arc-frixxie-runner
+    container:
+      image: rust:latest
+    env:
+      SQLX_OFFLINE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Rust versions
+        run: rustc --version && cargo --version
+
+      - name: Build backend
+        run: cargo build --manifest-path backend/Cargo.toml --verbose
+
+  test-backend:
+    name: Test backend
+    needs: build-backend
+    runs-on: arc-frixxie-runner
+    container:
+      image: rust:latest
+    services:
+      postgres:
+        image: postgres:latest
+        env:
+          POSTGRES_DB: rss_centr
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd "pg_isready -U postgres -d rss_centr"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      SQLX_OFFLINE: "1"
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/rss_centr
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Rust versions
+        run: rustc --version && cargo --version
+
+      - name: Run tests
+        run: cargo test --manifest-path backend/Cargo.toml --verbose
+
+  build-frontend:
+    name: Build frontend
+    runs-on: arc-frixxie-runner
+    container:
+      image: denoland/deno:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Deno version
+        run: deno --version
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: deno install
+
+      - name: Build frontend
+        working-directory: frontend
+        run: deno task build
+
+  test-frontend:
+    name: Test frontend
+    needs: build-frontend
+    runs-on: arc-frixxie-runner
+    container:
+      image: denoland/deno:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Deno version
+        run: deno --version
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: deno install
+
+      - name: Check frontend
+        working-directory: frontend
+        run: deno task check
+
+      - name: Run tests
+        working-directory: frontend
+        run: deno test -A
+
+  deploy-backend:
+    name: Deploy backend image
+    needs: test-backend
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare image name
+        id: image
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY}"
+          echo "name=${image,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/Dockerfile
+          push: true
+          tags: ${{ steps.image.outputs.name }}:${{ github.ref_name }}
+
+  deploy-frontend:
+    name: Deploy frontend image
+    needs: test-frontend
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare image name
+        id: image
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY}/frontend"
+          echo "name=${image,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          push: true
+          tags: ${{ steps.image.outputs.name }}:${{ github.ref_name }}
