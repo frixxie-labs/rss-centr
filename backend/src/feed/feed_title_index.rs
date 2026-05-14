@@ -4,7 +4,18 @@ use anyhow::{Context, Result};
 use sqlx::{PgPool, Row};
 
 const MIN_WORD_LENGTH: i32 = 2;
-
+const STOP_WORDS: &[&str] = &[
+    "a", "alle", "at", "av", "bare", "ble", "bli", "blir", "da", "de", "deg", "dei", "dem", "den",
+    "denne", "der", "dere", "deres", "det", "dette", "din", "disse", "då", "du", "eg", "ein",
+    "eit", "eller", "en", "er", "et", "etter", "for", "fordi", "fra", "før", "få", "får", "fikk",
+    "ha", "hadde", "han", "hans", "har", "hatt", "hele", "henne", "hennes", "her", "hos", "hun",
+    "hva", "hvem", "hvilke", "hvilken", "hvis", "hvor", "hvordan", "hvorfor", "i", "ikke", "ingen",
+    "inn", "kan", "kom", "kunne", "man", "me", "med", "meg", "mellom", "men", "mens", "mer", "mi",
+    "min", "mine", "mitt", "mot", "må", "ned", "noe", "noen", "nok", "nå", "når", "og", "også",
+    "om", "opp", "oss", "over", "på", "samme", "seg", "selv", "si", "siden", "sin", "sine", "sitt",
+    "skal", "slik", "som", "så", "til", "under", "uten", "ut", "var", "ved", "vi", "vil", "ville",
+    "vår", "våre", "vårt", "være", "å",
+];
 
 #[derive(Debug, Ord, PartialEq, PartialOrd, Eq, serde::Serialize, utoipa::ToSchema)]
 pub struct FeedTitleIndexItem {
@@ -73,7 +84,7 @@ async fn read_feed_title_index_filtered(
                 word,
                 COUNT(*)::BIGINT AS occurences
             FROM words
-            WHERE length(word) >= $2
+            WHERE length(word) >= $2 AND word != ALL($3::TEXT[])
             GROUP BY feed_id, word
         ),
         totals AS (
@@ -95,6 +106,7 @@ async fn read_feed_title_index_filtered(
     )
     .bind(recent_only)
     .bind(MIN_WORD_LENGTH)
+    .bind(STOP_WORDS)
     .fetch_all(pool)
     .await
     .context("failed to read feed title index")?;
@@ -230,7 +242,7 @@ mod tests {
             &pool,
             feed.id,
             "ext-1",
-            "The quick and brown fox på norsk og engelsk",
+            "The quick and brown fox på norsk og engelsk med det som er vanlig",
             "https://example.com",
         )
         .await
@@ -240,8 +252,12 @@ mod tests {
 
         assert!(find_entry(&index, "the").is_some());
         assert!(find_entry(&index, "and").is_some());
-        assert!(find_entry(&index, "på").is_some());
-        assert!(find_entry(&index, "og").is_some());
+        assert!(find_entry(&index, "på").is_none());
+        assert!(find_entry(&index, "og").is_none());
+        assert!(find_entry(&index, "med").is_none());
+        assert!(find_entry(&index, "det").is_none());
+        assert!(find_entry(&index, "som").is_none());
+        assert!(find_entry(&index, "er").is_none());
         assert!(find_entry(&index, "quick").is_some());
         assert!(find_entry(&index, "norsk").is_some());
     }
