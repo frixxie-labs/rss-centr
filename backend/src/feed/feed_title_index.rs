@@ -5,6 +5,7 @@ use sqlx::{PgPool, Row};
 
 const MIN_WORD_LENGTH: i32 = 2;
 const STOP_WORDS: &[&str] = &[
+    // Norwegian
     "a", "alle", "at", "av", "bare", "ble", "bli", "blir", "da", "de", "deg", "dei", "dem", "den",
     "denne", "der", "dere", "deres", "det", "dette", "din", "disse", "då", "du", "eg", "ein",
     "eit", "eller", "en", "er", "et", "etter", "for", "fordi", "fra", "før", "få", "får", "fikk",
@@ -15,6 +16,17 @@ const STOP_WORDS: &[&str] = &[
     "om", "opp", "oss", "over", "på", "samme", "seg", "selv", "si", "siden", "sin", "sine", "sitt",
     "skal", "slik", "som", "så", "til", "under", "uten", "ut", "var", "ved", "vi", "vil", "ville",
     "vår", "våre", "vårt", "være", "å",
+    // English
+    "about", "above", "after", "again", "against", "all", "also", "am", "an", "and", "any", "are",
+    "as", "at", "be", "because", "been", "before", "being", "below", "between", "both", "but",
+    "by", "can", "did", "do", "does", "doing", "down", "during", "each", "few", "from", "further",
+    "get", "had", "has", "have", "having", "he", "her", "here", "him", "his", "how", "if", "in",
+    "into", "is", "it", "its", "itself", "just", "me", "more", "most", "my", "no", "not", "now",
+    "of", "off", "on", "once", "only", "or", "other", "our", "out", "over", "own", "s", "same",
+    "she", "should", "so", "some", "such", "t", "than", "that", "the", "their", "them", "then",
+    "there", "these", "they", "this", "those", "through", "to", "too", "under", "until", "up",
+    "us", "very", "was", "we", "were", "what", "when", "where", "which", "while", "who", "whom",
+    "why", "will", "with", "you", "your",
 ];
 
 #[derive(Debug, Ord, PartialEq, PartialOrd, Eq, serde::Serialize, utoipa::ToSchema)]
@@ -250,8 +262,8 @@ mod tests {
 
         let index = read_feed_title_index(&pool).await.unwrap();
 
-        assert!(find_entry(&index, "the").is_some());
-        assert!(find_entry(&index, "and").is_some());
+        assert!(find_entry(&index, "the").is_none());
+        assert!(find_entry(&index, "and").is_none());
         assert!(find_entry(&index, "på").is_none());
         assert!(find_entry(&index, "og").is_none());
         assert!(find_entry(&index, "med").is_none());
