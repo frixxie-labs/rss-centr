@@ -1,4 +1,4 @@
-FROM docker.io/library/rust:latest AS builder
+FROM docker.io/library/rust:bookworm AS builder
 
 WORKDIR /app
 
