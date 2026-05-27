@@ -1,255 +1,179 @@
-# 📰 Rust RSS Aggregator
+# Rust RSS Aggregator
 
-A self-hosted RSS/Atom web aggregator with **live updates**.
+A self-hosted RSS/Atom web aggregator with live updates.
 
-Built with:
-
-- 🦀 Rust
-- ⚡ Tokio
-- 🧭 Axum
-- 🗄️ sqlx + PostgreSQL
-- 🌿 Deno + Fresh (frontend)
-- 📡 Server-Sent Events (SSE)
+Built with Rust (Axum + Tokio + sqlx), PostgreSQL, and Deno Fresh 2.
 
 ---
 
-## ✨ Overview
+## Overview
 
-This project is a lightweight, self-hostable RSS/Atom aggregator that:
+A lightweight, self-hostable RSS/Atom aggregator that:
 
-- Polls RSS and Atom feeds
-- Stores items in PostgreSQL
-- Deduplicates at the database level
-- Serves an aggregated timeline via REST
-- Pushes live updates to the browser using SSE
-- Uses Fresh for SSR + interactive islands
+- Polls RSS and Atom feeds on a configurable schedule
+- Stores items in PostgreSQL with DB-level deduplication
+- Serves an aggregated timeline via REST API
+- Pushes live updates to the browser using Server-Sent Events (SSE)
+- Supports full-text search across items and feed metadata
+- Exposes Prometheus metrics and an OpenAPI spec
+- Uses Fresh 2 for SSR + interactive islands
 
-### Architecture Philosophy
-
-> PostgreSQL is the source of truth.  
-> SSE is the live tail.
-
----
-
-## 🏗 Architecture
+### Architecture
 
 ```
 Feeds (RSS / Atom)
-        ↓
+        |
 Poller (Tokio tasks)
-        ↓
+        |
 Parser (feed-rs)
-        ↓
+        |
 PostgreSQL (sqlx)
-        ↓
+        |
 Broadcast (tokio::broadcast)
-        ↓
+        |
 Axum API + SSE
-        ↓
-Fresh Frontend
+        |
+Fresh 2 Frontend
 ```
 
-### Core Components
+**Backend**: Axum HTTP server, Tokio background poll scheduler, sqlx + PostgreSQL, SSE endpoint with reconnect support (`Last-Event-ID`).
 
-**Backend**
-- Axum HTTP server
-- Tokio background poll scheduler
-- sqlx + PostgreSQL
-- SSE endpoint with reconnect support (`Last-Event-ID`)
-
-**Frontend**
-- Fresh SSR for initial timeline
-- Islands for live updates
-- Proxy layer for `/api/*` including SSE streaming
+**Frontend**: Fresh 2 SSR for initial page loads, Preact islands for interactivity, Tailwind CSS 4 for styling, proxy layer for `/api/*` including SSE streaming.
 
 ---
 
-## 🚀 Features
+## Features
 
 ### Core
-- Add/remove RSS or Atom feeds
-- Conditional polling (ETag / Last-Modified)
-- DB-level deduplication
-- Cursor-based pagination
-- Live updates via SSE
-- Reconnect + backfill support
+- Add/remove/enable/disable RSS or Atom feeds
+- Conditional polling (ETag / Last-Modified / 304 support)
+- Backoff on failure with jittered intervals
+- DB-level deduplication via `UNIQUE(feed_id, external_id)`
+- Live updates via SSE with reconnect + DB backfill
+- Full-text search (PostgreSQL GIN indexes)
+- Manual feed ingest trigger
+- Word frequency index from item titles
+- Prometheus metrics at `/metrics`
+- OpenAPI spec at `/openapi`
+- Health and liveness endpoints
 
 ### Technical Highlights
-- Monotonic `feed_items.id` for:
-  - Cursor pagination
-  - SSE replay
-- `ON CONFLICT DO NOTHING` dedupe
-- Broadcast channel fanout
-- DB-backed replay on reconnect
-
-Note: the implementation stores item metadata in `feed_items` and heavier fields in
-`feed_item_details` (1:1), which keeps timeline reads fast while preserving full
-content for detail views.
+- Monotonic `feed_items.id` (BIGSERIAL) for SSE replay
+- `ON CONFLICT DO NOTHING` deduplication
+- Broadcast channel fanout for SSE
+- DB-backed replay on reconnect via `Last-Event-ID`
+- Split storage: `feed_items` (metadata) + `feed_item_details` (content) keeps timeline reads fast
+- GIN indexes for full-text search on items, details, and feeds
 
 ---
 
-## 🧱 MVP Feature List
-
-### Backend
-
-#### Feed Management
-- [x] Add feed (DB: upsert by URL)
-- [x] List feeds (DB)
-- [x] Enable/disable feed (DB)
-- [x] Delete feed (DB)
-
-#### Polling
-- [x] Scheduled polling per feed
-- [x] Conditional GET (ETag / 304 support)
-- [x] Backoff on failure
-- [x] Jittered intervals
-
-#### Items
-- [x] Store normalized items (`feed_items` + `feed_item_details`)
-- [x] Deduplicate via `UNIQUE(feed_id, external_id)`
-- [ ] Cursor pagination (not yet implemented)
-- [x] Filter by feed (DB)
-
-#### Live Updates
-- [x] `GET /api/items/stream` (SSE)
-- [x] KeepAlive pings
-- [x] Reconnect via `Last-Event-ID`
-- [x] DB backfill on reconnect
-- [ ] Broadcast lag recovery
-
-### Frontend (Fresh)
-
-- [x] SSR aggregated timeline
-- [x] SSE island for live updates
-- [x] Add feed form
-- [x] Basic per-feed filtering
-
----
-
-## 🗺 Roadmap
-
-### Phase 1 — MVP (Current Goal)
-- [x] Core ingest pipeline
-- [x] PostgreSQL schema + migrations
-- [x] REST + SSE API
-- [x] Fresh SSR + live island
-
-### Phase 2 — Usability
-- Mark as read/unread
-- Unread counter
-- Per-feed views
-- Manual refresh endpoint
-- Basic search (LIKE-based)
-
-### Phase 3 — Power Features
-- OPML import/export
-- Feed groups/folders
-- Retention policies
-- Full-text search
-- Combined RSS export
-
-### Phase 4 — Scaling & Ops
-- SQLite import/migration tooling
-- Horizontal SSE scaling
-- Metrics endpoint
-- Feed health dashboard
-
----
-
-## 🛠 Development Setup
+## Development Setup
 
 ### Requirements
 
-- Rust (stable)
-- PostgreSQL
-- Deno ≥ 2.x
-- Fresh ≥ 2.x
+- Rust (stable, edition 2024)
+- PostgreSQL 17+
+- Deno 2.x+
 - Docker Compose
 
----
-
-### Backend Setup
+### Quick Start
 
 ```bash
-git clone <repo>
+# Start the database
 docker compose up -d db
-cd backend
-```
 
-The backend uses `DATABASE_URL` and defaults to the local Postgres instance in `backend/.env`.
-
-Example:
-
-```bash
+# Backend (listens on http://localhost:8080)
 export DATABASE_URL='postgres://postgres:postgres@localhost:5432/rss_centr'
-```
+cargo run --manifest-path backend/Cargo.toml
 
-Initialize or refresh the local database schema:
-
-```bash
-sqlx database create
-sqlx migrate run
-```
-
-Run:
-
-```bash
-cargo run
-```
-
-The backend listens on `http://localhost:8080`.
-
----
-
-### Frontend Setup
-
-```bash
+# Frontend (listens on http://localhost:8000, proxies /api/* to backend)
 cd frontend
-deno task start
+deno task dev
 ```
 
-Frontend runs on:
+Migrations are applied automatically on backend startup.
+
+### Backend Commands
+
+From the repo root:
+
+```bash
+cargo build   --manifest-path backend/Cargo.toml
+cargo run     --manifest-path backend/Cargo.toml
+cargo test    --manifest-path backend/Cargo.toml
+cargo fmt     --manifest-path backend/Cargo.toml -- --check
+cargo clippy  --manifest-path backend/Cargo.toml --all-targets --all-features -- -D warnings
+```
+
+Or use the justfile in `backend/`:
+
+```bash
+just check    # cargo check
+just lint     # cargo clippy
+just test     # cargo test
+just build    # prepare + check + build
+just prepare  # sqlx database create + migrate + prepare
+```
+
+### Frontend Commands
+
+From `frontend/`:
+
+```bash
+deno task dev      # Vite dev server
+deno task build    # production build
+deno task start    # serve built app
+deno task check    # fmt --check + lint + type check
+```
+
+### Backend CLI Options
 
 ```
-http://localhost:8000
+--host <HOST>                        Listen address [default: 0.0.0.0:8080]
+--db-url <URL>                       Database URL [env: DATABASE_URL]
+--log-level <LEVEL>                  Log level [default: info]
+--scheduler-interval-seconds <SECS>  Poll interval [default: 30]
 ```
-
-Backend runs on:
-
-```
-http://localhost:8080
-```
-
-Fresh proxies `/api/*` to backend.
 
 ---
 
-## 📡 API Overview
+## API
 
 ### Feeds
 
 ```
-GET    /api/feeds
-POST   /api/feeds
-PATCH  /api/feeds/:id
-DELETE /api/feeds/:id
+GET    /api/feeds                    List all feeds
+POST   /api/feeds                    Add feed (upsert by URL)
+GET    /api/feeds/{feed_id}          Get single feed
+PUT    /api/feeds/{feed_id}          Enable/disable feed
+DELETE /api/feeds/{feed_id}          Delete feed
+POST   /api/feeds/{feed_id}/ingest   Manually trigger feed ingest (202)
 ```
 
 ### Items
 
 ```
-GET /api/items?limit=50&cursor=123
-GET /api/items?feed_id=1
-GET /api/items/:id
+GET    /api/items/latest             Latest items with details
+                                     Query: limit, feed_id, q (search)
+GET    /api/items/{item_id}          Single item
+GET    /api/items/{item_id}/detail   Item detail (summary, content, author)
+GET    /api/feeds/{feed_id}/items    Items for a specific feed
+```
+
+### Title Index
+
+```
+GET    /api/feeds/index              Full title word frequency index
+GET    /api/feeds/index/today        Recent (24h) title word frequency index
 ```
 
 ### Live Updates (SSE)
 
 ```
-GET /api/items/stream
+GET    /api/items/stream             SSE stream (query: last_event_id)
 ```
 
-Example SSE frame:
+SSE frame format:
 
 ```
 id: 345
@@ -257,153 +181,110 @@ event: item
 data: { ...json... }
 ```
 
-Reconnect automatically handled via `Last-Event-ID`.
+Reconnect is handled via `Last-Event-ID` header with DB backfill.
 
-`id` should correspond to `feed_items.id` to support monotonic cursors and replay.
+### Operational
+
+```
+GET    /status/ping                  Liveness check
+GET    /status/health                Health check (DB connectivity, 200/503)
+GET    /metrics                      Prometheus metrics
+GET    /openapi                      OpenAPI JSON spec
+```
 
 ---
 
-## 🗄 Database Schema (MVP)
+## Frontend Pages
+
+| Path | Description |
+|------|-------------|
+| `/` | Timeline with live SSE updates |
+| `/items` | All items view (limit 500) |
+| `/feeds` | Feed management (add/enable/disable/delete) |
+| `/index-words` | Word cloud from title index |
+
+---
+
+## Database Schema
+
+All primary keys are `BIGSERIAL` (`BIGINT` auto-increment).
 
 ### feeds
 
-- id (INTEGER PRIMARY KEY)
-- url (UNIQUE)
-- title
-- site_url
-- etag
-- last_modified
-- poll_interval_seconds
-- is_enabled
-- last_checked_at
-- last_success_at
-- failure_count
+| Column | Type | Notes |
+|--------|------|-------|
+| id | BIGSERIAL | PK |
+| url | TEXT | NOT NULL, UNIQUE |
+| title | TEXT | nullable |
+| site_url | TEXT | nullable |
+| etag | TEXT | nullable |
+| last_modified | TEXT | nullable |
+| poll_interval_seconds | BIGINT | NOT NULL, default 300 |
+| is_enabled | BOOLEAN | NOT NULL, default TRUE |
+| last_checked_at | TIMESTAMPTZ | nullable |
+| last_success_at | TIMESTAMPTZ | nullable |
+| failure_count | BIGINT | NOT NULL, default 0 |
 
 ### feed_items
 
-- id (INTEGER PRIMARY KEY)
-- feed_id (FK -> feeds.id)
-- external_id
-- title
-- url
-- inserted_at
+| Column | Type | Notes |
+|--------|------|-------|
+| id | BIGSERIAL | PK |
+| feed_id | BIGINT | NOT NULL, FK -> feeds(id) ON DELETE CASCADE |
+| external_id | TEXT | NOT NULL |
+| title | TEXT | NOT NULL |
+| url | TEXT | NOT NULL |
+| inserted_at | TIMESTAMPTZ | NOT NULL, default CURRENT_TIMESTAMP |
 
-Constraints:
-
-```
-UNIQUE(feed_id, external_id)
-```
+Constraint: `UNIQUE(feed_id, external_id)`
 
 ### feed_item_details
 
-- id (INTEGER PRIMARY KEY)
-- feed_item_id (UNIQUE FK -> feed_items.id)
-- summary
-- content
-- author
-- published_at
+| Column | Type | Notes |
+|--------|------|-------|
+| id | BIGSERIAL | PK |
+| feed_item_id | BIGINT | NOT NULL, UNIQUE, FK -> feed_items(id) ON DELETE CASCADE |
+| summary | TEXT | NOT NULL |
+| content | TEXT | NOT NULL |
+| author | TEXT | NOT NULL |
+| published_at | TIMESTAMPTZ | NOT NULL |
 
-Notes:
+### Indexes
 
-- One detail row per item (`UNIQUE(feed_item_id)`).
-- `ON DELETE CASCADE` from `feed_items` to `feed_item_details`.
-
----
-
-## 🧪 Testing Strategy
-
-### Unit Tests
-- Dedupe logic
-- External ID selection
-- Poll scheduling logic
-
-### Integration Tests
-- Mock feed server:
-  - 200 → insert
-  - 304 → skip
-  - 200 with new items → insert + broadcast
-
-### SSE Tests
-- Connect
-- Receive event
-- Disconnect
-- Reconnect with `Last-Event-ID`
-- Verify backfill
+- `idx_feed_items_feed_id_inserted_at_id` on `(feed_id, inserted_at DESC, id DESC)`
+- `idx_feed_items_inserted_at_id` on `(inserted_at DESC, id DESC)`
+- `idx_feeds_is_enabled_id` on `(is_enabled, id)`
+- GIN full-text search indexes on `feed_items`, `feed_item_details`, and `feeds`
 
 ---
 
-## 📦 Deployment Model
+## Deployment
 
-Single backend binary + PostgreSQL service.
+### Docker Compose
 
-Recommended:
-- Run behind reverse proxy
-- Run PostgreSQL with persistent storage
-- Regular PostgreSQL backups
+```bash
+docker compose up -d
+```
+
+Runs three services: `db` (Postgres 17), `backend` (port 8080), `frontend` (port 8000).
+
+Kubernetes manifests are available in `release/` (Kustomize-based).
+
+### CI/CD
+
+GitHub Actions and GitLab CI pipelines are configured for build, test, and container image deployment (on tags).
 
 ---
 
-## 📈 Design Principles
+## Design Principles
 
-- Keep it simple
-- Postgres-backed
-- Database is canonical history
-- SSE is best-effort live view
+- PostgreSQL is the source of truth; SSE is the live tail
 - Recover from lag using DB replay
-- No unnecessary external infrastructure
+- Keep it simple -- no unnecessary external infrastructure
+- Database is canonical history
 
 ---
 
-## 🧠 Why This Stack?
-
-- **Axum**: ergonomic async HTTP + built-in SSE
-- **Tokio**: robust async runtime + broadcast channels
-- **sqlx**: compile-time query validation + migrations
-- **PostgreSQL**: reliable relational storage with strong tooling
-- **Fresh**: SSR + islands = ideal for timeline + live updates
-
----
-
-## 📋 Known Issues & TODOs
-
-Issues identified via code review, grouped by priority.
-
-### High Priority
-
-- [ ] **Fragile 404 detection** — `backend/src/handlers/error.rs:57` uses `starts_with("no ")` string matching to decide 404 vs 500. Replace with a typed error enum or dedicated `NotFound` variant.
-- [ ] **Scheduler dies on transient DB errors** — `backend/src/background_tasks.rs:85` propagates errors with `?`, permanently killing the scheduler on any transient database failure. Wrap in a retry loop with logging.
-- [ ] **Unbounded metric cardinality** — `backend/src/handlers/mod.rs:37` uses raw URI path as a Prometheus label for unmatched routes. Bot traffic creates infinite label combinations. Use a fixed label like `"unmatched"`.
-
-### Medium Priority
-
-- [ ] **No default limit on `fetchLatestItems`** — `backend/src/handlers/items.rs:62` returns ALL items with details when no `limit` is provided. Add a default cap.
-- [ ] **Title index rebuilds from scratch per request** — `backend/src/handlers/feed_title_index.rs:15-27` loads all items into memory on each call. Add caching or incremental build.
-- [ ] **SSE replay has no cap** — `backend/src/handlers/sse.rs:42` replays the entire item history for a very old `Last-Event-ID`. Add a maximum replay window.
-- [ ] **`COALESCE` prevents clearing stale cache headers** — `backend/src/feed/feed_subscription.rs:225-228` means old ETag/Last-Modified values persist even when a feed stops sending them.
-- [ ] **No URL format validation on feed creation** — `backend/src/handlers/feeds.rs:69-71` only checks for empty string. Use `Url::parse()`.
-- [ ] **`NotModified` triggers exponential backoff** — `backend/src/feed/ingest.rs:71-72` doubles poll interval on 304. Infrequently-updated feeds quickly hit MAX_POLL_INTERVAL. Consider using cadence-based intervals instead.
-- [ ] **Navigation duplicated across all routes** — `frontend/routes/index.tsx`, `items.tsx`, `feeds.tsx`, `index-words.tsx` each have ~24 lines of identical nav markup. Extract to a shared component.
-- [ ] **`localStorage` access without try/catch** — `frontend/islands/Timeline.tsx:79,112-113` can throw in restricted contexts or when quota is exceeded.
-- [ ] **`updateFeedEnabled` retry hack** — `frontend/api.ts:85-118` retries with a different field name on 400 status. Resolve at the API contract level.
-- [ ] **No pagination on items page** — `frontend/routes/items.tsx:20` calls `fetchLatestItems()` with no limit.
-
-### Low Priority
-
-- [ ] **`nom` used only for whitespace splitting** — `backend/src/feed/feed_title_index.rs:297-303` could use `split_whitespace()` and eliminate the `nom` dependency.
-- [ ] **Typo: `occurences`** — `backend/src/feed/feed_title_index.rs:334` should be `occurrences`. Appears in JSON API output — fixing is a breaking change (consider serde rename).
-- [ ] **Custom `LogLevel` duplicates `tracing::Level`** — `backend/src/main.rs:24-58`.
-- [ ] **Metric name not namespaced** — `backend/src/handlers/mod.rs:46` uses `"handler"` instead of `rss_centr_handler_*`.
-- [ ] **Error responses are plain text** — `backend/src/handlers/error.rs:47-49` is inconsistent with the JSON API convention.
-- [ ] **Dead code: `list_enabled_feeds`** — `backend/src/feed/feed_subscription.rs:23` is never called.
-- [ ] **Missing `#[utoipa::path]` annotations** — `backend/src/handlers/feed_title_index.rs` and `sse.rs` have undocumented endpoints.
-- [ ] **Duplicated sort utilities** — `frontend/islands/Timeline.tsx:18-27` and `FeedItemsView.tsx:12-21` share identical `effectiveDate`/`sortByNewest` functions. Extract to shared module.
-- [ ] **SSR/client locale mismatch** — `frontend/components/FeedItemCard.tsx:14,52` uses `toLocaleString()` which may differ between server and client, risking hydration mismatches.
-- [ ] **No SSRF protection** — `create_feed` accepts any URL including internal network addresses. Consider URL filtering.
-- [ ] **`total_items: i32` inconsistency** — `backend/src/feed/feed_title_index.rs:355` uses `i32` while the rest of the codebase uses `i64`.
-- [ ] **Unused re-export** — `backend/src/feed/mod.rs:7` re-exports `ingest_feed_url` but it's never used externally.
-
----
-
-## 📜 License
+## License
 
 MIT
