@@ -131,7 +131,7 @@ export default function Timeline(
         newItemIds.value = new Set([...newItemIds.value, newItem.id]);
 
         // Clear "new" highlight after 30 seconds
-        const timer = setTimeout(() => {
+        const timer: number = globalThis.setTimeout(() => {
           newItemIds.value = new Set(
             [...newItemIds.value].filter((id) => id !== newItem.id),
           );
@@ -156,7 +156,7 @@ export default function Timeline(
       if (keepAlivePulseTimer !== undefined) {
         clearTimeout(keepAlivePulseTimer);
       }
-      keepAlivePulseTimer = setTimeout(() => {
+      keepAlivePulseTimer = globalThis.setTimeout(() => {
         keepAlivePulse.value = false;
       }, 450);
     });
@@ -170,7 +170,7 @@ export default function Timeline(
       if (keepAlivePulseTimer !== undefined) {
         clearTimeout(keepAlivePulseTimer);
       }
-      keepAlivePulseTimer = setTimeout(() => {
+      keepAlivePulseTimer = globalThis.setTimeout(() => {
         keepAlivePulse.value = false;
       }, 450);
     });
