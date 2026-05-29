@@ -86,8 +86,8 @@ export default function Timeline(
       : "/api/items/stream";
 
     const eventSource = new EventSource(sseUrl);
-    const clearNewItemTimers = new Set<number>();
-    let keepAlivePulseTimer: number | undefined;
+    const clearNewItemTimers = new Set<ReturnType<typeof setTimeout>>();
+    let keepAlivePulseTimer: ReturnType<typeof setTimeout> | undefined;
     let isDisposed = false;
 
     const refreshItem = async (itemId: number) => {
@@ -131,7 +131,7 @@ export default function Timeline(
         newItemIds.value = new Set([...newItemIds.value, newItem.id]);
 
         // Clear "new" highlight after 30 seconds
-        const timer: number = globalThis.setTimeout(() => {
+        const timer = setTimeout(() => {
           newItemIds.value = new Set(
             [...newItemIds.value].filter((id) => id !== newItem.id),
           );
@@ -156,7 +156,7 @@ export default function Timeline(
       if (keepAlivePulseTimer !== undefined) {
         clearTimeout(keepAlivePulseTimer);
       }
-      keepAlivePulseTimer = globalThis.setTimeout(() => {
+      keepAlivePulseTimer = setTimeout(() => {
         keepAlivePulse.value = false;
       }, 450);
     });
@@ -170,7 +170,7 @@ export default function Timeline(
       if (keepAlivePulseTimer !== undefined) {
         clearTimeout(keepAlivePulseTimer);
       }
-      keepAlivePulseTimer = globalThis.setTimeout(() => {
+      keepAlivePulseTimer = setTimeout(() => {
         keepAlivePulse.value = false;
       }, 450);
     });
