@@ -20,7 +20,7 @@
     "vite": "npm:vite@^7.3.5",
     "tailwindcss": "npm:tailwindcss@^4.3.0",
     "@tailwindcss/vite": "npm:@tailwindcss/vite@^4.3.0",
-    "@types/node": "npm:@types/node@^25.9.1"
+    "@types/node": "npm:@types/node@^25.9.2"
   },
   "compilerOptions": {
     "lib": ["dom", "dom.asynciterable", "dom.iterable", "deno.ns"],
