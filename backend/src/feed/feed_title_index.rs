@@ -1,52 +1,60 @@
-use std::future::Future;
+use std::{future::Future, sync::LazyLock};
 
 use anyhow::{Context, Result};
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 
 const MIN_WORD_LENGTH: i32 = 2;
-const STOP_WORDS: &[&str] = &[
-    // Norwegian
-    "a", "alle", "at", "av", "bare", "ble", "bli", "blir", "da", "de", "deg", "dei", "dem", "den",
-    "denne", "der", "dere", "deres", "det", "dette", "din", "disse", "då", "du", "eg", "ein",
-    "eit", "eller", "en", "er", "et", "etter", "for", "fordi", "fra", "før", "få", "får", "fikk",
-    "ha", "hadde", "han", "hans", "har", "hatt", "hele", "henne", "hennes", "her", "hos", "hun",
-    "andre", "flere", "fortsatt", "går", "gir", "gjør", "hva", "hvem", "hvilke", "hvilken", "hvis",
-    "hvor", "hvordan", "hvorfor", "i", "ikke", "ingen", "inn", "jeg", "kan", "kom", "kunne", "man",
-    "me", "med", "meg", "mellom", "men", "mens", "mer", "mi", "min", "mine", "mitt", "mot", "må",
-    "ned", "noe", "noen", "nok", "nå", "når", "og", "også", "nye", "om", "opp", "oss", "over",
-    "på", "samme", "seg", "selv", "si", "siden", "sier", "sin", "sine", "sitt", "skal", "slik",
-    "som", "så", "til", "under", "uten", "ut", "var", "ved", "vi", "vil", "ville", "vår", "våre",
-    "vårt", "være", "å", // English
-    "about", "above", "after", "again", "against", "all", "also", "am", "an", "and", "any", "are",
-    "as", "at", "be", "because", "been", "before", "being", "below", "between", "both", "but",
-    "by", "can", "did", "do", "does", "doing", "down", "during", "each", "few", "from", "further",
-    "get", "had", "has", "have", "having", "he", "her", "here", "him", "his", "how", "if", "in",
-    "into", "is", "it", "its", "itself", "just", "like", "make", "me", "more", "most", "my", "new",
-    "no", "not", "now", "of", "off", "on", "once", "one", "only", "or", "other", "our", "out",
-    "over", "own", "s", "said", "same", "say", "says", "she", "should", "so", "some", "such", "t",
-    "than", "that", "the", "their", "them", "then", "there", "these", "they", "this", "those",
-    "through", "to", "too", "under", "until", "up", "us", "very", "was", "we", "were", "what",
-    "when", "where", "which", "while", "who", "whom", "why", "will", "with", "you", "your",
-];
+static STOP_WORDS: LazyLock<Vec<String>> = LazyLock::new(|| {
+    [
+        // Norwegian
+        "a", "alle", "at", "av", "bare", "ble", "bli", "blir", "da", "de", "deg", "dei", "dem",
+        "den", "denne", "der", "dere", "deres", "det", "dette", "din", "disse", "då", "du", "eg",
+        "ein", "eit", "eller", "en", "er", "et", "etter", "for", "fordi", "fra", "før", "få",
+        "får", "fikk", "ha", "hadde", "han", "hans", "har", "hatt", "hele", "henne", "hennes",
+        "her", "hos", "hun", "andre", "flere", "fortsatt", "går", "gir", "gjør", "hva", "hvem",
+        "hvilke", "hvilken", "hvis", "hvor", "hvordan", "hvorfor", "i", "ikke", "ingen", "inn",
+        "jeg", "kan", "kom", "kunne", "man", "me", "med", "meg", "mellom", "men", "mens", "mer",
+        "mi", "min", "mine", "mitt", "mot", "må", "ned", "noe", "noen", "nok", "nå", "når", "og",
+        "også", "nye", "om", "opp", "oss", "over", "på", "samme", "seg", "selv", "si", "siden",
+        "sier", "sin", "sine", "sitt", "skal", "slik", "som", "så", "til", "under", "uten", "ut",
+        "var", "ved", "vi", "vil", "ville", "vår", "våre", "vårt", "være", "å", // English
+        "about", "above", "after", "again", "against", "all", "also", "am", "an", "and", "any",
+        "are", "as", "at", "be", "because", "been", "before", "being", "below", "between", "both",
+        "but", "by", "can", "did", "do", "does", "doing", "down", "during", "each", "few", "from",
+        "further", "get", "had", "has", "have", "having", "he", "her", "here", "him", "his", "how",
+        "if", "in", "into", "is", "it", "its", "itself", "just", "like", "make", "me", "more",
+        "most", "my", "new", "no", "not", "now", "of", "off", "on", "once", "one", "only", "or",
+        "other", "our", "out", "over", "own", "s", "said", "same", "say", "says", "she", "should",
+        "so", "some", "such", "t", "than", "that", "the", "their", "them", "then", "there",
+        "these", "they", "this", "those", "through", "to", "too", "under", "until", "up", "us",
+        "very", "was", "we", "were", "what", "when", "where", "which", "while", "who", "whom",
+        "why", "will", "with", "you", "your",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+});
 
-#[derive(Debug, Ord, PartialEq, PartialOrd, Eq, serde::Serialize, utoipa::ToSchema)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
 pub struct FeedTitleIndexItem {
     pub feed_src_id: i64,
-    pub occurences: u64,
+    #[serde(rename = "occurences")]
+    pub occurrences: u64,
 }
 
 #[derive(Debug, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
 pub struct FeedTitleIndexEntry {
     pub word: String,
-    pub total_occurences: u64,
+    #[serde(rename = "total_occurences")]
+    pub total_occurrences: u64,
     pub items: Vec<FeedTitleIndexItem>,
 }
 
 struct FeedTitleIndexRow {
     word: String,
     feed_src_id: i64,
-    occurences: u64,
-    total_occurences: u64,
+    occurrences: i64,
+    total_occurrences: i64,
 }
 
 pub trait FeedTitleIndexRepository {
@@ -61,11 +69,13 @@ pub trait FeedTitleIndexRepository {
 
 impl FeedTitleIndexRepository for PgPool {
     async fn read_feed_title_index(&self) -> Result<Vec<FeedTitleIndexEntry>> {
-        read_feed_title_index_filtered(self, false).await
+        let rows = read_feed_title_index_rows(self).await?;
+        group_rows(rows)
     }
 
     async fn read_recent_feed_title_index(&self) -> Result<Vec<FeedTitleIndexEntry>> {
-        read_feed_title_index_filtered(self, true).await
+        let rows = read_recent_feed_title_index_rows(self).await?;
+        group_rows(rows)
     }
 }
 
@@ -77,94 +87,122 @@ pub async fn read_recent_feed_title_index(pool: &PgPool) -> Result<Vec<FeedTitle
     pool.read_recent_feed_title_index().await
 }
 
-async fn read_feed_title_index_filtered(
-    pool: &PgPool,
-    recent_only: bool,
-) -> Result<Vec<FeedTitleIndexEntry>> {
-    let rows = sqlx::query(
+async fn read_feed_title_index_rows(pool: &PgPool) -> Result<Vec<FeedTitleIndexRow>> {
+    sqlx::query_as!(
+        FeedTitleIndexRow,
         r#"
         WITH words AS (
             SELECT
                 feed_id,
                 lower(regexp_split_to_table(title, '[^a-zA-ZæøåÆØÅ]+')) AS word
             FROM feed_items
-            WHERE $1::BOOLEAN IS FALSE OR inserted_at >= NOW() - INTERVAL '24 hours'
         ),
         counted_words AS (
             SELECT
                 feed_id,
                 word,
-                COUNT(*)::BIGINT AS occurences
+                COUNT(*)::BIGINT AS occurrences
             FROM words
-            WHERE length(word) >= $2 AND word != ALL($3::TEXT[])
+            WHERE length(word) >= $1 AND word != ALL($2::TEXT[])
             GROUP BY feed_id, word
         ),
         totals AS (
             SELECT
                 word,
-                SUM(occurences)::BIGINT AS total_occurences
+                SUM(occurrences)::BIGINT AS total_occurrences
             FROM counted_words
             GROUP BY word
         )
         SELECT
-            cw.word,
-            cw.feed_id AS feed_src_id,
-            cw.occurences,
-            t.total_occurences
+            cw.word AS "word!",
+            cw.feed_id AS "feed_src_id!",
+            cw.occurrences AS "occurrences!",
+            t.total_occurrences AS "total_occurrences!"
         FROM counted_words cw
         JOIN totals t USING (word)
-        ORDER BY t.total_occurences DESC, cw.word ASC, cw.occurences DESC, cw.feed_id ASC
+        ORDER BY t.total_occurrences DESC, cw.word ASC, cw.occurrences DESC, cw.feed_id ASC
         "#,
+        MIN_WORD_LENGTH,
+        STOP_WORDS.as_slice(),
     )
-    .bind(recent_only)
-    .bind(MIN_WORD_LENGTH)
-    .bind(STOP_WORDS)
     .fetch_all(pool)
     .await
-    .context("failed to read feed title index")?;
+    .context("failed to read feed title index")
+}
 
-    let rows = rows
-        .into_iter()
-        .map(|row| -> Result<FeedTitleIndexRow> {
-            Ok(FeedTitleIndexRow {
-                word: row.try_get("word")?,
-                feed_src_id: row.try_get("feed_src_id")?,
-                occurences: count_to_u64(row.try_get("occurences")?)?,
-                total_occurences: count_to_u64(row.try_get("total_occurences")?)?,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    Ok(group_rows(rows))
+async fn read_recent_feed_title_index_rows(pool: &PgPool) -> Result<Vec<FeedTitleIndexRow>> {
+    sqlx::query_as!(
+        FeedTitleIndexRow,
+        r#"
+        WITH words AS (
+            SELECT
+                feed_id,
+                lower(regexp_split_to_table(title, '[^a-zA-ZæøåÆØÅ]+')) AS word
+            FROM feed_items
+            WHERE inserted_at >= NOW() - INTERVAL '24 hours'
+        ),
+        counted_words AS (
+            SELECT
+                feed_id,
+                word,
+                COUNT(*)::BIGINT AS occurrences
+            FROM words
+            WHERE length(word) >= $1 AND word != ALL($2::TEXT[])
+            GROUP BY feed_id, word
+        ),
+        totals AS (
+            SELECT
+                word,
+                SUM(occurrences)::BIGINT AS total_occurrences
+            FROM counted_words
+            GROUP BY word
+        )
+        SELECT
+            cw.word AS "word!",
+            cw.feed_id AS "feed_src_id!",
+            cw.occurrences AS "occurrences!",
+            t.total_occurrences AS "total_occurrences!"
+        FROM counted_words cw
+        JOIN totals t USING (word)
+        ORDER BY t.total_occurrences DESC, cw.word ASC, cw.occurrences DESC, cw.feed_id ASC
+        "#,
+        MIN_WORD_LENGTH,
+        STOP_WORDS.as_slice(),
+    )
+    .fetch_all(pool)
+    .await
+    .context("failed to read recent feed title index")
 }
 
 fn count_to_u64(value: i64) -> Result<u64> {
     u64::try_from(value).context("title index count was negative")
 }
 
-fn group_rows(rows: Vec<FeedTitleIndexRow>) -> Vec<FeedTitleIndexEntry> {
+fn group_rows(rows: Vec<FeedTitleIndexRow>) -> Result<Vec<FeedTitleIndexEntry>> {
     let mut entries: Vec<FeedTitleIndexEntry> = Vec::new();
     for row in rows {
+        let occurrences = count_to_u64(row.occurrences)?;
         if let Some(entry) = entries.last_mut()
             && entry.word == row.word
         {
             entry.items.push(FeedTitleIndexItem {
                 feed_src_id: row.feed_src_id,
-                occurences: row.occurences,
+                occurrences,
             });
             continue;
         }
 
+        let total_occurrences = count_to_u64(row.total_occurrences)?;
         entries.push(FeedTitleIndexEntry {
             word: row.word,
-            total_occurences: row.total_occurences,
+            total_occurrences,
             items: vec![FeedTitleIndexItem {
                 feed_src_id: row.feed_src_id,
-                occurences: row.occurences,
+                occurrences,
             }],
         });
     }
-    entries
+    Ok(entries)
 }
 
 #[cfg(test)]
@@ -192,7 +230,7 @@ mod tests {
         let index = read_feed_title_index(&pool).await.unwrap();
         let title = find_entry(&index, "title").unwrap();
 
-        assert_eq!(title.total_occurences, 1);
+        assert_eq!(title.total_occurrences, 1);
         assert_eq!(title.items.len(), 1);
         assert_eq!(title.items[0].feed_src_id, feed.id);
     }
@@ -216,14 +254,14 @@ mod tests {
         let index = read_feed_title_index(&pool).await.unwrap();
         let title = find_entry(&index, "title").unwrap();
 
-        assert_eq!(title.total_occurences, 2);
+        assert_eq!(title.total_occurrences, 2);
         assert_eq!(title.items.len(), 2);
         assert!(title.items.iter().any(|item| item.feed_src_id == feed1.id));
         assert!(title.items.iter().any(|item| item.feed_src_id == feed2.id));
     }
 
     #[sqlx::test]
-    async fn test_feed_title_index_sorted_by_total_occurences(pool: sqlx::PgPool) {
+    async fn test_feed_title_index_sorted_by_total_occurrences(pool: sqlx::PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
@@ -241,7 +279,7 @@ mod tests {
         let index = read_feed_title_index(&pool).await.unwrap();
 
         assert_eq!(index[0].word, "title");
-        assert_eq!(index[0].total_occurences, 3);
+        assert_eq!(index[0].total_occurrences, 3);
     }
 
     #[sqlx::test]
@@ -293,7 +331,7 @@ mod tests {
         let index = read_feed_title_index(&pool).await.unwrap();
         let rust = find_entry(&index, "rust").unwrap();
 
-        assert_eq!(rust.total_occurences, 3);
+        assert_eq!(rust.total_occurrences, 3);
         assert!(find_entry(&index, "state").is_some());
     }
 
@@ -332,12 +370,30 @@ mod tests {
 
         assert!(find_entry(&index, "archived").is_none());
         let technology = find_entry(&index, "technology").unwrap();
-        assert_eq!(technology.total_occurences, 1);
+        assert_eq!(technology.total_occurrences, 1);
     }
 
     #[sqlx::test]
     async fn test_recent_feed_title_index_empty(pool: sqlx::PgPool) {
         let index = read_recent_feed_title_index(&pool).await.unwrap();
         assert!(index.is_empty());
+    }
+
+    #[test]
+    fn test_feed_title_index_serializes_existing_api_field_names() {
+        let json = serde_json::to_value(FeedTitleIndexEntry {
+            word: "rust".to_string(),
+            total_occurrences: 2,
+            items: vec![FeedTitleIndexItem {
+                feed_src_id: 1,
+                occurrences: 2,
+            }],
+        })
+        .unwrap();
+
+        assert_eq!(json["total_occurences"], 2);
+        assert_eq!(json["items"][0]["occurences"], 2);
+        assert!(json.get("total_occurrences").is_none());
+        assert!(json["items"][0].get("occurrences").is_none());
     }
 }
