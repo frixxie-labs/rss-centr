@@ -182,7 +182,9 @@ export default function Timeline(
   return (
     <div>
       <div class="px-4 py-2 border-b border-sumi-ink3 flex items-center justify-between text-xs text-katana-gray">
-        <span>{items.value.length} items</span>
+        <span>
+          {items.value.length} {items.value.length === 1 ? "story" : "stories"}
+        </span>
         <div class="flex items-center gap-2">
           {replayCursor.value && (
             <span class="text-sumi-ink4">cursor {replayCursor.value}</span>
@@ -212,7 +214,7 @@ export default function Timeline(
         ))}
         {items.value.length === 0 && (
           <div class="px-4 py-12 text-center text-sumi-ink4">
-            No items yet. Add some feeds to get started.
+            No news yet. Add some sources to get started.
           </div>
         )}
       </div>

@@ -28,10 +28,10 @@ Deno.test("getLogger - info outputs to console.info with formatted prefix", () =
   const infoSpy = spy(console, "info");
   try {
     const log = getLogger("ssr");
-    log.info("fetched items", 42);
+    log.info("fetched news", 42);
     assertSpyCalls(infoSpy, 1);
     assertEquals(infoSpy.calls[0].args[0], "[INFO ssr]");
-    assertEquals(infoSpy.calls[0].args[1], "fetched items");
+    assertEquals(infoSpy.calls[0].args[1], "fetched news");
     assertEquals(infoSpy.calls[0].args[2], 42);
   } finally {
     infoSpy.restore();

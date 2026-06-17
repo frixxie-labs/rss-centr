@@ -6,6 +6,17 @@ import type {
   FeedTitleIndexEntry,
 } from "./types.ts";
 
+interface BackendFeedTitleIndexItem {
+  feed_src_id: number;
+  occurences: number;
+}
+
+interface BackendFeedTitleIndexEntry {
+  word: string;
+  total_occurences: number;
+  items: BackendFeedTitleIndexItem[];
+}
+
 function apiUrl(path: string): string {
   if (typeof window === "undefined") {
     return `${BACKEND_URL}/api/${path}`;
@@ -49,7 +60,7 @@ export async function fetchLatestItems(
     signal: options.signal,
   });
   if (!res.ok) {
-    await throwRequestError("Failed to fetch latest items", res);
+    await throwRequestError("Failed to fetch latest news", res);
   }
   return await res.json();
 }
@@ -61,7 +72,7 @@ export async function fetchItemWithDetail(itemId: number): Promise<FeedItem> {
   ]);
 
   if (!itemRes.ok) {
-    await throwRequestError(`Failed to fetch item ${itemId}`, itemRes);
+    await throwRequestError(`Failed to fetch news item ${itemId}`, itemRes);
   }
 
   const item = await itemRes.json() as FeedItem;
@@ -84,7 +95,7 @@ export async function fetchItemWithDetail(itemId: number): Promise<FeedItem> {
 export async function fetchFeeds(): Promise<FeedSubscription[]> {
   const res = await fetch(apiUrl("feeds"));
   if (!res.ok) {
-    await throwRequestError("Failed to fetch feeds", res);
+    await throwRequestError("Failed to fetch sources", res);
   }
   return await res.json();
 }
@@ -98,7 +109,7 @@ export async function createFeed(url: string): Promise<FeedSubscription> {
     body: JSON.stringify({ url }),
   });
   if (!res.ok) {
-    await throwRequestError("Failed to create feed", res);
+    await throwRequestError("Failed to create source", res);
   }
   return await res.json();
 }
@@ -132,10 +143,10 @@ export async function updateFeedEnabled(
     if (retry.ok) {
       return;
     }
-    await throwRequestError("Failed to update feed", retry);
+    await throwRequestError("Failed to update source", retry);
   }
 
-  await throwRequestError("Failed to update feed", res);
+  await throwRequestError("Failed to update source", res);
 }
 
 export async function queueFeedIngest(feedId: number): Promise<void> {
@@ -143,7 +154,7 @@ export async function queueFeedIngest(feedId: number): Promise<void> {
     method: "POST",
   });
   if (!res.ok) {
-    await throwRequestError("Failed to queue ingest", res);
+    await throwRequestError("Failed to queue fetch", res);
   }
 }
 
@@ -152,14 +163,22 @@ export async function deleteFeed(feedId: number): Promise<void> {
     method: "DELETE",
   });
   if (!res.ok) {
-    await throwRequestError("Failed to delete feed", res);
+    await throwRequestError("Failed to delete source", res);
   }
 }
 
 export async function fetchRecentIndex(): Promise<FeedTitleIndexEntry[]> {
   const res = await fetch(apiUrl("feeds/index/today"));
   if (!res.ok) {
-    await throwRequestError("Failed to fetch title index", res);
+    await throwRequestError("Failed to fetch topics", res);
   }
-  return await res.json();
+  const entries = await res.json() as BackendFeedTitleIndexEntry[];
+  return entries.map((entry) => ({
+    word: entry.word,
+    total_occurrences: entry.total_occurences,
+    items: entry.items.map((item) => ({
+      feed_src_id: item.feed_src_id,
+      occurrences: item.occurences,
+    })),
+  }));
 }
