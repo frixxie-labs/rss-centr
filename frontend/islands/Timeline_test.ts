@@ -14,7 +14,7 @@ function makeFeedItem(overrides: Partial<FeedItem> = {}): FeedItem {
     external_id: "ext-1",
     title: "Test Item",
     url: "https://example.com",
-    inserted_at: "2024-01-01T00:00:00Z",
+    inserted_at: "2025-01-01T00:00:00Z",
     ...overrides,
   };
 }
@@ -26,9 +26,17 @@ function makeFeedItem(overrides: Partial<FeedItem> = {}): FeedItem {
 Deno.test("effectiveDate - uses published_at when present", () => {
   const item = makeFeedItem({
     published_at: "2024-06-15T10:00:00Z",
-    inserted_at: "2024-06-14T08:00:00Z",
+    inserted_at: "2024-06-16T08:00:00Z",
   });
   assertEquals(effectiveDate(item), new Date("2024-06-15T10:00:00Z").getTime());
+});
+
+Deno.test("effectiveDate - clamps future published_at to inserted_at", () => {
+  const item = makeFeedItem({
+    published_at: "2030-01-01T00:00:00Z",
+    inserted_at: "2024-06-14T08:00:00Z",
+  });
+  assertEquals(effectiveDate(item), new Date("2024-06-14T08:00:00Z").getTime());
 });
 
 Deno.test("effectiveDate - falls back to inserted_at when published_at is null", () => {
@@ -82,6 +90,23 @@ Deno.test("sortByNewest - does not mutate original array", () => {
   assertEquals(sorted.map((i) => i.id), [2, 1]);
 });
 
+Deno.test("sortByNewest - does not let future published_at sort first", () => {
+  const items = [
+    makeFeedItem({
+      id: 1,
+      published_at: "2030-01-01T00:00:00Z",
+      inserted_at: "2024-01-01T00:00:00Z",
+    }),
+    makeFeedItem({
+      id: 2,
+      published_at: "2024-01-02T00:00:00Z",
+      inserted_at: "2024-01-02T00:00:00Z",
+    }),
+  ];
+  const sorted = sortByNewest(items);
+  assertEquals(sorted.map((i) => i.id), [2, 1]);
+});
+
 Deno.test("sortByNewest - handles empty array", () => {
   assertEquals(sortByNewest([]), []);
 });
@@ -115,6 +140,23 @@ Deno.test("upsertByNewest - inserts item at the beginning when newest", () => {
   const newItem = makeFeedItem({ id: 3, published_at: "2024-12-01T00:00:00Z" });
   const result = upsertByNewest(items, newItem);
   assertEquals(result.map((i) => i.id), [3, 2, 1]);
+});
+
+Deno.test("upsertByNewest - does not move future published_at above newer inserted item", () => {
+  const items = sortByNewest([
+    makeFeedItem({
+      id: 2,
+      published_at: "2024-01-02T00:00:00Z",
+      inserted_at: "2024-01-02T00:00:00Z",
+    }),
+  ]);
+  const newItem = makeFeedItem({
+    id: 1,
+    published_at: "2030-01-01T00:00:00Z",
+    inserted_at: "2024-01-01T00:00:00Z",
+  });
+  const result = upsertByNewest(items, newItem);
+  assertEquals(result.map((i) => i.id), [2, 1]);
 });
 
 Deno.test("upsertByNewest - inserts item at the end when oldest", () => {

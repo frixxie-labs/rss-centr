@@ -4,6 +4,7 @@ import type { FeedItem, NewFeedItemEvent } from "../types.ts";
 import { FeedItemCard } from "../components/FeedItemCard.tsx";
 import { getLogger } from "../logger.ts";
 import { fetchItemWithDetail } from "../api.ts";
+import { effectiveDate, sortByNewest } from "../feedItemOrdering.ts";
 
 const log = getLogger("sse");
 export const MAX_TIMELINE_ITEMS = 500;
@@ -15,16 +16,7 @@ interface TimelineProps {
   initialNowIso: string;
 }
 
-export function effectiveDate(item: FeedItem): number {
-  return new Date(item.published_at ?? item.inserted_at).getTime();
-}
-
-export function sortByNewest(items: FeedItem[]): FeedItem[] {
-  return [...items].sort((a, b) => {
-    const dateDiff = effectiveDate(b) - effectiveDate(a);
-    return dateDiff !== 0 ? dateDiff : b.id - a.id;
-  });
-}
+export { effectiveDate, sortByNewest };
 
 export function upsertByNewest(
   items: FeedItem[],
