@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
+use clap::Parser;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use sqlx::PgPool;
 use std::{collections::HashSet, sync::Arc, time::Duration};
-use clap::Parser;
 use tokio::{
     net::TcpListener,
     sync::{Mutex, broadcast, mpsc::channel},
 };
-use tracing::{Level, info, error};
+use tracing::{Level, error, info};
 use tracing_subscriber::FmtSubscriber;
 
 use crate::{

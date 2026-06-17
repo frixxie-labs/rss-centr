@@ -3,22 +3,12 @@ import { fetchFeeds, fetchLatestItems } from "../api.ts";
 import { Header } from "../components/Header.tsx";
 import FeedItemsView from "../islands/FeedItemsView.tsx";
 import { getLogger } from "../logger.ts";
+import { parseSourceId } from "../newsFilters.ts";
 import type { FeedItem } from "../types.ts";
 import { define } from "../utils.ts";
 
 const log = getLogger("ssr");
 const ITEMS_LIMIT = 500;
-
-export function parseSourceId(url: URL): number | undefined {
-  const value = url.searchParams.get("source_id") ??
-    url.searchParams.get("feed_id");
-  if (!value) {
-    return undefined;
-  }
-
-  const id = Number(value);
-  return Number.isInteger(id) && id > 0 ? id : undefined;
-}
 
 export const handler = define.handlers({
   async GET(ctx) {

@@ -1,5 +1,5 @@
 import { assertEquals } from "@std/assert";
-import { parseSourceId } from "./news.tsx";
+import { parseSourceId } from "../newsFilters.ts";
 
 Deno.test("parseSourceId - reads source_id", () => {
   const url = new URL("https://example.com/news?q=rust&source_id=42");

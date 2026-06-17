@@ -39,6 +39,11 @@ pub struct FeedItemDetail {
     pub published_at: DateTime<Utc>,
 }
 
+pub struct FeedItemsAfterId {
+    pub items: Vec<FeedItem>,
+    pub skipped_older: bool,
+}
+
 struct FeedCadenceStats {
     median_inserted_seconds: Option<f64>,
     median_published_seconds: Option<f64>,
@@ -247,8 +252,19 @@ pub async fn read_latest_feed_items(pool: &PgPool, limit: i64) -> Result<Vec<Fee
     Ok(rows)
 }
 
-pub async fn read_feed_items_after_id(pool: &PgPool, id: i64) -> Result<Vec<FeedItem>> {
-    let rows = sqlx::query_as!(
+pub async fn read_feed_items_after_id(
+    pool: &PgPool,
+    id: i64,
+    limit: i64,
+) -> Result<FeedItemsAfterId> {
+    if limit <= 0 {
+        return Ok(FeedItemsAfterId {
+            items: Vec::new(),
+            skipped_older: false,
+        });
+    }
+
+    let mut rows = sqlx::query_as!(
         FeedItem,
         r#"
         SELECT id as "id!: i64",
@@ -257,15 +273,26 @@ pub async fn read_feed_items_after_id(pool: &PgPool, id: i64) -> Result<Vec<Feed
                inserted_at as "inserted_at: _"
         FROM feed_items
         WHERE id > $1
-        ORDER BY id ASC
+        ORDER BY id DESC
+        LIMIT $2
         "#,
         id,
+        limit.saturating_add(1),
     )
     .fetch_all(pool)
     .await
-    .with_context(|| format!("failed to read feed items after id={id}"))?;
+    .with_context(|| format!("failed to read feed items after id={id} with limit={limit}"))?;
 
-    Ok(rows)
+    let skipped_older = rows.len() as i64 > limit;
+    if skipped_older {
+        rows.truncate(limit as usize);
+    }
+    rows.reverse();
+
+    Ok(FeedItemsAfterId {
+        items: rows,
+        skipped_older,
+    })
 }
 
 pub async fn read_latest_feed_items_with_detail(
@@ -913,6 +940,39 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].title, "Third");
         assert_eq!(items[1].title, "Second");
+    }
+
+    #[sqlx::test]
+    async fn test_read_feed_items_after_id_limits_to_latest_missed_window(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
+            .await
+            .unwrap();
+
+        let cursor_item = insert_feed_item(&pool, feed.id, "ext-1", "One", "https://example.com/1")
+            .await
+            .unwrap();
+        let mut inserted = Vec::new();
+        for id in 2..=6 {
+            inserted.push(
+                insert_feed_item(
+                    &pool,
+                    feed.id,
+                    &format!("ext-{id}"),
+                    &format!("Item {id}"),
+                    &format!("https://example.com/{id}"),
+                )
+                .await
+                .unwrap(),
+            );
+        }
+
+        let replay = read_feed_items_after_id(&pool, cursor_item.id, 2)
+            .await
+            .unwrap();
+        let replayed_ids: Vec<i64> = replay.items.iter().map(|item| item.id).collect();
+
+        assert!(replay.skipped_older);
+        assert_eq!(replayed_ids, vec![inserted[3].id, inserted[4].id]);
     }
 
     #[sqlx::test]
