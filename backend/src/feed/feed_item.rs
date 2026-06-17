@@ -301,7 +301,7 @@ pub async fn read_latest_feed_items_with_detail(
               ) @@ search.query
               OR to_tsvector('simple', COALESCE(s.title, '') || ' ' || s.url) @@ search.query
           )
-        ORDER BY COALESCE(d.published_at, f.inserted_at) DESC, f.id DESC
+        ORDER BY LEAST(COALESCE(d.published_at, f.inserted_at), f.inserted_at) DESC, f.id DESC
         LIMIT $1
         "#,
         limit,
@@ -374,7 +374,7 @@ pub async fn read_all_feed_items_with_detail(pool: &PgPool) -> Result<Vec<FeedIt
                d.published_at as "published_at: _"
         FROM feed_items f
         LEFT JOIN feed_item_details d ON d.feed_item_id = f.id
-        ORDER BY COALESCE(d.published_at, f.inserted_at) DESC, f.id DESC
+        ORDER BY LEAST(COALESCE(d.published_at, f.inserted_at), f.inserted_at) DESC, f.id DESC
         "#,
     )
     .fetch_all(pool)
@@ -976,6 +976,70 @@ mod tests {
             .unwrap();
         assert_eq!(by_query.len(), 1);
         assert_eq!(by_query[0].title, "Postgres news");
+    }
+
+    #[sqlx::test]
+    async fn test_read_latest_feed_items_with_detail_clamps_future_published_at(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/future.xml")
+            .await
+            .unwrap();
+
+        let old_inserted = DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let newer_inserted = DateTime::parse_from_rfc3339("2024-01-02T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let future_published = DateTime::parse_from_rfc3339("2030-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let future_item = insert_feed_item(
+            &pool,
+            feed.id,
+            "future",
+            "Future dated",
+            "https://example.com/future",
+        )
+        .await
+        .unwrap();
+        let newer_item = insert_feed_item(
+            &pool,
+            feed.id,
+            "newer",
+            "Newer inserted",
+            "https://example.com/newer",
+        )
+        .await
+        .unwrap();
+
+        sqlx::query(r#"UPDATE feed_items SET inserted_at = $1 WHERE id = $2"#)
+            .bind(old_inserted)
+            .bind(future_item.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"UPDATE feed_items SET inserted_at = $1 WHERE id = $2"#)
+            .bind(newer_inserted)
+            .bind(newer_item.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        insert_feed_item_detail(&pool, future_item.id, "", "", "", future_published)
+            .await
+            .unwrap();
+        insert_feed_item_detail(&pool, newer_item.id, "", "", "", newer_inserted)
+            .await
+            .unwrap();
+
+        let items = read_latest_feed_items_with_detail(&pool, Some(10), None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(items[0].title, "Newer inserted");
+        assert_eq!(items[1].title, "Future dated");
+        assert_eq!(items[1].published_at, Some(future_published));
     }
 
     #[sqlx::test]

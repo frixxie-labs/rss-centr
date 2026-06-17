@@ -15,12 +15,12 @@
     "@std/testing": "jsr:@std/testing@^1.0.19",
     "fresh": "jsr:@fresh/core@^2.3.3",
     "preact": "npm:preact@^10.29.2",
-    "@preact/signals": "npm:@preact/signals@^2.9.1",
+    "@preact/signals": "npm:@preact/signals@^2.9.2",
     "@fresh/plugin-vite": "jsr:@fresh/plugin-vite@^1.1.2",
     "vite": "npm:vite@^7.3.5",
-    "tailwindcss": "npm:tailwindcss@^4.3.0",
-    "@tailwindcss/vite": "npm:@tailwindcss/vite@^4.3.0",
-    "@types/node": "npm:@types/node@^25.9.2"
+    "tailwindcss": "npm:tailwindcss@^4.3.1",
+    "@tailwindcss/vite": "npm:@tailwindcss/vite@^4.3.1",
+    "@types/node": "npm:@types/node@^25.9.3"
   },
   "compilerOptions": {
     "lib": ["dom", "dom.asynciterable", "dom.iterable", "deno.ns"],

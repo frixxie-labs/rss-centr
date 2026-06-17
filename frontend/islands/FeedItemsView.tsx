@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { fetchLatestItems } from "../api.ts";
 import { FeedItemCard } from "../components/FeedItemCard.tsx";
+import { sortByNewest } from "../feedItemOrdering.ts";
 import type { FeedItem } from "../types.ts";
 
 interface FeedItemsViewProps {
@@ -9,17 +10,6 @@ interface FeedItemsViewProps {
   feedNames: Record<number, string>;
   initialNowIso: string;
   limit: number;
-}
-
-function effectiveDate(item: FeedItem): number {
-  return new Date(item.published_at ?? item.inserted_at).getTime();
-}
-
-function sortByNewest(items: FeedItem[]): FeedItem[] {
-  return [...items].sort((a, b) => {
-    const dateDiff = effectiveDate(b) - effectiveDate(a);
-    return dateDiff !== 0 ? dateDiff : b.id - a.id;
-  });
 }
 
 export default function FeedItemsView(
