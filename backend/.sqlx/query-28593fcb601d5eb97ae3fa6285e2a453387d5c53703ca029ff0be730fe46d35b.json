@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH words AS (\n            SELECT\n                feed_id,\n                lower(regexp_split_to_table(title, '[^a-zA-ZæøåÆØÅ]+')) AS word\n            FROM feed_items\n        ),\n        counted_words AS (\n            SELECT\n                feed_id,\n                word,\n                COUNT(*)::BIGINT AS occurrences\n            FROM words\n            WHERE length(word) >= $1 AND word != ALL($2::TEXT[])\n            GROUP BY feed_id, word\n        ),\n        totals AS (\n            SELECT\n                word,\n                SUM(occurrences)::BIGINT AS total_occurrences\n            FROM counted_words\n            GROUP BY word\n        )\n        SELECT\n            cw.word AS \"word!\",\n            cw.feed_id AS \"feed_src_id!\",\n            cw.occurrences AS \"occurrences!\",\n            t.total_occurrences AS \"total_occurrences!\"\n        FROM counted_words cw\n        JOIN totals t USING (word)\n        ORDER BY t.total_occurrences DESC, cw.word ASC, cw.occurrences DESC, cw.feed_id ASC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "word!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "feed_src_id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "feed_items",
+            "name": "feed_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "occurrences!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "total_occurrences!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "28593fcb601d5eb97ae3fa6285e2a453387d5c53703ca029ff0be730fe46d35b"
+}
