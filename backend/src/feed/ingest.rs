@@ -6,13 +6,13 @@ use tokio::sync::broadcast;
 
 use crate::events::NewFeedItemEvent;
 
-use super::fetch::{FetchFeedOutcome, fetch_feed_with_cache};
 use super::feed_item::{
     insert_feed_item_dedup, insert_feed_item_detail_dedup, read_feed_cadence_seconds,
 };
 use super::feed_subscription::{
     FeedSuccessUpdate, touch_feed_failure, touch_feed_success, upsert_feed_by_url,
 };
+use super::fetch::{FetchFeedOutcome, fetch_feed_with_cache};
 
 const MIN_POLL_INTERVAL_SECONDS: i64 = 60;
 const MAX_POLL_INTERVAL_SECONDS: i64 = 6_000;
@@ -225,42 +225,86 @@ fn backoff_poll_interval_seconds(current_interval_seconds: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn test_entry_external_id_prefers_id() {
-        let e = Entry {
-            id: "abc".to_string(),
-            ..Default::default()
-        };
-        assert_eq!(entry_external_id(&e), "abc");
+    use feed_rs::model::Link;
+    use quickcheck::TestResult;
+
+    fn link(href: String) -> Link {
+        Link {
+            href,
+            rel: None,
+            media_type: None,
+            href_lang: None,
+            title: None,
+            length: None,
+        }
     }
 
-    #[test]
-    fn test_resolved_poll_interval_seconds_falls_back_to_max() {
-        let interval = resolved_poll_interval_seconds(None);
-        assert_eq!(interval, 6000);
+    fn datetime(seconds: i32) -> DateTime<Utc> {
+        DateTime::from_timestamp(i64::from(seconds), 0).unwrap()
     }
 
-    #[test]
-    fn test_resolved_poll_interval_seconds_applies_minimum() {
-        let interval = resolved_poll_interval_seconds(Some(15));
-        assert_eq!(interval, 60);
-    }
+    quickcheck::quickcheck! {
+        fn prop_entry_external_id_prefers_non_empty_id(id: String, href: String) -> TestResult {
+            if id.is_empty() {
+                return TestResult::discard();
+            }
 
-    #[test]
-    fn test_resolved_poll_interval_seconds_caps_large_average() {
-        let interval = resolved_poll_interval_seconds(Some(14_400));
-        assert_eq!(interval, 6000);
-    }
+            let entry = Entry {
+                id: id.clone(),
+                links: vec![link(href)],
+                ..Default::default()
+            };
 
-    #[test]
-    fn test_resolved_poll_interval_seconds_uses_db_value() {
-        let interval = resolved_poll_interval_seconds(Some(900));
-        assert_eq!(interval, 900);
-    }
+            TestResult::from_bool(entry_external_id(&entry) == id)
+        }
 
-    #[test]
-    fn test_backoff_poll_interval_seconds_doubles_and_caps() {
-        assert_eq!(backoff_poll_interval_seconds(300), 600);
-        assert_eq!(backoff_poll_interval_seconds(6000), 6000);
+        fn prop_entry_external_id_uses_first_link_when_id_is_empty(href: String, other_href: String) -> bool {
+            let entry = Entry {
+                id: String::new(),
+                links: vec![link(href.clone()), link(other_href)],
+                ..Default::default()
+            };
+
+            entry_external_id(&entry) == href
+        }
+
+        fn prop_entry_published_at_prefers_published(published_seconds: i32, updated_seconds: i32) -> bool {
+            let published = datetime(published_seconds);
+            let updated = datetime(updated_seconds);
+            let entry = Entry {
+                published: Some(published),
+                updated: Some(updated),
+                ..Default::default()
+            };
+
+            entry_published_at(&entry) == Some(published)
+        }
+
+        fn prop_entry_published_at_uses_updated_without_published(updated_seconds: i32) -> bool {
+            let updated = datetime(updated_seconds);
+            let entry = Entry {
+                updated: Some(updated),
+                ..Default::default()
+            };
+
+            entry_published_at(&entry) == Some(updated)
+        }
+
+        fn prop_resolved_poll_interval_seconds_clamps_db_value(interval_seconds: i64) -> bool {
+            resolved_poll_interval_seconds(Some(interval_seconds))
+                == interval_seconds.clamp(MIN_POLL_INTERVAL_SECONDS, MAX_POLL_INTERVAL_SECONDS)
+        }
+
+        fn prop_resolved_poll_interval_seconds_uses_max_without_db_value(_input: bool) -> bool {
+            resolved_poll_interval_seconds(None) == MAX_POLL_INTERVAL_SECONDS
+        }
+
+        fn prop_backoff_poll_interval_seconds_doubles_saturating_then_clamps(current_interval_seconds: i64) -> bool {
+            let expected = current_interval_seconds
+                .saturating_mul(2)
+                .clamp(MIN_POLL_INTERVAL_SECONDS, MAX_POLL_INTERVAL_SECONDS);
+
+            backoff_poll_interval_seconds(current_interval_seconds) == expected
+        }
     }
 }
