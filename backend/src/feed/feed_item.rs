@@ -574,57 +574,50 @@ mod tests {
     use super::*;
     use crate::feed::feed_subscription::upsert_feed_by_url;
 
-    #[test]
-    fn test_cadence_seconds_prefers_published_when_sufficient() {
-        let row = FeedCadenceStats {
-            median_inserted_seconds: Some(3_600.0),
-            median_published_seconds: Some(300.0),
-            inserted_samples: 2,
-            published_samples: 18,
-        };
+    quickcheck::quickcheck! {
+        fn prop_cadence_prefers_published(a: i32, b: i32, c: u8, d: u8) -> bool {
+            let row = FeedCadenceStats {
+                median_inserted_seconds: Some(f64::from(a)),
+                median_published_seconds: Some(f64::from(b)),
+                inserted_samples: i64::from(c),
+                published_samples: MIN_CADENCE_SAMPLES + i64::from(d),
+            };
 
-        // published_samples >= MIN_CADENCE_SAMPLES, so published median wins
-        let cadence = cadence_seconds(&row);
-        assert_eq!(cadence, Some(300));
-    }
+            cadence_seconds(&row) == Some(i64::from(b))
+        }
 
-    #[test]
-    fn test_cadence_seconds_falls_back_to_inserted() {
-        let row = FeedCadenceStats {
-            median_inserted_seconds: Some(3_600.0),
-            median_published_seconds: None,
-            inserted_samples: 5,
-            published_samples: 0,
-        };
+        fn prop_cadence_falls_back_inserted(a: i32, b: u8, c: u8) -> bool {
+            let row = FeedCadenceStats {
+                median_inserted_seconds: Some(f64::from(a)),
+                median_published_seconds: None,
+                inserted_samples: MIN_CADENCE_SAMPLES + i64::from(b),
+                published_samples: i64::from(c),
+            };
 
-        let cadence = cadence_seconds(&row);
-        assert_eq!(cadence, Some(3_600));
-    }
+            cadence_seconds(&row) == Some(i64::from(a))
+        }
 
-    #[test]
-    fn test_cadence_seconds_ignores_insufficient_samples() {
-        let row = FeedCadenceStats {
-            median_inserted_seconds: Some(100.0),
-            median_published_seconds: Some(200.0),
-            inserted_samples: 1,  // below MIN_CADENCE_SAMPLES
-            published_samples: 1, // below MIN_CADENCE_SAMPLES
-        };
+        fn prop_cadence_ignores_few_samples(a: i32, b: i32, c: bool, d: bool) -> bool {
+            let row = FeedCadenceStats {
+                median_inserted_seconds: Some(f64::from(a)),
+                median_published_seconds: Some(f64::from(b)),
+                inserted_samples: if c { 1 } else { 0 },
+                published_samples: if d { 1 } else { 0 },
+            };
 
-        let cadence = cadence_seconds(&row);
-        assert_eq!(cadence, None);
-    }
+            cadence_seconds(&row).is_none()
+        }
 
-    #[test]
-    fn test_cadence_seconds_handles_empty_samples() {
-        let row = FeedCadenceStats {
-            median_inserted_seconds: None,
-            median_published_seconds: None,
-            inserted_samples: 0,
-            published_samples: 0,
-        };
+        fn prop_cadence_requires_median(a: u8, b: u8) -> bool {
+            let row = FeedCadenceStats {
+                median_inserted_seconds: None,
+                median_published_seconds: None,
+                inserted_samples: MIN_CADENCE_SAMPLES + i64::from(a),
+                published_samples: MIN_CADENCE_SAMPLES + i64::from(b),
+            };
 
-        let cadence = cadence_seconds(&row);
-        assert_eq!(cadence, None);
+            cadence_seconds(&row).is_none()
+        }
     }
 
     // -----------------------------------------------------------------------
