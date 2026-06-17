@@ -2,7 +2,7 @@
  * Structured logger built on top of `console.*` methods.
  *
  * Locally you get human-readable leveled output:
- *   [INFO ssr] Fetched 42 items
+ *   [INFO ssr] Fetched 42 news stories
  *   [ERROR api-proxy] Backend unreachable { status: 502, path: "/api/feeds" }
  *
  * When running with `OTEL_DENO=true`, every `console.*` call is automatically
@@ -12,7 +12,7 @@
  * Usage:
  *   import { getLogger } from "@/logger.ts";
  *   const log = getLogger("ssr");
- *   log.info("Page rendered", { route: "/", items: 42 });
+ *   log.info("Page rendered", { route: "/", newsCount: 42 });
  *   log.error("Fetch failed", { status: 500 }, err);
  */
 

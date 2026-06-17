@@ -32,6 +32,13 @@ function colorForFrequency(
   return "text-old-white";
 }
 
+export function newsUrlForTopicSource(word: string, feedSrcId: number): string {
+  const params = new URLSearchParams();
+  params.set("q", word);
+  params.set("source_id", String(feedSrcId));
+  return `/news?${params}`;
+}
+
 export default function WordCloud(
   { initialEntries, feedNames }: WordCloudProps,
 ) {
@@ -57,7 +64,7 @@ export default function WordCloud(
   if (data.length === 0) {
     return (
       <div class="px-4 py-12 text-center text-sumi-ink4">
-        No title index data available for the last 24 hours.
+        No topic data available for the last 24 hours.
         <button
           type="button"
           onClick={refresh}
@@ -70,21 +77,21 @@ export default function WordCloud(
     );
   }
 
-  const maxOccurrences = Math.max(...data.map((e) => e.total_occurences));
-  const minOccurrences = Math.min(...data.map((e) => e.total_occurences));
+  const maxOccurrences = Math.max(...data.map((e) => e.total_occurrences));
+  const minOccurrences = Math.min(...data.map((e) => e.total_occurrences));
 
   const minFontSize = 0.75;
   const maxFontSize = 3;
   const selectedEntry = selected.value;
   const selectedMaxOccurrences = selectedEntry
-    ? Math.max(...selectedEntry.items.map((i) => i.occurences))
+    ? Math.max(...selectedEntry.items.map((i) => i.occurrences))
     : 0;
 
   return (
     <div>
       {/* Header bar */}
       <div class="px-4 py-2 border-b border-sumi-ink3 flex items-center justify-between text-xs text-fuji-gray">
-        <span>{data.length} words indexed in the last 24 hours</span>
+        <span>{data.length} topics found in the last 24 hours</span>
         <button
           type="button"
           onClick={refresh}
@@ -105,14 +112,14 @@ export default function WordCloud(
       <div class="px-4 py-6 flex flex-wrap items-baseline justify-center gap-x-3 gap-y-1">
         {data.map((entry) => {
           const fontSize = scale(
-            entry.total_occurences,
+            entry.total_occurrences,
             minOccurrences,
             maxOccurrences,
             minFontSize,
             maxFontSize,
           );
           const color = colorForFrequency(
-            entry.total_occurences,
+            entry.total_occurrences,
             maxOccurrences,
           );
           const isSelected = selected.value?.word === entry.word;
@@ -130,7 +137,7 @@ export default function WordCloud(
                   : ""
               }`}
               style={{ fontSize: `${fontSize}rem`, lineHeight: 1.3 }}
-              title={`${entry.word}: ${entry.total_occurences} occurrences`}
+              title={`${entry.word}: ${entry.total_occurrences} occurrences`}
             >
               {entry.word}
             </button>
@@ -166,8 +173,8 @@ export default function WordCloud(
               {selectedEntry.word}
             </h3>
             <span class="text-sm text-fuji-gray">
-              {selectedEntry.total_occurences} total occurrences across{" "}
-              {selectedEntry.items.length} feed
+              {selectedEntry.total_occurrences} total occurrences across{" "}
+              {selectedEntry.items.length} source
               {selectedEntry.items.length !== 1 ? "s" : ""}
             </span>
           </div>
@@ -175,19 +182,27 @@ export default function WordCloud(
           <div class="space-y-2">
             {selectedEntry.items.map((item) => {
               const barWidth = selectedMaxOccurrences > 0
-                ? (item.occurences / selectedMaxOccurrences) * 100
+                ? (item.occurrences / selectedMaxOccurrences) * 100
                 : 0;
               const feedName = feedNames[item.feed_src_id] ??
-                `Feed #${item.feed_src_id}`;
+                `Source #${item.feed_src_id}`;
 
               return (
-                <div key={item.feed_src_id} class="space-y-1">
+                <a
+                  key={item.feed_src_id}
+                  href={newsUrlForTopicSource(
+                    selectedEntry.word,
+                    item.feed_src_id,
+                  )}
+                  class="block space-y-1 rounded-md px-2 py-1 transition hover:bg-sumi-ink3"
+                  title={`Show ${selectedEntry.word} news from ${feedName}`}
+                >
                   <div class="flex items-center justify-between text-sm">
                     <span class="text-old-white truncate max-w-[60%]">
                       {feedName}
                     </span>
                     <span class="text-fuji-gray font-mono text-xs">
-                      {item.occurences}x
+                      {item.occurrences}x
                     </span>
                   </div>
                   <div class="h-1.5 w-full rounded-full bg-sumi-ink3">
@@ -196,7 +211,7 @@ export default function WordCloud(
                       style={{ width: `${Math.max(barWidth, 2)}%` }}
                     />
                   </div>
-                </div>
+                </a>
               );
             })}
           </div>

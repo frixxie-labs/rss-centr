@@ -9,14 +9,25 @@ interface FeedItemsViewProps {
   initialItems: FeedItem[];
   feedNames: Record<number, string>;
   initialNowIso: string;
+  initialQuery?: string;
+  initialFeedId?: number;
   limit: number;
 }
 
 export default function FeedItemsView(
-  { initialItems, feedNames, initialNowIso, limit }: FeedItemsViewProps,
+  {
+    initialItems,
+    feedNames,
+    initialNowIso,
+    initialQuery = "",
+    initialFeedId,
+    limit,
+  }: FeedItemsViewProps,
 ) {
-  const query = useSignal("");
-  const selectedFeedId = useSignal<string>("all");
+  const query = useSignal(initialQuery);
+  const selectedFeedId = useSignal<string>(
+    initialFeedId === undefined ? "all" : String(initialFeedId),
+  );
   const items = useSignal(sortByNewest(initialItems));
   const isLoading = useSignal(false);
   const loadError = useSignal(false);
@@ -74,7 +85,7 @@ export default function FeedItemsView(
     <div>
       <div class="mx-4 my-5 rounded-lg border border-sumi-ink3 bg-sumi-ink2/60 p-4 space-y-3">
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <h2 class="text-sm font-semibold text-fuji-white">Feed items</h2>
+          <h2 class="text-sm font-semibold text-fuji-white">Latest News</h2>
           <span class="text-xs text-katana-gray">
             {isLoading.value ? "Loading..." : `${items.value.length} shown`}
           </span>
@@ -88,7 +99,7 @@ export default function FeedItemsView(
               query.value = target.value;
             }}
             class="rounded-md border border-sumi-ink4 bg-sumi-ink0 px-3 py-2 text-sm text-old-white outline-none transition focus:border-carp-yellow"
-            placeholder="Filter by title, summary, author, URL, or feed"
+            placeholder="Filter by title, summary, author, URL, or source"
           />
           <select
             value={selectedFeedId.value}
@@ -98,7 +109,7 @@ export default function FeedItemsView(
             }}
             class="rounded-md border border-sumi-ink4 bg-sumi-ink0 px-3 py-2 text-sm text-old-white outline-none transition focus:border-carp-yellow"
           >
-            <option value="all">All feeds</option>
+            <option value="all">All sources</option>
             {feedOptions.map((feed) => (
               <option key={feed.id} value={feed.id}>{feed.name}</option>
             ))}
@@ -109,7 +120,7 @@ export default function FeedItemsView(
       <div class="border-y border-sumi-ink3">
         {loadError.value && (
           <div class="border-b border-sumi-ink3 px-4 py-3 text-sm text-ronin-yellow">
-            Could not load matching items.
+            Could not load matching news.
           </div>
         )}
         {items.value.map((item) => (
@@ -122,7 +133,7 @@ export default function FeedItemsView(
         ))}
         {items.value.length === 0 && !isLoading.value && (
           <div class="px-4 py-12 text-center text-katana-gray">
-            No items match the current filters.
+            No news matches the current filters.
           </div>
         )}
       </div>

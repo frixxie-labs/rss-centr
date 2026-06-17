@@ -1,7 +1,13 @@
-# Fresh project
+# RSS Centr Frontend
 
-Your new Fresh project is ready to go. You can follow the Fresh "Getting
-Started" guide here: https://fresh.deno.dev/docs/getting-started
+Fresh 2 frontend for RSS Centr.
+
+Primary pages:
+
+- `/` - live timeline
+- `/news` - searchable news list
+- `/sources` - RSS source management
+- `/topics` - recent title topics
 
 ### Usage
 

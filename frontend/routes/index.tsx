@@ -45,29 +45,29 @@ export default define.page<typeof handler>(function Home({ data }) {
           Timeline
         </a>
         <a
-          href="/items"
+          href="/news"
           class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
         >
-          Items
+          News
         </a>
         <a
-          href="/feeds"
+          href="/sources"
           class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
         >
-          Feeds
+          Sources
         </a>
         <a
-          href="/index-words"
+          href="/topics"
           class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
         >
-          Word Cloud
+          Topics
         </a>
       </Header>
       <main class="flex-1 max-w-2xl mx-auto w-full">
         {data.loadError && (
           <div class="mx-4 my-4 rounded-md border border-ronin-yellow/50 bg-winter-yellow/50 px-3 py-2 text-sm text-ronin-yellow">
-            Could not load the latest items from the backend. Showing available
-            data and waiting for live updates.
+            Could not load the latest news. Showing available data and waiting
+            for live updates.
           </div>
         )}
         <Timeline

@@ -71,7 +71,7 @@ export default function FeedManagement(
   const refreshing = useSignal(false);
   const busyIds = useSignal<Set<number>>(new Set());
   const errorMessage = useSignal<string | null>(
-    initialLoadError ? "Could not load feeds from the backend." : null,
+    initialLoadError ? "Could not load sources." : null,
   );
   const successMessage = useSignal<string | null>(null);
 
@@ -81,7 +81,7 @@ export default function FeedManagement(
     try {
       feeds.value = sortByNewestId(await fetchFeeds());
     } catch (_err) {
-      errorMessage.value = "Could not refresh feeds.";
+      errorMessage.value = "Could not refresh sources.";
     } finally {
       refreshing.value = false;
     }
@@ -90,7 +90,7 @@ export default function FeedManagement(
   async function handleAddFeed() {
     const url = urlInput.value.trim();
     if (!url) {
-      errorMessage.value = "Feed URL is required.";
+      errorMessage.value = "Source URL is required.";
       return;
     }
 
@@ -102,11 +102,11 @@ export default function FeedManagement(
       await createFeed(url);
       urlInput.value = "";
       await refreshFeeds();
-      successMessage.value = "Feed saved.";
+      successMessage.value = "Source saved.";
     } catch (err) {
       errorMessage.value = err instanceof Error
         ? err.message
-        : "Failed to save feed.";
+        : "Failed to save source.";
     } finally {
       submitting.value = false;
     }
@@ -121,11 +121,11 @@ export default function FeedManagement(
       const nextEnabled = !feed.is_enabled;
       await updateFeedEnabled(feed.id, nextEnabled);
       await refreshFeeds();
-      successMessage.value = nextEnabled ? "Feed enabled." : "Feed paused.";
+      successMessage.value = nextEnabled ? "Source enabled." : "Source paused.";
     } catch (err) {
       errorMessage.value = err instanceof Error
         ? err.message
-        : "Failed to update feed.";
+        : "Failed to update source.";
     } finally {
       busyIds.value = new Set(
         [...busyIds.value].filter((id) => id !== feed.id),
@@ -140,11 +140,11 @@ export default function FeedManagement(
 
     try {
       await queueFeedIngest(feedId);
-      successMessage.value = "Ingest queued.";
+      successMessage.value = "Fetch queued.";
     } catch (err) {
       errorMessage.value = err instanceof Error
         ? err.message
-        : "Failed to queue ingest.";
+        : "Failed to queue fetch.";
     } finally {
       busyIds.value = new Set(
         [...busyIds.value].filter((id) => id !== feedId),
@@ -153,7 +153,7 @@ export default function FeedManagement(
   }
 
   async function handleDelete(feed: FeedSubscription) {
-    if (!confirm(`Delete feed?\n\n${feed.url}`)) {
+    if (!confirm(`Delete source?\n\n${feed.url}`)) {
       return;
     }
 
@@ -164,11 +164,11 @@ export default function FeedManagement(
     try {
       await deleteFeed(feed.id);
       await refreshFeeds();
-      successMessage.value = "Feed deleted.";
+      successMessage.value = "Source deleted.";
     } catch (err) {
       errorMessage.value = err instanceof Error
         ? err.message
-        : "Failed to delete feed.";
+        : "Failed to delete source.";
     } finally {
       busyIds.value = new Set(
         [...busyIds.value].filter((id) => id !== feed.id),
@@ -179,7 +179,7 @@ export default function FeedManagement(
   return (
     <div class="mx-4 my-5 space-y-4">
       <section class="rounded-lg border border-sumi-ink3 bg-sumi-ink2/60 p-4 space-y-3">
-        <h2 class="text-sm font-semibold text-fuji-white">Add feed</h2>
+        <h2 class="text-sm font-semibold text-fuji-white">Add source</h2>
         <form
           class="flex flex-col gap-2 sm:flex-row"
           onSubmit={(event) => {
@@ -203,7 +203,7 @@ export default function FeedManagement(
             variant="primary"
             disabled={submitting.value || refreshing.value}
           >
-            {submitting.value ? "Saving..." : "Save feed"}
+            {submitting.value ? "Saving..." : "Save source"}
           </Button>
         </form>
       </section>
@@ -223,7 +223,7 @@ export default function FeedManagement(
       <section class="rounded-lg border border-sumi-ink3 bg-sumi-ink2/60">
         <div class="flex items-center justify-between border-b border-sumi-ink3 px-4 py-3">
           <h2 class="text-sm font-semibold text-fuji-white">
-            Feeds ({feeds.value.length})
+            Sources ({feeds.value.length})
           </h2>
           <Button
             type="button"
@@ -240,7 +240,7 @@ export default function FeedManagement(
         {feeds.value.length === 0
           ? (
             <div class="px-4 py-8 text-sm text-katana-gray">
-              No feeds yet. Add one above to start collecting items.
+              No sources yet. Add one above to start collecting news.
             </div>
           )
           : (
@@ -272,7 +272,7 @@ export default function FeedManagement(
                         | Last success: {formatDateTime(feed.last_success_at)}
                       </p>
                       <p>
-                        Poll every{" "}
+                        Check every{" "}
                         {formatPollInterval(feed.poll_interval_seconds)}{" "}
                         | Failures: {feed.failure_count}
                       </p>
@@ -297,7 +297,7 @@ export default function FeedManagement(
                         }}
                         disabled={isBusy}
                       >
-                        Ingest now
+                        Fetch now
                       </Button>
                       <Button
                         type="button"

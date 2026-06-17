@@ -45,11 +45,11 @@ export interface NewFeedItemEvent {
 
 export interface FeedTitleIndexItem {
   feed_src_id: number;
-  occurences: number;
+  occurrences: number;
 }
 
 export interface FeedTitleIndexEntry {
   word: string;
-  total_occurences: number;
+  total_occurrences: number;
   items: FeedTitleIndexItem[];
 }
