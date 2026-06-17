@@ -78,10 +78,10 @@ pub async fn health(State(pool): State<PgPool>) -> impl IntoResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::Router;
     use axum::body::Body;
     use axum::http::Request;
     use axum::routing::get;
-    use axum::Router;
     use http_body_util::BodyExt;
     use sqlx::postgres::PgPoolOptions;
     use tower::ServiceExt;

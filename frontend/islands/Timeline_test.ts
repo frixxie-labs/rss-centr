@@ -1,9 +1,12 @@
 import { assertEquals } from "@std/assert";
 import {
+  chooseResumeCursor,
   effectiveDate,
   MAX_TIMELINE_ITEMS,
+  parseReplayDoneEvent,
   sortByNewest,
   upsertByNewest,
+  upsertManyByNewest,
 } from "./Timeline.tsx";
 import type { FeedItem } from "../types.ts";
 
@@ -223,4 +226,67 @@ Deno.test("upsertByNewest - handles same-date items using id tiebreaker", () => 
   const newItem = makeFeedItem({ id: 3, published_at: sameDate });
   const result = upsertByNewest(items, newItem);
   assertEquals(result.map((i) => i.id), [5, 3, 1]);
+});
+
+// ---------------------------------------------------------------------------
+// upsertManyByNewest
+// ---------------------------------------------------------------------------
+
+Deno.test("upsertManyByNewest - batches dedupe, sorting, and capping", () => {
+  const items = sortByNewest([
+    makeFeedItem({ id: 1, title: "Old", published_at: "2024-01-01T00:00:00Z" }),
+    makeFeedItem({ id: 2, published_at: "2024-02-01T00:00:00Z" }),
+  ]);
+
+  const result = upsertManyByNewest(items, [
+    makeFeedItem({
+      id: 1,
+      title: "Updated",
+      published_at: "2024-01-01T00:00:00Z",
+    }),
+    makeFeedItem({ id: 3, published_at: "2024-03-01T00:00:00Z" }),
+  ]);
+
+  assertEquals(result.map((i) => i.id), [3, 2, 1]);
+  assertEquals(result.find((i) => i.id === 1)!.title, "Updated");
+});
+
+Deno.test("upsertManyByNewest - caps batched replay at MAX_TIMELINE_ITEMS", () => {
+  const replayedItems: FeedItem[] = [];
+  for (let i = 0; i < MAX_TIMELINE_ITEMS + 10; i++) {
+    replayedItems.push(
+      makeFeedItem({
+        id: i + 1,
+        published_at: new Date(2024, 0, 1, 0, 0, i).toISOString(),
+      }),
+    );
+  }
+
+  const result = upsertManyByNewest([], replayedItems);
+
+  assertEquals(result.length, MAX_TIMELINE_ITEMS);
+  assertEquals(result[0].id, MAX_TIMELINE_ITEMS + 10);
+});
+
+// ---------------------------------------------------------------------------
+// replay cursor helpers
+// ---------------------------------------------------------------------------
+
+Deno.test("chooseResumeCursor - prefers initial snapshot max id over stored cursor", () => {
+  const items = [makeFeedItem({ id: 10 }), makeFeedItem({ id: 15 })];
+
+  assertEquals(chooseResumeCursor(items, "2"), "15");
+});
+
+Deno.test("chooseResumeCursor - falls back to stored cursor when snapshot is empty", () => {
+  assertEquals(chooseResumeCursor([], "42"), "42");
+});
+
+Deno.test("parseReplayDoneEvent - normalizes replay marker payload", () => {
+  assertEquals(
+    parseReplayDoneEvent(
+      JSON.stringify({ replayed: 500, limited: true, last_event_id: 123 }),
+    ),
+    { replayed: 500, limited: true, last_event_id: 123 },
+  );
 });

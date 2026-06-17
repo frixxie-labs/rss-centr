@@ -2,7 +2,7 @@ import { Head } from "fresh/runtime";
 import { define } from "../utils.ts";
 import { fetchFeeds, fetchLatestItems } from "../api.ts";
 import { Header } from "../components/Header.tsx";
-import Timeline from "../islands/Timeline.tsx";
+import Timeline, { MAX_TIMELINE_ITEMS } from "../islands/Timeline.tsx";
 import type { FeedItem } from "../types.ts";
 import { getLogger } from "../logger.ts";
 
@@ -16,7 +16,7 @@ export const handler = define.handlers({
     const initialNowIso = new Date().toISOString();
     try {
       const [itemsResult, feeds] = await Promise.all([
-        fetchLatestItems({ limit: 100 }),
+        fetchLatestItems({ limit: MAX_TIMELINE_ITEMS }),
         fetchFeeds(),
       ]);
       items = itemsResult;

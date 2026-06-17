@@ -47,10 +47,7 @@ pub async fn list_enabled_feeds(pool: &PgPool) -> Result<Vec<FeedSubscription>> 
     Ok(rows)
 }
 
-pub async fn list_due_feeds(
-    pool: &PgPool,
-    now: DateTime<Utc>,
-) -> Result<Vec<FeedSubscription>> {
+pub async fn list_due_feeds(pool: &PgPool, now: DateTime<Utc>) -> Result<Vec<FeedSubscription>> {
     let rows = sqlx::query_as!(
         FeedSubscription,
         r#"
@@ -362,7 +359,10 @@ mod tests {
             .unwrap();
         let r1 = read_feed(&pool, f.id).await.unwrap();
         assert_eq!(r1.failure_count, 1);
-        assert_eq!(r1.last_checked_at.unwrap().timestamp_micros(), t1.timestamp_micros());
+        assert_eq!(
+            r1.last_checked_at.unwrap().timestamp_micros(),
+            t1.timestamp_micros()
+        );
         assert_eq!(r1.poll_interval_seconds, 1200);
 
         let t2 = Utc::now();
@@ -383,8 +383,14 @@ mod tests {
 
         let r2 = read_feed(&pool, f.id).await.unwrap();
         assert_eq!(r2.failure_count, 0);
-        assert_eq!(r2.last_checked_at.unwrap().timestamp_micros(), t2.timestamp_micros());
-        assert_eq!(r2.last_success_at.unwrap().timestamp_micros(), t2.timestamp_micros());
+        assert_eq!(
+            r2.last_checked_at.unwrap().timestamp_micros(),
+            t2.timestamp_micros()
+        );
+        assert_eq!(
+            r2.last_success_at.unwrap().timestamp_micros(),
+            t2.timestamp_micros()
+        );
         assert_eq!(r2.title.as_deref(), Some("Example"));
         assert_eq!(r2.site_url.as_deref(), Some("https://example.com"));
         assert_eq!(r2.etag.as_deref(), Some("\"etag-123\""));

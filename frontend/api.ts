@@ -1,4 +1,4 @@
-import { BACKEND_URL } from "./utils.ts";
+import { BACKEND_URL } from "./backendUrl.ts";
 import type {
   FeedItem,
   FeedItemDetail,

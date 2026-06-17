@@ -1,5 +1,8 @@
 import { assertEquals } from "@std/assert";
-import { filterProxyHeaders, forwardRequestHeaders } from "./[...path].tsx";
+import {
+  filterProxyHeaders,
+  forwardRequestHeaders,
+} from "../../apiProxyHeaders.ts";
 
 // ---------------------------------------------------------------------------
 // filterProxyHeaders

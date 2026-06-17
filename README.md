@@ -177,11 +177,13 @@ SSE frame format:
 
 ```
 id: 345
-event: item
+event: feed_item
 data: { ...json... }
 ```
 
-Reconnect is handled via `Last-Event-ID` header with DB backfill.
+Reconnect is handled via `Last-Event-ID` header with bounded DB backfill. The
+server emits `event: replay_done` after catch-up; its payload includes
+`replayed`, `limited`, and `last_event_id`.
 
 ### Operational
 

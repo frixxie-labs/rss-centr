@@ -1,5 +1,5 @@
 import { define } from "@/utils.ts";
-import { BACKEND_URL } from "@/utils.ts";
+import { BACKEND_URL } from "@/backendUrl.ts";
 
 export const handler = define.handlers({
   async GET(_ctx) {
