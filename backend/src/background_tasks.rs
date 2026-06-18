@@ -4,11 +4,9 @@ use chrono::Utc;
 use metrics::{counter, gauge};
 use sqlx::PgPool;
 use tokio::sync::Mutex;
-use tokio::sync::broadcast;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{info, warn};
 
-use crate::events::NewFeedItemEvent;
 use crate::feed::{feed_subscription, ingest::ingest_feed_url};
 
 #[derive(Debug, Clone)]
@@ -21,7 +19,6 @@ pub async fn handle_ingest_bg_thread(
     mut rx: Receiver<IngestJob>,
     pool: PgPool,
     client: reqwest::Client,
-    new_item_tx: broadcast::Sender<NewFeedItemEvent>,
     in_flight: Arc<Mutex<HashSet<i64>>>,
 ) {
     while let Some(job) = rx.recv().await {
@@ -52,7 +49,7 @@ pub async fn handle_ingest_bg_thread(
         };
 
         info!("ingesting url={url}");
-        match ingest_feed_url(&pool, &client, &url, &new_item_tx).await {
+        match ingest_feed_url(&pool, &client, &url).await {
             Ok(result) => {
                 counter!("rss_centr_feeds_ingested_total").increment(1);
                 counter!("rss_centr_feed_items_inserted_total")

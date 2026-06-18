@@ -599,7 +599,10 @@ pub async fn delete_feed_item_detail(pool: &PgPool, feed_item_id: i64) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::NEWS_FEED_ITEMS_CHANNEL;
     use crate::feed::feed_subscription::upsert_feed_by_url;
+    use sqlx::postgres::PgListener;
+    use tokio::time::{Duration, timeout};
 
     quickcheck::quickcheck! {
         fn prop_cadence_prefers_published(a: i32, b: i32, c: u8, d: u8) -> bool {
@@ -836,6 +839,27 @@ mod tests {
         assert_eq!(item.external_id, "ext-1");
         assert_eq!(item.title, "Title");
         assert_eq!(item.url, "https://example.com");
+    }
+
+    #[sqlx::test]
+    async fn test_insert_feed_item_notifies_news_feed_items(pool: PgPool) {
+        let mut listener = PgListener::connect_with(&pool).await.unwrap();
+        listener.listen(NEWS_FEED_ITEMS_CHANNEL).await.unwrap();
+
+        let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
+            .await
+            .unwrap();
+        let item = insert_feed_item(&pool, feed.id, "ext-1", "Title", "https://example.com")
+            .await
+            .unwrap();
+
+        let notification = timeout(Duration::from_secs(2), listener.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(notification.channel(), NEWS_FEED_ITEMS_CHANNEL);
+        assert_eq!(notification.payload(), item.id.to_string());
     }
 
     #[sqlx::test]

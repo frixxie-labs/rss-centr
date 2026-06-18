@@ -2,9 +2,6 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use feed_rs::model::{Entry, Text};
 use sqlx::PgPool;
-use tokio::sync::broadcast;
-
-use crate::events::NewFeedItemEvent;
 
 use super::feed_item::{
     insert_feed_item_dedup, insert_feed_item_detail_dedup, read_feed_cadence_seconds,
@@ -26,7 +23,6 @@ pub async fn ingest_feed_url(
     pool: &PgPool,
     client: &reqwest::Client,
     url: &str,
-    new_item_tx: &broadcast::Sender<NewFeedItemEvent>,
 ) -> Result<IngestResult> {
     let feed_sub = upsert_feed_by_url(pool, url).await?;
     let checked_at = Utc::now();
@@ -89,7 +85,7 @@ pub async fn ingest_feed_url(
 
     let mut inserted_items = 0usize;
     for entry in &feed.entries {
-        if ingest_entry(pool, feed_sub.id, entry, new_item_tx).await? {
+        if ingest_entry(pool, feed_sub.id, entry).await? {
             inserted_items += 1;
         }
     }
@@ -119,12 +115,7 @@ pub async fn ingest_feed_url(
     })
 }
 
-async fn ingest_entry(
-    pool: &PgPool,
-    feed_id: i64,
-    entry: &Entry,
-    new_item_tx: &broadcast::Sender<NewFeedItemEvent>,
-) -> Result<bool> {
+async fn ingest_entry(pool: &PgPool, feed_id: i64, entry: &Entry) -> Result<bool> {
     let external_id = entry_external_id(entry);
     let title = entry.title.as_ref().map(text_value).unwrap_or("(no title)");
     let url = entry.links.first().map(|l| l.href.as_str()).unwrap_or("");
@@ -154,8 +145,6 @@ async fn ingest_entry(
             item.id, external_id
         )
     })?;
-
-    let _ = new_item_tx.send(NewFeedItemEvent::from(&item));
 
     Ok(true)
 }

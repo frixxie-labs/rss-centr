@@ -12,7 +12,7 @@ use tracing_subscriber::FmtSubscriber;
 
 use crate::{
     background_tasks::{IngestJob, enqueue_due_feeds_loop, handle_ingest_bg_thread},
-    events::NewFeedItemEvent,
+    events::{NewFeedItemEvent, NewFeedItemListener},
     handlers::create_router,
 };
 
@@ -106,21 +106,24 @@ async fn main() -> Result<()> {
         .context("failed to build HTTP client")?;
     let (tx, rx) = channel::<IngestJob>(1 << 12);
     let (new_item_tx, _new_item_rx) = broadcast::channel::<NewFeedItemEvent>(1 << 12);
+    let new_item_listener = NewFeedItemListener::connect(&pool)
+        .await
+        .context("failed to start new feed item listener")?;
     let in_flight = Arc::new(Mutex::new(HashSet::<i64>::new()));
 
     let ingest_pool = pool.clone();
     let ingest_client = client.clone();
-    let ingest_new_item_tx = new_item_tx.clone();
     let ingest_in_flight = in_flight.clone();
     let ingest_handle = tokio::spawn(async move {
-        handle_ingest_bg_thread(
-            rx,
-            ingest_pool,
-            ingest_client,
-            ingest_new_item_tx,
-            ingest_in_flight,
-        )
-        .await;
+        handle_ingest_bg_thread(rx, ingest_pool, ingest_client, ingest_in_flight).await;
+    });
+
+    let new_item_listener_pool = pool.clone();
+    let new_item_listener_tx = new_item_tx.clone();
+    let new_item_listener_handle = tokio::spawn(async move {
+        new_item_listener
+            .run(new_item_listener_pool, new_item_listener_tx)
+            .await
     });
 
     let sched_pool = pool.clone();
@@ -152,6 +155,14 @@ async fn main() -> Result<()> {
                 Err(e) => error!("scheduler panicked: {e}"),
             }
             anyhow::bail!("scheduler stopped, shutting down");
+        }
+        result = new_item_listener_handle => {
+            match result {
+                Ok(Ok(())) => error!("new item listener exited unexpectedly"),
+                Ok(Err(e)) => error!("new item listener failed: {e:#}"),
+                Err(e) => error!("new item listener panicked: {e}"),
+            }
+            anyhow::bail!("new item listener stopped, shutting down");
         }
     }
     Ok(())
