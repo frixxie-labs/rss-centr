@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use feed_rs::model::{Entry, Text};
+use metrics::histogram;
 use sqlx::PgPool;
+use tokio::time::Instant;
+use tracing::info;
 
 use super::feed_item::{
     insert_feed_item_dedup, insert_feed_item_detail_dedup, read_feed_cadence_seconds,
@@ -119,6 +122,7 @@ async fn ingest_entry(pool: &PgPool, feed_id: i64, entry: &Entry) -> Result<bool
     let external_id = entry_external_id(entry);
     let title = entry.title.as_ref().map(text_value).unwrap_or("(no title)");
     let url = entry.links.first().map(|l| l.href.as_str()).unwrap_or("");
+    let insert_started_at = Instant::now();
 
     let mut tx = pool
         .begin()
@@ -145,6 +149,16 @@ async fn ingest_entry(pool: &PgPool, feed_id: i64, entry: &Entry) -> Result<bool
             item.id, external_id
         )
     })?;
+    let insert_elapsed = insert_started_at.elapsed();
+
+    histogram!("rss_centr_feed_item_insert_duration_seconds").record(insert_elapsed);
+    info!(
+        feed_id = feed_id,
+        feed_item_id = item.id,
+        external_id = external_id,
+        elapsed_ms = insert_elapsed.as_millis(),
+        "inserted feed item"
+    );
 
     Ok(true)
 }

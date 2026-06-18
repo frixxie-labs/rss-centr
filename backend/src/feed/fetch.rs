@@ -1,7 +1,12 @@
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use feed_rs::model::Feed;
 use feed_rs::parser;
+use metrics::histogram;
 use reqwest::{StatusCode, header};
+use tokio::time::Instant;
+use tracing::{info, warn};
 
 pub enum FetchFeedOutcome {
     NotModified {
@@ -30,6 +35,50 @@ pub async fn fetch_feed(client: &reqwest::Client, url: &str) -> Result<Feed> {
 }
 
 pub async fn fetch_feed_with_cache(
+    client: &reqwest::Client,
+    url: &str,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+) -> Result<FetchFeedOutcome> {
+    let started_at = Instant::now();
+    let outcome = fetch_feed_with_cache_inner(client, url, etag, last_modified).await;
+    let elapsed = started_at.elapsed();
+
+    match &outcome {
+        Ok(FetchFeedOutcome::NotModified { .. }) => {
+            record_feed_source_fetch_duration("not_modified", elapsed);
+            info!(
+                url = url,
+                outcome = "not_modified",
+                elapsed_ms = elapsed.as_millis(),
+                "fetched feed source"
+            );
+        }
+        Ok(FetchFeedOutcome::Fetched { feed, .. }) => {
+            record_feed_source_fetch_duration("fetched", elapsed);
+            info!(
+                url = url,
+                outcome = "fetched",
+                entry_count = feed.entries.len(),
+                elapsed_ms = elapsed.as_millis(),
+                "fetched feed source"
+            );
+        }
+        Err(e) => {
+            record_feed_source_fetch_duration("error", elapsed);
+            warn!(
+                url = url,
+                elapsed_ms = elapsed.as_millis(),
+                error = %e,
+                "failed to fetch feed source"
+            );
+        }
+    }
+
+    outcome
+}
+
+async fn fetch_feed_with_cache_inner(
     client: &reqwest::Client,
     url: &str,
     etag: Option<&str>,
@@ -76,6 +125,11 @@ pub async fn fetch_feed_with_cache(
         etag: response_etag,
         last_modified: response_last_modified,
     })
+}
+
+fn record_feed_source_fetch_duration(outcome: &str, elapsed: Duration) {
+    let labels = [("outcome", outcome.to_string())];
+    histogram!("rss_centr_feed_source_fetch_duration_seconds", &labels).record(elapsed);
 }
 
 fn header_value_to_string(value: Option<&header::HeaderValue>) -> Option<String> {
