@@ -69,6 +69,7 @@ export default function FeedManagement(
   const urlInput = useSignal("");
   const submitting = useSignal(false);
   const refreshing = useSignal(false);
+  const ingestingAll = useSignal(false);
   const busyIds = useSignal<Set<number>>(new Set());
   const errorMessage = useSignal<string | null>(
     initialLoadError ? "Could not load sources." : null,
@@ -152,6 +153,46 @@ export default function FeedManagement(
     }
   }
 
+  async function handleIngestAll() {
+    const feedIds = feeds.value.map((feed) => feed.id);
+    if (feedIds.length === 0) {
+      return;
+    }
+
+    const ingestIds = new Set(feedIds);
+    ingestingAll.value = true;
+    busyIds.value = new Set([...busyIds.value, ...feedIds]);
+    errorMessage.value = null;
+    successMessage.value = null;
+
+    try {
+      const results = await Promise.allSettled(
+        feedIds.map((feedId) => queueFeedIngest(feedId)),
+      );
+      const failedCount = results.filter((result) =>
+        result.status === "rejected"
+      )
+        .length;
+      const queuedCount = feedIds.length - failedCount;
+
+      if (failedCount > 0) {
+        errorMessage.value = queuedCount > 0
+          ? `Queued fetch for ${queuedCount} of ${feedIds.length} sources. ${failedCount} failed.`
+          : "Failed to queue fetches.";
+        return;
+      }
+
+      successMessage.value = `Fetch queued for ${feedIds.length} source${
+        feedIds.length === 1 ? "" : "s"
+      }.`;
+    } finally {
+      ingestingAll.value = false;
+      busyIds.value = new Set(
+        [...busyIds.value].filter((id) => !ingestIds.has(id)),
+      );
+    }
+  }
+
   async function handleDelete(feed: FeedSubscription) {
     if (!confirm(`Delete source?\n\n${feed.url}`)) {
       return;
@@ -225,16 +266,29 @@ export default function FeedManagement(
           <h2 class="text-sm font-semibold text-fuji-white">
             Sources ({feeds.value.length})
           </h2>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => {
-              void refreshFeeds();
-            }}
-            disabled={refreshing.value}
-          >
-            {refreshing.value ? "Refreshing..." : "Refresh"}
-          </Button>
+          <div class="flex flex-wrap justify-end gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                void handleIngestAll();
+              }}
+              disabled={ingestingAll.value || refreshing.value ||
+                feeds.value.length === 0 || busyIds.value.size > 0}
+            >
+              {ingestingAll.value ? "Queueing..." : "Fetch all"}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                void refreshFeeds();
+              }}
+              disabled={refreshing.value || ingestingAll.value}
+            >
+              {refreshing.value ? "Refreshing..." : "Refresh"}
+            </Button>
+          </div>
         </div>
 
         {feeds.value.length === 0
@@ -285,7 +339,7 @@ export default function FeedManagement(
                         onClick={() => {
                           void handleToggle(feed);
                         }}
-                        disabled={isBusy}
+                        disabled={isBusy || ingestingAll.value}
                       >
                         {feed.is_enabled ? "Pause" : "Enable"}
                       </Button>
@@ -295,7 +349,7 @@ export default function FeedManagement(
                         onClick={() => {
                           void handleIngest(feed.id);
                         }}
-                        disabled={isBusy}
+                        disabled={isBusy || ingestingAll.value}
                       >
                         Fetch now
                       </Button>
@@ -305,7 +359,7 @@ export default function FeedManagement(
                         onClick={() => {
                           void handleDelete(feed);
                         }}
-                        disabled={isBusy}
+                        disabled={isBusy || ingestingAll.value}
                       >
                         Delete
                       </Button>
