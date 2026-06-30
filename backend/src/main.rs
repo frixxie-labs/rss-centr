@@ -70,7 +70,7 @@ pub struct Opts {
     )]
     db_url: String,
 
-    #[arg(short, long, default_value = "info")]
+    #[arg(short, long, default_value = "warn")]
     log_level: LogLevel,
 
     #[arg(long, default_value = "30")]
