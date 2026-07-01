@@ -10,7 +10,7 @@ use super::feed_item::{
     insert_feed_item_dedup, insert_feed_item_detail_dedup, read_feed_cadence_seconds,
 };
 use super::feed_subscription::FeedSuccessUpdate;
-use super::ingest::{backoff_poll_interval_seconds, resolved_poll_interval_seconds};
+use super::poll_interval::{backoff_poll_interval_seconds, resolved_poll_interval_seconds};
 
 const LEASE_CONFLICT_MESSAGE: &str = "feed update lease conflict";
 const FEED_PAUSED_MESSAGE: &str = "feed is paused";

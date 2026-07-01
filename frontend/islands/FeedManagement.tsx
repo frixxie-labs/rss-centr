@@ -38,6 +38,21 @@ export function feedName(feed: FeedSubscription): string {
   return feed.title?.trim() || feed.site_url?.trim() || feed.url;
 }
 
+/** Whether a "Fetch now" request should be allowed for this feed. Paused
+ * (disabled) feeds are rejected by the backend and would silently no-op, so
+ * the UI should never send the request in the first place. A missing feed
+ * (not found in the current list) is allowed through so the API call can
+ * still surface its own error. */
+export function canFetchNow(feed: FeedSubscription | undefined): boolean {
+  return !feed || feed.is_enabled;
+}
+
+/** IDs of feeds eligible for a bulk "Fetch all" request -- paused feeds are
+ * excluded so a single disabled source can't fail the whole batch. */
+export function fetchableFeedIds(feeds: FeedSubscription[]): number[] {
+  return feeds.filter((feed) => feed.is_enabled).map((feed) => feed.id);
+}
+
 export function formatPollInterval(seconds: number): string {
   if (seconds < 60) {
     return `${seconds}s`;
@@ -136,7 +151,7 @@ export default function FeedManagement(
 
   async function handleIngest(feedId: number) {
     const feed = feeds.value.find((f) => f.id === feedId);
-    if (feed && !feed.is_enabled) {
+    if (!canFetchNow(feed)) {
       errorMessage.value = "Cannot fetch a paused source. Enable it first.";
       return;
     }
@@ -160,9 +175,7 @@ export default function FeedManagement(
   }
 
   async function handleIngestAll() {
-    const feedIds = feeds.value.filter((feed) => feed.is_enabled).map((
-      feed,
-    ) => feed.id);
+    const feedIds = fetchableFeedIds(feeds.value);
     if (feedIds.length === 0) {
       return;
     }

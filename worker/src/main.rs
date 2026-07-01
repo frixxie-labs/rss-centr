@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -5,13 +6,15 @@ use chrono::{DateTime, Utc};
 use clap::Parser;
 use feed_rs::model::{Entry, Feed, Text};
 use feed_rs::parser;
+use metrics::{counter, gauge, histogram};
+use metrics_exporter_prometheus::PrometheusBuilder;
 use reqwest::{StatusCode, header};
 use rss_centr_core::feed_update_queue::{
     CompleteFeedUpdateRequest, CompleteFeedUpdateResult, DequeuedFeedUpdate,
     FailedFeedUpdateRequest, FailedFeedUpdateResult, FeedUpdateItemInput,
 };
 use tokio::task::JoinSet;
-use tokio::time::sleep;
+use tokio::time::{Instant, sleep};
 use tracing::{Level, error, info, warn};
 use tracing_subscriber::FmtSubscriber;
 
@@ -55,6 +58,9 @@ impl From<LogLevel> for Level {
 struct Opts {
     #[arg(long, env = "BACKEND_URL", default_value = "http://localhost:8080")]
     backend_url: String,
+
+    #[arg(long, default_value = "0.0.0.0:9090")]
+    metrics_host: String,
 
     #[arg(long, default_value = "25")]
     limit: i64,
@@ -105,6 +111,16 @@ async fn main() -> Result<()> {
         anyhow::bail!("lease_seconds must be positive");
     }
 
+    let metrics_addr: SocketAddr = opts
+        .metrics_host
+        .parse()
+        .with_context(|| format!("invalid metrics listen address: {}", opts.metrics_host))?;
+    PrometheusBuilder::new()
+        .with_http_listener(metrics_addr)
+        .install()
+        .context("failed to install metrics recorder/exporter")?;
+    info!("Serving Prometheus metrics on {metrics_addr}");
+
     let http = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(20))
@@ -141,6 +157,9 @@ async fn run_once(
     lease_seconds: i64,
 ) -> Result<usize> {
     let feeds = queue.dequeue(limit, lease_seconds).await?;
+    // Set (not just recorded on activity) so the gauge drops back to 0 once
+    // the queue drains, rather than sticking at the last nonzero batch size.
+    gauge!("rss_centr_worker_dequeued_feeds").set(feeds.len() as f64);
     if feeds.is_empty() {
         return Ok(0);
     }
@@ -198,6 +217,7 @@ async fn process_feed(
                     },
                 )
                 .await?;
+            record_feed_processed("not_modified");
             info!(
                 feed_id = feed_id,
                 inserted_items = result.inserted_items,
@@ -227,6 +247,9 @@ async fn process_feed(
                     },
                 )
                 .await?;
+            record_feed_processed("fetched");
+            counter!("rss_centr_worker_feed_items_inserted_total")
+                .increment(result.inserted_items as u64);
             info!(
                 feed_id = feed_id,
                 fetched_items = item_count,
@@ -236,6 +259,7 @@ async fn process_feed(
             );
         }
         Err(fetch_error) => {
+            record_feed_processed("failed");
             let failed = queue
                 .failed(feed_id, FailedFeedUpdateRequest { lease_token })
                 .await;
@@ -265,6 +289,29 @@ async fn process_feed(
 }
 
 async fn fetch_feed(http: &reqwest::Client, feed: &DequeuedFeedUpdate) -> Result<FetchOutcome> {
+    let started_at = Instant::now();
+    let outcome = fetch_feed_inner(http, feed).await;
+    let elapsed = started_at.elapsed();
+
+    match &outcome {
+        Ok(FetchOutcome::NotModified { .. }) => {
+            record_feed_fetch_duration("not_modified", elapsed);
+        }
+        Ok(FetchOutcome::Fetched { .. }) => {
+            record_feed_fetch_duration("fetched", elapsed);
+        }
+        Err(_) => {
+            record_feed_fetch_duration("error", elapsed);
+        }
+    }
+
+    outcome
+}
+
+async fn fetch_feed_inner(
+    http: &reqwest::Client,
+    feed: &DequeuedFeedUpdate,
+) -> Result<FetchOutcome> {
     let mut request = http.get(feed.url.as_str());
     if let Some(etag) = feed.etag.as_deref() {
         request = request.header(header::IF_NONE_MATCH, etag);
@@ -303,6 +350,24 @@ async fn fetch_feed(http: &reqwest::Client, feed: &DequeuedFeedUpdate) -> Result
         etag,
         last_modified,
     })
+}
+
+/// Duration of a single `fetch_feed` call (network request + parse),
+/// labeled by outcome. Mirrors the old backend-side
+/// `rss_centr_feed_source_fetch_duration_seconds` metric, which measured the
+/// same thing before fetching moved from the backend's ingest pipeline into
+/// this worker.
+fn record_feed_fetch_duration(outcome: &str, elapsed: Duration) {
+    let labels = [("outcome", outcome.to_string())];
+    histogram!("rss_centr_worker_feed_fetch_duration_seconds", &labels).record(elapsed);
+}
+
+/// Count of feeds this worker finished processing, labeled by outcome:
+/// "fetched" (new content), "not_modified" (304/cache-validated unchanged),
+/// or "failed" (fetch error, rescheduled with backoff).
+fn record_feed_processed(outcome: &str) {
+    let labels = [("outcome", outcome.to_string())];
+    counter!("rss_centr_worker_feeds_processed_total", &labels).increment(1);
 }
 
 impl QueueClient {
@@ -482,4 +547,193 @@ fn entry_published_at(entry: &Entry) -> Option<DateTime<Utc>> {
 
 fn header_value_to_string(value: Option<&header::HeaderValue>) -> Option<String> {
     value.and_then(|v| v.to_str().ok()).map(str::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use feed_rs::model::Link;
+    use quickcheck::TestResult;
+
+    fn link(href: String) -> Link {
+        Link {
+            href,
+            rel: None,
+            media_type: None,
+            href_lang: None,
+            title: None,
+            length: None,
+        }
+    }
+
+    fn datetime(seconds: i32) -> DateTime<Utc> {
+        DateTime::from_timestamp(i64::from(seconds), 0).unwrap()
+    }
+
+    // These mirror the equivalent properties in `backend/src/feed/ingest.rs`
+    // for the same fallback logic, duplicated here because the worker has no
+    // compile-time dependency on the backend crate.
+    quickcheck::quickcheck! {
+        fn prop_entry_external_id_prefers_non_empty_id(id: String, href: String) -> TestResult {
+            if id.is_empty() {
+                return TestResult::discard();
+            }
+
+            let entry = Entry {
+                id: id.clone(),
+                links: vec![link(href)],
+                ..Default::default()
+            };
+
+            TestResult::from_bool(entry_external_id(&entry) == id)
+        }
+
+        fn prop_entry_external_id_uses_first_link_when_id_is_empty(href: String, other_href: String) -> bool {
+            let entry = Entry {
+                id: String::new(),
+                links: vec![link(href.clone()), link(other_href)],
+                ..Default::default()
+            };
+
+            entry_external_id(&entry) == href
+        }
+
+        fn prop_entry_published_at_prefers_published(published_seconds: i32, updated_seconds: i32) -> bool {
+            let published = datetime(published_seconds);
+            let updated = datetime(updated_seconds);
+            let entry = Entry {
+                published: Some(published),
+                updated: Some(updated),
+                ..Default::default()
+            };
+
+            entry_published_at(&entry) == Some(published)
+        }
+
+        fn prop_entry_published_at_uses_updated_without_published(updated_seconds: i32) -> bool {
+            let updated = datetime(updated_seconds);
+            let entry = Entry {
+                updated: Some(updated),
+                ..Default::default()
+            };
+
+            entry_published_at(&entry) == Some(updated)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // `text_value`, `entry_summary_and_content`, `feed_title_and_site_url` and
+    // `entry_to_item` all read data out of `feed_rs::model::{Feed, Text}`
+    // values, but those types have no public constructor or `Default` impl
+    // outside the `feed_rs` crate itself (by design, since only its own
+    // parser is meant to build them). So rather than fighting that, these
+    // tests drive the real parser with a small fixture document and assert
+    // on what we hand off to the backend -- which also happens to exercise
+    // the exact code path (`parser::parse` output feeding `entry_to_item`)
+    // that `fetch_feed` uses in production.
+    // -----------------------------------------------------------------------
+
+    const SAMPLE_ATOM_FEED: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Example Feed</title>
+  <link href="https://example.com" rel="alternate"/>
+  <id>urn:uuid:example-feed</id>
+  <entry>
+    <title>First Post</title>
+    <link href="https://example.com/1" rel="alternate"/>
+    <id>https://example.com/1</id>
+    <summary>Summary of first post</summary>
+    <content type="html">Full content</content>
+    <author><name>Jane Doe</name></author>
+    <published>2026-07-01T10:00:00Z</published>
+  </entry>
+  <entry>
+    <link href="https://example.com/2" rel="alternate"/>
+    <id>https://example.com/2</id>
+  </entry>
+</feed>"#;
+
+    fn parse_sample() -> Feed {
+        parser::parse(SAMPLE_ATOM_FEED.as_bytes()).expect("sample feed should parse")
+    }
+
+    #[test]
+    fn test_feed_title_and_site_url_reads_feed_metadata() {
+        let feed = parse_sample();
+        let (title, site_url) = feed_title_and_site_url(&feed);
+
+        assert_eq!(title.as_deref(), Some("Example Feed"));
+        // feed-rs normalizes a bare-domain href by appending a trailing
+        // slash (via the `url` crate), even though the fixture below
+        // writes `href="https://example.com"` with none.
+        assert_eq!(site_url.as_deref(), Some("https://example.com/"));
+    }
+
+    #[test]
+    fn test_text_value_returns_underlying_content() {
+        let feed = parse_sample();
+        let title = feed.title.as_ref().expect("feed has a title");
+
+        assert_eq!(text_value(title), "Example Feed");
+    }
+
+    #[test]
+    fn test_entry_to_item_maps_fully_populated_entry() {
+        let feed = parse_sample();
+        let entry = &feed.entries[0];
+
+        let item = entry_to_item(entry);
+
+        assert_eq!(item.external_id, "https://example.com/1");
+        assert_eq!(item.title, "First Post");
+        assert_eq!(item.url, "https://example.com/1");
+        assert_eq!(item.summary.as_deref(), Some("Summary of first post"));
+        assert_eq!(item.content.as_deref(), Some("Full content"));
+        assert_eq!(item.author.as_deref(), Some("Jane Doe"));
+        assert_eq!(
+            item.published_at,
+            Some(
+                DateTime::parse_from_rfc3339("2026-07-01T10:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc)
+            )
+        );
+    }
+
+    #[test]
+    fn test_entry_to_item_falls_back_for_sparse_entry() {
+        let feed = parse_sample();
+        let entry = &feed.entries[1];
+
+        let item = entry_to_item(entry);
+
+        assert_eq!(item.external_id, "https://example.com/2");
+        // No <title>: falls back to a placeholder instead of panicking.
+        assert_eq!(item.title, "(no title)");
+        // No <summary>/<content>/<author>: the worker always sends `Some("")`
+        // rather than `None` for missing detail fields. This matters because
+        // the backend's `item_has_detail` check only skips inserting a detail
+        // row when every one of these is `None` -- which this producer never
+        // sends, so that skip path is currently unreachable in production.
+        assert_eq!(item.summary.as_deref(), Some(""));
+        assert_eq!(item.content.as_deref(), Some(""));
+        assert_eq!(item.author.as_deref(), Some(""));
+        // No <published>: falls back to "now" rather than `None`.
+        assert!(item.published_at.is_some());
+    }
+
+    #[test]
+    fn test_header_value_to_string_returns_ascii_header_text() {
+        let value = header::HeaderValue::from_static("\"etag-123\"");
+
+        assert_eq!(
+            header_value_to_string(Some(&value)),
+            Some("\"etag-123\"".to_string())
+        );
+    }
+
+    #[test]
+    fn test_header_value_to_string_none_for_missing_header() {
+        assert_eq!(header_value_to_string(None), None);
+    }
 }

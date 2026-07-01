@@ -33,6 +33,10 @@ spec:
         image: registry.gitlab.com/frixxie1/rss-centr:worker-0.2.1
         imagePullPolicy: IfNotPresent
         name: worker
+        ports:
+        - containerPort: 9090
+          name: metrics
+          protocol: TCP
         resources:
           requests:
             cpu: 50m

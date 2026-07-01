@@ -33,6 +33,8 @@ services:
       context: .
       dockerfile: worker/Dockerfile
     command: ["./worker", "--log-level", "info"]
+    ports:
+      - "9090:9090"
     environment:
       BACKEND_URL: http://backend:8080
     depends_on:
