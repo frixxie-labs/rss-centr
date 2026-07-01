@@ -135,6 +135,12 @@ export default function FeedManagement(
   }
 
   async function handleIngest(feedId: number) {
+    const feed = feeds.value.find((f) => f.id === feedId);
+    if (feed && !feed.is_enabled) {
+      errorMessage.value = "Cannot fetch a paused source. Enable it first.";
+      return;
+    }
+
     busyIds.value = new Set([...busyIds.value, feedId]);
     errorMessage.value = null;
     successMessage.value = null;
@@ -154,7 +160,9 @@ export default function FeedManagement(
   }
 
   async function handleIngestAll() {
-    const feedIds = feeds.value.map((feed) => feed.id);
+    const feedIds = feeds.value.filter((feed) => feed.is_enabled).map((
+      feed,
+    ) => feed.id);
     if (feedIds.length === 0) {
       return;
     }
@@ -349,7 +357,8 @@ export default function FeedManagement(
                         onClick={() => {
                           void handleIngest(feed.id);
                         }}
-                        disabled={isBusy || ingestingAll.value}
+                        disabled={isBusy || ingestingAll.value ||
+                          !feed.is_enabled}
                       >
                         Fetch now
                       </Button>

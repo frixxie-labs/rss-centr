@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT feed_id\n        FROM feed_update_queue\n        WHERE feed_id = $1\n          AND lease_token = $2\n          AND lease_expires_at > NOW()\n        FOR UPDATE\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "feed_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "feed_update_queue",
+            "name": "feed_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "df6af2df11e1d9acb0644a952a90aac399007c78f9aead26d31d4eccad6dbf59"
+}

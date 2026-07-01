@@ -6,7 +6,7 @@ ENV SQLX_OFFLINE=true
 
 COPY . .
 
-RUN cargo build --release
+RUN cargo build --release --package backend
 
 FROM docker.io/library/debian:bookworm-slim AS runner
 

@@ -70,6 +70,7 @@ pub async fn ingest_feed_url(
                     poll_interval_seconds: Some(backoff_poll_interval_seconds(
                         feed_sub.poll_interval_seconds,
                     )),
+                    last_inserted_at: None,
                 },
             )
             .await?;
@@ -108,6 +109,7 @@ pub async fn ingest_feed_url(
             etag: etag.as_deref(),
             last_modified: last_modified.as_deref(),
             poll_interval_seconds,
+            last_inserted_at: (inserted_items > 0).then_some(checked_at),
         },
     )
     .await?;
@@ -214,13 +216,13 @@ fn entry_published_at(entry: &Entry) -> Option<DateTime<Utc>> {
         .map(|dt| dt.with_timezone(&Utc))
 }
 
-fn resolved_poll_interval_seconds(interval_seconds: Option<i64>) -> i64 {
+pub(crate) fn resolved_poll_interval_seconds(interval_seconds: Option<i64>) -> i64 {
     interval_seconds
         .unwrap_or(MAX_POLL_INTERVAL_SECONDS)
         .clamp(MIN_POLL_INTERVAL_SECONDS, MAX_POLL_INTERVAL_SECONDS)
 }
 
-fn backoff_poll_interval_seconds(current_interval_seconds: i64) -> i64 {
+pub(crate) fn backoff_poll_interval_seconds(current_interval_seconds: i64) -> i64 {
     (current_interval_seconds.saturating_mul(2))
         .clamp(MIN_POLL_INTERVAL_SECONDS, MAX_POLL_INTERVAL_SECONDS)
 }

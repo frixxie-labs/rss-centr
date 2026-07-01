@@ -23,7 +23,7 @@ A lightweight, self-hostable RSS/Atom aggregator that:
 ```
 Feeds (RSS / Atom)
         |
-Poller (Tokio tasks)
+Worker (durable queue client)
         |
 Parser (feed-rs)
         |
@@ -36,7 +36,11 @@ Axum API + SSE
 Fresh 2 Frontend
 ```
 
-**Backend**: Axum HTTP server, Tokio background poll scheduler, sqlx + PostgreSQL, SSE endpoint with reconnect support (`Last-Event-ID`).
+**Backend**: Axum HTTP server, durable feed update queue endpoints, sqlx + PostgreSQL, SSE endpoint with reconnect support (`Last-Event-ID`).
+
+**Worker**: Rust queue client that leases due feeds from the backend, fetches/parses feeds, and posts completed items or failures.
+
+**Core**: Shared Rust DTO crate for the backend/worker feed update queue contract.
 
 **Frontend**: Fresh 2 SSR for initial page loads, Preact islands for interactivity, Tailwind CSS 4 for styling, proxy layer for `/api/*` including SSE streaming.
 
@@ -86,6 +90,9 @@ docker compose up -d db
 export DATABASE_URL='postgres://postgres:postgres@localhost:5432/rss_centr'
 cargo run --manifest-path backend/Cargo.toml
 
+# Worker (leases due feeds from the backend)
+cargo run --manifest-path worker/Cargo.toml
+
 # Frontend (listens on http://localhost:8000, proxies /api/* to backend)
 cd frontend
 deno task dev
@@ -103,6 +110,14 @@ cargo run     --manifest-path backend/Cargo.toml
 cargo test    --manifest-path backend/Cargo.toml
 cargo fmt     --manifest-path backend/Cargo.toml -- --check
 cargo clippy  --manifest-path backend/Cargo.toml --all-targets --all-features -- -D warnings
+```
+
+Workspace-wide Rust commands:
+
+```bash
+cargo check --workspace
+cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
 Or use the justfile in `backend/`:
@@ -132,7 +147,17 @@ deno task check    # fmt --check + lint + type check
 --host <HOST>                        Listen address [default: 0.0.0.0:8080]
 --db-url <URL>                       Database URL [env: DATABASE_URL]
 --log-level <LEVEL>                  Log level [default: info]
---scheduler-interval-seconds <SECS>  Poll interval [default: 30]
+```
+
+### Worker CLI Options
+
+```
+--backend-url <URL>                  Backend base URL [env: BACKEND_URL, default: http://localhost:8080]
+--limit <N>                          Number of feeds to lease per dequeue [default: 25]
+--lease-seconds <SECS>               Queue lease duration [default: 300]
+--idle-sleep-seconds <SECS>          Sleep duration when no work is available [default: 30]
+--once                               Run one dequeue/process iteration and exit
+--log-level <LEVEL>                  Log level [default: info]
 ```
 
 ---
@@ -147,7 +172,7 @@ POST   /api/feeds                    Add feed (upsert by URL)
 GET    /api/feeds/{feed_id}          Get single feed
 PUT    /api/feeds/{feed_id}          Enable/disable feed
 DELETE /api/feeds/{feed_id}          Delete feed
-POST   /api/feeds/{feed_id}/ingest   Manually trigger feed ingest (202)
+POST   /api/feeds/{feed_id}/ingest   Manually trigger feed ingest (202, 409 if paused)
 ```
 
 ### Items
@@ -158,6 +183,18 @@ GET    /api/items/latest             Latest items with details
 GET    /api/items/{item_id}          Single item
 GET    /api/items/{item_id}/detail   Item detail (summary, content, author)
 GET    /api/feeds/{feed_id}/items    Items for a specific feed
+```
+
+### Feed Update Queue (internal)
+
+Worker-facing queue endpoints. These are intentionally served outside the
+`/api` prefix so the frontend's public `/api/*` proxy never forwards them,
+and are meant to be reachable only on the backend's internal network path:
+
+```
+POST   /internal/feed-update-queue/dequeue              Lease due feeds
+POST   /internal/feed-update-queue/{feed_id}/complete    Insert fetched items and reschedule
+POST   /internal/feed-update-queue/{feed_id}/failed      Record fetch failure and back off
 ```
 
 ### Title Index
@@ -225,7 +262,20 @@ All primary keys are `BIGSERIAL` (`BIGINT` auto-increment).
 | is_enabled | BOOLEAN | NOT NULL, default TRUE |
 | last_checked_at | TIMESTAMPTZ | nullable |
 | last_success_at | TIMESTAMPTZ | nullable |
+| last_inserted_at | TIMESTAMPTZ | nullable |
 | failure_count | BIGINT | NOT NULL, default 0 |
+
+### feed_update_queue
+
+| Column | Type | Notes |
+|--------|------|-------|
+| feed_id | BIGINT | PK, FK -> feeds(id) ON DELETE CASCADE |
+| due_at | TIMESTAMPTZ | NOT NULL |
+| leased_at | TIMESTAMPTZ | nullable |
+| lease_expires_at | TIMESTAMPTZ | nullable |
+| lease_token | TEXT | nullable |
+| attempts | BIGINT | NOT NULL, default 0 |
+| updated_at | TIMESTAMPTZ | NOT NULL, default NOW() |
 
 ### feed_items
 
@@ -256,6 +306,7 @@ Constraint: `UNIQUE(feed_id, external_id)`
 - `idx_feed_items_feed_id_inserted_at_id` on `(feed_id, inserted_at DESC, id DESC)`
 - `idx_feed_items_inserted_at_id` on `(inserted_at DESC, id DESC)`
 - `idx_feeds_is_enabled_id` on `(is_enabled, id)`
+- `idx_feed_update_queue_due_lease` on `(due_at, lease_expires_at, feed_id)`
 - GIN full-text search indexes on `feed_items`, `feed_item_details`, and `feeds`
 
 ---
@@ -268,13 +319,17 @@ Constraint: `UNIQUE(feed_id, external_id)`
 docker compose up -d
 ```
 
-Runs three services: `db` (Postgres 17), `backend` (port 8080), `frontend` (port 8000).
+Runs four services: `db` (Postgres 17), `backend` (port 8080), `worker`, `frontend` (port 8000).
 
-Kubernetes manifests are available in `release/` (Kustomize-based).
+Kubernetes manifests are available in `release/` (Kustomize-based), including
+Deployments for `backend`, `frontend`, and `worker` (the worker has no
+Service, since it only polls the backend and exposes no ports).
 
 ### CI/CD
 
-GitHub Actions and GitLab CI pipelines are configured for build, test, and container image deployment (on tags).
+GitHub Actions and GitLab CI pipelines are configured for build, test, and
+container image deployment (on tags) for all three deployable components:
+`backend`, `frontend`, and `worker`.
 
 ---
 

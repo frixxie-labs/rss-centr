@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT poll_interval_seconds\n        FROM feeds\n        WHERE id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "poll_interval_seconds",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "feeds",
+            "name": "poll_interval_seconds"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5142cf4c2dc62558447f2961676a8f382ce83f2f63c5ee8d80a4f37565f7635b"
+}

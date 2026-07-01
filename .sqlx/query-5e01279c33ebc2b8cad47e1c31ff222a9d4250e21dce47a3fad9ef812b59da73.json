@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id as \"id!: i64\",\n               url,\n               title,\n               site_url,\n               etag,\n               last_modified,\n               poll_interval_seconds,\n               is_enabled as \"is_enabled!: bool\",\n               last_checked_at as \"last_checked_at: _\",\n               last_success_at as \"last_success_at: _\",\n               failure_count\n        FROM feeds\n        ORDER BY id ASC\n        ",
+  "query": "\n        SELECT id as \"id!: i64\",\n               url,\n               title,\n               site_url,\n               etag,\n               last_modified,\n               poll_interval_seconds,\n               is_enabled as \"is_enabled!: bool\",\n               last_checked_at as \"last_checked_at: _\",\n               last_success_at as \"last_success_at: _\",\n               last_inserted_at as \"last_inserted_at: _\",\n               failure_count\n        FROM feeds\n        WHERE is_enabled = TRUE\n        ORDER BY id ASC\n        ",
   "describe": {
     "columns": [
       {
@@ -115,6 +115,17 @@
       },
       {
         "ordinal": 10,
+        "name": "last_inserted_at: _",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "feeds",
+            "name": "last_inserted_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
         "name": "failure_count",
         "type_info": "Int8",
         "origin": {
@@ -139,8 +150,9 @@
       false,
       true,
       true,
+      true,
       false
     ]
   },
-  "hash": "7c671158c680cee5dca7e2b167e22084ad30b01843be06b115cf11a88d0434ca"
+  "hash": "5e01279c33ebc2b8cad47e1c31ff222a9d4250e21dce47a3fad9ef812b59da73"
 }

@@ -17,6 +17,7 @@ pub struct FeedSubscription {
     pub is_enabled: bool,
     pub last_checked_at: Option<DateTime<Utc>>,
     pub last_success_at: Option<DateTime<Utc>>,
+    pub last_inserted_at: Option<DateTime<Utc>>,
     pub failure_count: i64,
 }
 
@@ -34,6 +35,7 @@ pub async fn list_enabled_feeds(pool: &PgPool) -> Result<Vec<FeedSubscription>> 
                is_enabled as "is_enabled!: bool",
                last_checked_at as "last_checked_at: _",
                last_success_at as "last_success_at: _",
+               last_inserted_at as "last_inserted_at: _",
                failure_count
         FROM feeds
         WHERE is_enabled = TRUE
@@ -61,6 +63,7 @@ pub async fn list_due_feeds(pool: &PgPool, now: DateTime<Utc>) -> Result<Vec<Fee
                is_enabled as "is_enabled!: bool",
                last_checked_at as "last_checked_at: _",
                last_success_at as "last_success_at: _",
+               last_inserted_at as "last_inserted_at: _",
                failure_count
         FROM feeds
         WHERE is_enabled = TRUE
@@ -104,6 +107,7 @@ pub async fn upsert_feed_by_url(pool: &PgPool, url: &str) -> Result<FeedSubscrip
                   is_enabled as "is_enabled!: bool",
                   last_checked_at as "last_checked_at: _",
                   last_success_at as "last_success_at: _",
+                  last_inserted_at as "last_inserted_at: _",
                   failure_count
         "#,
         url,
@@ -129,6 +133,7 @@ pub async fn read_feed(pool: &PgPool, id: i64) -> Result<FeedSubscription> {
                is_enabled as "is_enabled!: bool",
                last_checked_at as "last_checked_at: _",
                last_success_at as "last_success_at: _",
+               last_inserted_at as "last_inserted_at: _",
                failure_count
         FROM feeds
         WHERE id = $1
@@ -160,6 +165,7 @@ pub async fn list_feeds(pool: &PgPool) -> Result<Vec<FeedSubscription>> {
                is_enabled as "is_enabled!: bool",
                last_checked_at as "last_checked_at: _",
                last_success_at as "last_success_at: _",
+               last_inserted_at as "last_inserted_at: _",
                failure_count
         FROM feeds
         ORDER BY id ASC
@@ -200,6 +206,7 @@ pub struct FeedSuccessUpdate<'a> {
     pub etag: Option<&'a str>,
     pub last_modified: Option<&'a str>,
     pub poll_interval_seconds: Option<i64>,
+    pub last_inserted_at: Option<DateTime<Utc>>,
 }
 
 pub async fn touch_feed_success(
@@ -214,6 +221,7 @@ pub async fn touch_feed_success(
         etag,
         last_modified,
         poll_interval_seconds,
+        last_inserted_at,
     } = update;
 
     let result = sqlx::query!(
@@ -226,8 +234,9 @@ pub async fn touch_feed_success(
             poll_interval_seconds = COALESCE($5, poll_interval_seconds),
             last_checked_at = $6,
             last_success_at = $6,
+            last_inserted_at = COALESCE($7, last_inserted_at),
             failure_count = 0
-        WHERE id = $7
+        WHERE id = $8
         "#,
         title,
         site_url,
@@ -235,6 +244,7 @@ pub async fn touch_feed_success(
         last_modified,
         poll_interval_seconds,
         checked_at,
+        last_inserted_at,
         id,
     )
     .execute(pool)
@@ -376,6 +386,7 @@ mod tests {
                 etag: Some("\"etag-123\""),
                 last_modified: Some("Mon, 01 Jan 2024 00:00:00 GMT"),
                 poll_interval_seconds: Some(900),
+                last_inserted_at: Some(t2),
             },
         )
         .await
@@ -389,6 +400,10 @@ mod tests {
         );
         assert_eq!(
             r2.last_success_at.unwrap().timestamp_micros(),
+            t2.timestamp_micros()
+        );
+        assert_eq!(
+            r2.last_inserted_at.unwrap().timestamp_micros(),
             t2.timestamp_micros()
         );
         assert_eq!(r2.title.as_deref(), Some("Example"));

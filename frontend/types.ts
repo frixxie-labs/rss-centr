@@ -31,6 +31,7 @@ export interface FeedSubscription {
   is_enabled: boolean;
   last_checked_at: string | null;
   last_success_at: string | null;
+  last_inserted_at: string | null;
   failure_count: number;
 }
 

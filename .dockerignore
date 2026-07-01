@@ -1,0 +1,12 @@
+target
+*/target
+.git
+.jj
+frontend/_fresh
+frontend/node_modules
+dev.*
+tmp.json
+backend/tmp.json
+.env
+**/.env
+

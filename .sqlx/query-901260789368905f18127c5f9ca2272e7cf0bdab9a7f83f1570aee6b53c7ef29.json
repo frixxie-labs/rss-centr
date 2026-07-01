@@ -1,0 +1,173 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH due AS (\n            SELECT q.feed_id\n            FROM feed_update_queue q\n            JOIN feeds f ON f.id = q.feed_id\n            WHERE f.is_enabled = TRUE\n              AND q.due_at <= NOW()\n              AND (\n                  q.lease_expires_at IS NULL\n                  OR q.lease_expires_at <= NOW()\n              )\n            ORDER BY q.due_at ASC, q.feed_id ASC\n            LIMIT $1\n            FOR UPDATE SKIP LOCKED\n        ), leased AS (\n            UPDATE feed_update_queue q\n            SET leased_at = NOW(),\n                lease_expires_at = NOW() + ($2::BIGINT * INTERVAL '1 second'),\n                lease_token = md5(random()::TEXT || clock_timestamp()::TEXT || q.feed_id::TEXT),\n                attempts = attempts + 1,\n                updated_at = NOW()\n            FROM due\n            WHERE q.feed_id = due.feed_id\n            RETURNING q.feed_id,\n                      q.lease_token,\n                      q.lease_expires_at\n        )\n        SELECT l.feed_id as \"feed_id!: i64\",\n               f.url,\n               f.title,\n               f.site_url,\n               f.etag,\n               f.last_modified,\n               f.poll_interval_seconds,\n               f.last_checked_at as \"last_checked_at: _\",\n               f.last_success_at as \"last_success_at: _\",\n               f.last_inserted_at as \"last_inserted_at: _\",\n               f.failure_count,\n               l.lease_token as \"lease_token!: String\",\n               l.lease_expires_at as \"lease_expires_at!: _\"\n        FROM leased l\n        JOIN feeds f ON f.id = l.feed_id\n        ORDER BY l.feed_id ASC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "feed_id!: i64",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "feed_update_queue",
+            "name": "feed_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "feeds",
+            "name": "url"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "feeds",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "site_url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "feeds",
+            "name": "site_url"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "etag",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "feeds",
+            "name": "etag"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "last_modified",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "feeds",
+            "name": "last_modified"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "poll_interval_seconds",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "feeds",
+            "name": "poll_interval_seconds"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "last_checked_at: _",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "feeds",
+            "name": "last_checked_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "last_success_at: _",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "feeds",
+            "name": "last_success_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "last_inserted_at: _",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "feeds",
+            "name": "last_inserted_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "failure_count",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "feeds",
+            "name": "failure_count"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "lease_token!: String",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "feed_update_queue",
+            "name": "lease_token"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "lease_expires_at!: _",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "feed_update_queue",
+            "name": "lease_expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "901260789368905f18127c5f9ca2272e7cf0bdab9a7f83f1570aee6b53c7ef29"
+}

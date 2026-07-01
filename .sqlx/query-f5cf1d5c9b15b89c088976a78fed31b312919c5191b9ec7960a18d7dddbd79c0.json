@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id as \"id!: i64\",\n               url,\n               title,\n               site_url,\n               etag,\n               last_modified,\n               poll_interval_seconds,\n               is_enabled as \"is_enabled!: bool\",\n               last_checked_at as \"last_checked_at: _\",\n               last_success_at as \"last_success_at: _\",\n               failure_count\n        FROM feeds\n        WHERE is_enabled = TRUE\n        ORDER BY id ASC\n        ",
+  "query": "\n        SELECT id as \"id!: i64\",\n               url,\n               title,\n               site_url,\n               etag,\n               last_modified,\n               poll_interval_seconds,\n               is_enabled as \"is_enabled!: bool\",\n               last_checked_at as \"last_checked_at: _\",\n               last_success_at as \"last_success_at: _\",\n               last_inserted_at as \"last_inserted_at: _\",\n               failure_count\n        FROM feeds\n        WHERE is_enabled = TRUE\n          AND (\n              last_checked_at IS NULL\n              OR EXTRACT(EPOCH FROM ($1 - last_checked_at)) >= (\n                   poll_interval_seconds\n                   + (\n                       id % (\n                          LEAST(30, GREATEST(1, poll_interval_seconds / 10)) + 1\n                       )\n                   )\n              )\n          )\n        ORDER BY id ASC\n        ",
   "describe": {
     "columns": [
       {
@@ -115,6 +115,17 @@
       },
       {
         "ordinal": 10,
+        "name": "last_inserted_at: _",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "feeds",
+            "name": "last_inserted_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
         "name": "failure_count",
         "type_info": "Int8",
         "origin": {
@@ -126,7 +137,9 @@
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Timestamptz"
+      ]
     },
     "nullable": [
       false,
@@ -139,8 +152,9 @@
       false,
       true,
       true,
+      true,
       false
     ]
   },
-  "hash": "d6a2671be383df6ee0fbee7ec7903ddd4cd1b539c46a11b74e1679329826343b"
+  "hash": "f5cf1d5c9b15b89c088976a78fed31b312919c5191b9ec7960a18d7dddbd79c0"
 }

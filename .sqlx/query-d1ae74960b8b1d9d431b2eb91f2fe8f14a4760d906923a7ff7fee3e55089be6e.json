@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id as \"id!: i64\",\n               url,\n               title,\n               site_url,\n               etag,\n               last_modified,\n               poll_interval_seconds,\n               is_enabled as \"is_enabled!: bool\",\n               last_checked_at as \"last_checked_at: _\",\n               last_success_at as \"last_success_at: _\",\n               failure_count\n        FROM feeds\n        WHERE id = $1\n        ",
+  "query": "\n        INSERT INTO feeds (url)\n        VALUES ($1)\n        ON CONFLICT(url)\n        DO UPDATE SET url = excluded.url\n        RETURNING id as \"id!: i64\",\n                  url,\n                  title,\n                  site_url,\n                  etag,\n                  last_modified,\n                  poll_interval_seconds,\n                  is_enabled as \"is_enabled!: bool\",\n                  last_checked_at as \"last_checked_at: _\",\n                  last_success_at as \"last_success_at: _\",\n                  last_inserted_at as \"last_inserted_at: _\",\n                  failure_count\n        ",
   "describe": {
     "columns": [
       {
@@ -115,6 +115,17 @@
       },
       {
         "ordinal": 10,
+        "name": "last_inserted_at: _",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "feeds",
+            "name": "last_inserted_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
         "name": "failure_count",
         "type_info": "Int8",
         "origin": {
@@ -127,7 +138,7 @@
     ],
     "parameters": {
       "Left": [
-        "Int8"
+        "Text"
       ]
     },
     "nullable": [
@@ -141,8 +152,9 @@
       false,
       true,
       true,
+      true,
       false
     ]
   },
-  "hash": "4da1d1b92312d5b0083ba828fb0f3b07f7b43c15e5d61684dc848304f99d4667"
+  "hash": "d1ae74960b8b1d9d431b2eb91f2fe8f14a4760d906923a7ff7fee3e55089be6e"
 }
