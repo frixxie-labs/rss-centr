@@ -7,3 +7,4 @@ resources:
   - frontend-deployment.yaml
   - frontend-service.yaml
   - frontend-loadbalancer-service.yaml
+  - worker-deployment.yaml

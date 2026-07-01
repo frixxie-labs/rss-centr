@@ -183,7 +183,10 @@ pub async fn read_feed_items_by_feed(pool: &PgPool, feed_id: i64) -> Result<Vec<
     Ok(rows)
 }
 
-pub async fn read_feed_cadence_seconds(pool: &PgPool, feed_id: i64) -> Result<Option<i64>> {
+pub async fn read_feed_cadence_seconds<'e, E>(executor: E, feed_id: i64) -> Result<Option<i64>>
+where
+    E: sqlx::Executor<'e, Database = Postgres>,
+{
     let row = sqlx::query_as!(
         FeedCadenceStats,
         r#"
@@ -224,7 +227,7 @@ pub async fn read_feed_cadence_seconds(pool: &PgPool, feed_id: i64) -> Result<Op
         "#,
         feed_id,
     )
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
     .with_context(|| format!("failed to read feed cadence stats for feed_id={feed_id}"))?;
 

@@ -2,14 +2,11 @@ FROM docker.io/library/rust:bookworm AS builder
 
 WORKDIR /app
 
-ENV SQLX_OFFLINE=true
-
 COPY . .
 
-RUN cargo build --release --package backend
+RUN cargo build --release --package worker
 
 FROM docker.io/library/debian:bookworm-slim AS runner
-
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
@@ -17,8 +14,6 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/backend /app/backend
+COPY --from=builder /app/target/release/worker /app/worker
 
-EXPOSE 8080
-
-CMD ["./backend"]
+CMD ["./worker"]

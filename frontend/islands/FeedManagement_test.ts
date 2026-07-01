@@ -19,6 +19,7 @@ function makeFeed(overrides: Partial<FeedSubscription> = {}): FeedSubscription {
     is_enabled: true,
     last_checked_at: null,
     last_success_at: null,
+    last_inserted_at: null,
     failure_count: 0,
     ...overrides,
   };

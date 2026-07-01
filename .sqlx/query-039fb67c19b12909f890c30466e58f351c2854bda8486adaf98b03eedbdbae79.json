@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE feeds\n        SET last_checked_at = $1,\n            failure_count = failure_count + 1,\n            poll_interval_seconds = $2\n        WHERE id = $3\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "039fb67c19b12909f890c30466e58f351c2854bda8486adaf98b03eedbdbae79"
+}

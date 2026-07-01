@@ -22,6 +22,10 @@ impl HandlerError {
         Self::new(StatusCode::NOT_FOUND, message.into())
     }
 
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, message.into())
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, message.into())
     }

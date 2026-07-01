@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id as \"id!: i64\",\n               url,\n               title,\n               site_url,\n               etag,\n               last_modified,\n               poll_interval_seconds,\n               is_enabled as \"is_enabled!: bool\",\n               last_checked_at as \"last_checked_at: _\",\n               last_success_at as \"last_success_at: _\",\n               failure_count\n        FROM feeds\n        WHERE is_enabled = TRUE\n          AND (\n              last_checked_at IS NULL\n              OR EXTRACT(EPOCH FROM ($1 - last_checked_at)) >= (\n                   poll_interval_seconds\n                   + (\n                       id % (\n                          LEAST(30, GREATEST(1, poll_interval_seconds / 10)) + 1\n                       )\n                   )\n              )\n          )\n        ORDER BY id ASC\n        ",
+  "query": "\n        SELECT id as \"id!: i64\",\n               url,\n               title,\n               site_url,\n               etag,\n               last_modified,\n               poll_interval_seconds,\n               is_enabled as \"is_enabled!: bool\",\n               last_checked_at as \"last_checked_at: _\",\n               last_success_at as \"last_success_at: _\",\n               last_inserted_at as \"last_inserted_at: _\",\n               failure_count\n        FROM feeds\n        ORDER BY id ASC\n        ",
   "describe": {
     "columns": [
       {
@@ -115,6 +115,17 @@
       },
       {
         "ordinal": 10,
+        "name": "last_inserted_at: _",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "feeds",
+            "name": "last_inserted_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
         "name": "failure_count",
         "type_info": "Int8",
         "origin": {
@@ -126,9 +137,7 @@
       }
     ],
     "parameters": {
-      "Left": [
-        "Timestamptz"
-      ]
+      "Left": []
     },
     "nullable": [
       false,
@@ -141,8 +150,9 @@
       false,
       true,
       true,
+      true,
       false
     ]
   },
-  "hash": "b68576005af83cea9cea7bace275937049825a4654d2d19ec4f4f03dfb0b48e7"
+  "hash": "6111bd362d24fec0496da378628fe82398a97560e530e49a72d1e4c7301c9a83"
 }

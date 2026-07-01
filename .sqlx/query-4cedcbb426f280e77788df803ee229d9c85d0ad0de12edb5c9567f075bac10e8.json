@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT is_enabled as \"is_enabled!: bool\"\n        FROM feeds\n        WHERE id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "is_enabled!: bool",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "feeds",
+            "name": "is_enabled"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4cedcbb426f280e77788df803ee229d9c85d0ad0de12edb5c9567f075bac10e8"
+}

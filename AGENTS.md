@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repository is an RSS aggregator with a **Rust backend** (`backend/`) and a **Deno Fresh 2 frontend** (`frontend/`). There are no Cursor rules or Copilot instructions in this repo.
+This repository is an RSS aggregator with a **Rust backend** (`backend/`), a shared **Rust core crate** (`core/`), a **Rust worker** (`worker/`), and a **Deno Fresh 2 frontend** (`frontend/`). There are no Cursor rules or Copilot instructions in this repo.
 
 ## Version Control (jj)
 
@@ -11,6 +11,17 @@ jj status          # working-copy changes
 jj diff            # current diff
 jj log             # change log
 jj describe -m "<message>"   # set change description
+```
+
+## Rust Commands (Cargo Workspace)
+
+The Rust code is a workspace with `backend`, `core`, and `worker` members.
+
+```bash
+cargo check --workspace
+cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo fmt --all -- --check
 ```
 
 ## Backend Commands (Rust / Cargo)
@@ -68,7 +79,16 @@ docker compose up -d db
 
 Migrations live in `backend/migrations/` and are auto-applied on server startup. Tests using `#[sqlx::test]` get an isolated DB per test with migrations applied.
 
-The `backend/.sqlx/` directory contains cached query metadata for offline compilation (used in Docker builds with `SQLX_OFFLINE=true`). After changing SQL queries, run `cargo sqlx prepare --workspace` from `backend/` to regenerate these files.
+The root `.sqlx/` directory contains cached query metadata for offline compilation (used in Docker builds with `SQLX_OFFLINE=true`). After changing SQL queries, run `cargo sqlx prepare --workspace` from the repo root to regenerate these files.
+
+## Worker Commands (Rust / Cargo)
+
+```bash
+cargo run --manifest-path worker/Cargo.toml
+cargo check --manifest-path worker/Cargo.toml
+```
+
+The worker reads `BACKEND_URL` or `--backend-url` and consumes the backend feed update queue endpoints.
 
 ## Frontend Commands (Deno / Fresh 2)
 

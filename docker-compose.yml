@@ -16,7 +16,9 @@ services:
       retries: 10
 
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     command: ["./backend", "--log-level", "info"]
     ports:
       - "8080:8080"
@@ -25,6 +27,16 @@ services:
     depends_on:
       db:
         condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    command: ["./worker", "--log-level", "info"]
+    environment:
+      BACKEND_URL: http://backend:8080
+    depends_on:
+      - backend
 
   frontend:
     build: ./frontend

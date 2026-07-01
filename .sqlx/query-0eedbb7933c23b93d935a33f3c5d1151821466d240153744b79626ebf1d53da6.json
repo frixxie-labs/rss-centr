@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO feed_update_queue (feed_id, due_at)\n        VALUES ($1, NOW())\n        ON CONFLICT (feed_id)\n        DO UPDATE SET due_at = LEAST(feed_update_queue.due_at, excluded.due_at),\n                      updated_at = NOW()\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0eedbb7933c23b93d935a33f3c5d1151821466d240153744b79626ebf1d53da6"
+}

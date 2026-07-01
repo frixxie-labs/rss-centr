@@ -10,18 +10,17 @@ use metrics::histogram;
 use metrics_exporter_prometheus::PrometheusHandle;
 use sqlx::PgPool;
 use tokio::sync::broadcast;
-use tokio::sync::mpsc::Sender;
 use tokio::time::Instant;
 use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
 use tracing::{info, instrument};
 use utoipa::OpenApi;
 
-use crate::background_tasks::IngestJob;
 use crate::events::NewFeedItemEvent;
 
 mod error;
 mod feed_title_index;
+mod feed_update_queue;
 mod feeds;
 mod health;
 mod items;
@@ -58,7 +57,6 @@ pub async fn profile_endpoint(request: Request, next: Next) -> Response {
 pub fn create_router(
     pool: PgPool,
     metrics_handler: PrometheusHandle,
-    tx: Sender<IngestJob>,
     new_item_tx: broadcast::Sender<NewFeedItemEvent>,
 ) -> Router {
     let feeds = Router::new()
@@ -76,7 +74,22 @@ pub fn create_router(
         .route("/feeds/{feed_id}", put(feeds::update_feed_enabled))
         .route("/feeds/{feed_id}", delete(feeds::delete_feed))
         .route("/feeds/{feed_id}/ingest", post(feeds::queue_ingest_feed))
-        .with_state((pool.clone(), tx.clone()));
+        .with_state(pool.clone());
+
+    let feed_update_queue = Router::new()
+        .route(
+            "/feed-update-queue/dequeue",
+            post(feed_update_queue::dequeue_feed_updates),
+        )
+        .route(
+            "/feed-update-queue/{feed_id}/complete",
+            post(feed_update_queue::complete_feed_update_handler),
+        )
+        .route(
+            "/feed-update-queue/{feed_id}/failed",
+            post(feed_update_queue::fail_feed_update_handler),
+        )
+        .with_state(pool.clone());
 
     let items = Router::new()
         .route("/feeds/{feed_id}/items", get(items::fetch_items_by_feed))
@@ -99,6 +112,18 @@ pub fn create_router(
                 .layer(middleware::from_fn(profile_endpoint)),
         );
 
+    // Worker-only endpoints. These are deliberately kept off the `/api`
+    // prefix: the frontend's public reverse proxy only forwards `/api/*`
+    // requests to the backend, so nesting these under a different prefix
+    // keeps them unreachable from the public internet-facing surface (the
+    // backend service itself is not otherwise publicly exposed; only the
+    // frontend is).
+    let internal_routes = Router::new().nest("/internal", feed_update_queue).layer(
+        ServiceBuilder::new()
+            .layer(TraceLayer::new_for_http())
+            .layer(middleware::from_fn(profile_endpoint)),
+    );
+
     let health_routes = Router::new()
         .route("/status/health", get(health::health))
         .with_state(pool);
@@ -110,7 +135,7 @@ pub fn create_router(
         .with_state(metrics_handler)
         .merge(health_routes);
 
-    api_routes.merge(system_routes)
+    api_routes.merge(internal_routes).merge(system_routes)
 }
 
 #[utoipa::path(
@@ -136,6 +161,9 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
         feeds::update_feed_enabled,
         feeds::delete_feed,
         feeds::queue_ingest_feed,
+        feed_update_queue::dequeue_feed_updates,
+        feed_update_queue::complete_feed_update_handler,
+        feed_update_queue::fail_feed_update_handler,
         feed_title_index::fetch_recent_feed_title_index,
         items::fetch_items_by_feed,
         items::fetch_latest_items,
@@ -147,6 +175,12 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
             crate::feed::feed_subscription::FeedSubscription,
             feeds::NewFeed,
             feeds::UpdateFeedEnabled,
+            rss_centr_core::feed_update_queue::DequeuedFeedUpdate,
+            rss_centr_core::feed_update_queue::CompleteFeedUpdateRequest,
+            rss_centr_core::feed_update_queue::CompleteFeedUpdateResult,
+            rss_centr_core::feed_update_queue::FailedFeedUpdateRequest,
+            rss_centr_core::feed_update_queue::FailedFeedUpdateResult,
+            rss_centr_core::feed_update_queue::FeedUpdateItemInput,
             crate::feed::feed_item::FeedItem,
             crate::feed::feed_item::FeedItemWithDetail,
             crate::feed::feed_item::FeedItemDetail,
@@ -160,6 +194,7 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
     ),
     tags(
         (name = "feeds", description = "Feed subscription endpoints"),
+        (name = "feed update queue", description = "Worker feed update queue endpoints"),
         (name = "items", description = "Feed item endpoints"),
         (name = "system", description = "System health and metrics endpoints"),
     )
