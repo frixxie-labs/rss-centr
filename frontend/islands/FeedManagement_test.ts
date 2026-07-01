@@ -1,6 +1,8 @@
 import { assertEquals } from "@std/assert";
 import {
+  canFetchNow,
   feedName,
+  fetchableFeedIds,
   formatDateTime,
   formatPollInterval,
   sortByNewestId,
@@ -118,6 +120,46 @@ Deno.test("feedName - skips whitespace-only site_url when title is null", () => 
     url: "https://example.com/rss",
   });
   assertEquals(feedName(feed), "https://example.com/rss");
+});
+
+// ---------------------------------------------------------------------------
+// canFetchNow
+// ---------------------------------------------------------------------------
+
+Deno.test("canFetchNow - true for an enabled feed", () => {
+  assertEquals(canFetchNow(makeFeed({ is_enabled: true })), true);
+});
+
+Deno.test("canFetchNow - false for a paused feed", () => {
+  assertEquals(canFetchNow(makeFeed({ is_enabled: false })), false);
+});
+
+Deno.test("canFetchNow - true when the feed can't be found", () => {
+  // Lets the API call happen anyway so it can surface its own error, rather
+  // than the UI silently blocking a request it can't actually reason about.
+  assertEquals(canFetchNow(undefined), true);
+});
+
+// ---------------------------------------------------------------------------
+// fetchableFeedIds
+// ---------------------------------------------------------------------------
+
+Deno.test("fetchableFeedIds - includes only enabled feeds, in list order", () => {
+  const feeds = [
+    makeFeed({ id: 1, is_enabled: true }),
+    makeFeed({ id: 2, is_enabled: false }),
+    makeFeed({ id: 3, is_enabled: true }),
+  ];
+  assertEquals(fetchableFeedIds(feeds), [1, 3]);
+});
+
+Deno.test("fetchableFeedIds - empty when every feed is paused", () => {
+  const feeds = [makeFeed({ id: 1, is_enabled: false })];
+  assertEquals(fetchableFeedIds(feeds), []);
+});
+
+Deno.test("fetchableFeedIds - empty array in, empty array out", () => {
+  assertEquals(fetchableFeedIds([]), []);
 });
 
 // ---------------------------------------------------------------------------

@@ -153,6 +153,7 @@ deno task check    # fmt --check + lint + type check
 
 ```
 --backend-url <URL>                  Backend base URL [env: BACKEND_URL, default: http://localhost:8080]
+--metrics-host <HOST>                 Prometheus metrics listen address [default: 0.0.0.0:9090]
 --limit <N>                          Number of feeds to lease per dequeue [default: 25]
 --lease-seconds <SECS>               Queue lease duration [default: 300]
 --idle-sleep-seconds <SECS>          Sleep duration when no work is available [default: 30]
@@ -319,11 +320,12 @@ Constraint: `UNIQUE(feed_id, external_id)`
 docker compose up -d
 ```
 
-Runs four services: `db` (Postgres 17), `backend` (port 8080), `worker`, `frontend` (port 8000).
+Runs four services: `db` (Postgres 17), `backend` (port 8080), `worker` (metrics on port 9090), `frontend` (port 8000).
 
 Kubernetes manifests are available in `release/` (Kustomize-based), including
-Deployments for `backend`, `frontend`, and `worker` (the worker has no
-Service, since it only polls the backend and exposes no ports).
+Deployments and Services for `backend`, `frontend`, and `worker`. The worker's
+Service only exposes its Prometheus metrics port (9090) -- it has no other
+inbound traffic, since it only polls the backend for work.
 
 ### CI/CD
 

@@ -139,9 +139,9 @@ Prefer following existing patterns over introducing new ones.
 
 ### Naming
 
-- Modules and functions: `snake_case` (`fetch_feed`, `insert_feed_item_detail`).
+- Modules and functions: `snake_case` (`dequeue_due_feeds`, `insert_feed_item_detail`).
 - Structs and enums: `UpperCamelCase` (`FeedItem`, `FeedItemDetail`).
-- Constants: `SCREAMING_SNAKE_CASE` (`FEED_URLS`).
+- Constants: `SCREAMING_SNAKE_CASE` (`MIN_POLL_INTERVAL_SECONDS`).
 
 ### Error Handling
 
@@ -173,7 +173,7 @@ Prefer following existing patterns over introducing new ones.
 
 - Unit tests go in `#[cfg(test)] mod tests { ... }` alongside the code.
 - Use `#[sqlx::test]` for DB tests (isolated migrated DB per test).
-- Prefer deterministic tests. The test in `feed.rs` hits real RSS feeds and may be flaky.
+- Prefer deterministic tests.
 - `unwrap()` is acceptable inside tests.
 
 ## Code Style -- Frontend (TypeScript / Deno Fresh)
