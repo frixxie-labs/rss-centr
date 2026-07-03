@@ -52,5 +52,9 @@ export interface FeedTitleIndexItem {
 export interface FeedTitleIndexEntry {
   word: string;
   total_occurrences: number;
+  /** Number of distinct feed item titles containing this word at least once. */
+  document_frequency: number;
+  /** TF-IDF score: higher means more distinctive (concentrated in fewer titles). */
+  tf_idf: number;
   items: FeedTitleIndexItem[];
 }
