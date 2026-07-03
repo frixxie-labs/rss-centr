@@ -19,13 +19,10 @@ function scale(
   return outMin + ((value - inMin) / (inMax - inMin)) * (outMax - outMin);
 }
 
-/** Pick a color class based on total occurrences for a word. */
-function colorForFrequency(
-  totalOccurrences: number,
-  maxOccurrences: number,
-): string {
-  if (maxOccurrences === 0) return "text-fuji-gray";
-  const ratio = totalOccurrences / maxOccurrences;
+/** Pick a color class based on a word's share of the highest TF-IDF score. */
+function colorForScore(score: number, maxScore: number): string {
+  if (maxScore === 0) return "text-fuji-gray";
+  const ratio = score / maxScore;
   if (ratio > 0.7) return "text-carp-yellow";
   if (ratio > 0.4) return "text-spring-blue";
   if (ratio > 0.2) return "text-spring-green";
@@ -77,8 +74,8 @@ export default function WordCloud(
     );
   }
 
-  const maxOccurrences = Math.max(...data.map((e) => e.total_occurrences));
-  const minOccurrences = Math.min(...data.map((e) => e.total_occurrences));
+  const maxTfIdf = Math.max(...data.map((e) => e.tf_idf));
+  const minTfIdf = Math.min(...data.map((e) => e.tf_idf));
 
   const minFontSize = 0.75;
   const maxFontSize = 3;
@@ -112,16 +109,13 @@ export default function WordCloud(
       <div class="px-4 py-6 flex flex-wrap items-baseline justify-center gap-x-3 gap-y-1">
         {data.map((entry) => {
           const fontSize = scale(
-            entry.total_occurrences,
-            minOccurrences,
-            maxOccurrences,
+            entry.tf_idf,
+            minTfIdf,
+            maxTfIdf,
             minFontSize,
             maxFontSize,
           );
-          const color = colorForFrequency(
-            entry.total_occurrences,
-            maxOccurrences,
-          );
+          const color = colorForScore(entry.tf_idf, maxTfIdf);
           const isSelected = selected.value?.word === entry.word;
 
           return (
@@ -137,7 +131,9 @@ export default function WordCloud(
                   : ""
               }`}
               style={{ fontSize: `${fontSize}rem`, lineHeight: 1.3 }}
-              title={`${entry.word}: ${entry.total_occurrences} occurrences`}
+              title={`${entry.word}: ${entry.total_occurrences} occurrences, tf-idf ${
+                entry.tf_idf.toFixed(2)
+              }`}
             >
               {entry.word}
             </button>
@@ -149,19 +145,19 @@ export default function WordCloud(
       <div class="px-4 pb-2 flex items-center justify-center gap-4 text-xs text-fuji-gray">
         <span class="flex items-center gap-1">
           <span class="inline-block w-2 h-2 rounded-full bg-carp-yellow" />
-          most frequent
+          most distinctive
         </span>
         <span class="flex items-center gap-1">
           <span class="inline-block w-2 h-2 rounded-full bg-spring-blue" />
-          frequent
+          distinctive
         </span>
         <span class="flex items-center gap-1">
           <span class="inline-block w-2 h-2 rounded-full bg-spring-green" />
-          occasional
+          somewhat distinctive
         </span>
         <span class="flex items-center gap-1">
           <span class="inline-block w-2 h-2 rounded-full bg-old-white" />
-          rare
+          common
         </span>
       </div>
 
@@ -172,11 +168,21 @@ export default function WordCloud(
             <h3 class="text-lg font-semibold text-fuji-white">
               {selectedEntry.word}
             </h3>
-            <span class="text-sm text-fuji-gray">
-              {selectedEntry.total_occurrences} total occurrences across{" "}
-              {selectedEntry.items.length} source
-              {selectedEntry.items.length !== 1 ? "s" : ""}
-            </span>
+            <div class="text-right text-sm text-fuji-gray">
+              <div>
+                {selectedEntry.total_occurrences} occurrence{selectedEntry
+                    .total_occurrences !== 1
+                  ? "s"
+                  : ""} in {selectedEntry.document_frequency}{" "}
+                title{selectedEntry.document_frequency !== 1 ? "s" : ""} across
+                {" "}
+                {selectedEntry.items.length} source
+                {selectedEntry.items.length !== 1 ? "s" : ""}
+              </div>
+              <div class="text-xs text-fuji-gray/70">
+                tf-idf score: {selectedEntry.tf_idf.toFixed(2)}
+              </div>
+            </div>
           </div>
 
           <div class="space-y-2">

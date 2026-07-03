@@ -42,11 +42,17 @@ pub struct FeedTitleIndexItem {
     pub occurrences: u64,
 }
 
-#[derive(Debug, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+#[derive(Debug, PartialEq, serde::Serialize, utoipa::ToSchema)]
 pub struct FeedTitleIndexEntry {
     pub word: String,
     #[serde(rename = "total_occurences")]
     pub total_occurrences: u64,
+    /// Number of distinct feed item titles containing this word at least once.
+    pub document_frequency: u64,
+    /// TF-IDF score: `total_occurrences * ln(total_documents / document_frequency)`.
+    /// Words that appear in nearly every title score close to `0.0` (uninformative);
+    /// words concentrated in a small subset of titles score higher.
+    pub tf_idf: f64,
     pub items: Vec<FeedTitleIndexItem>,
 }
 
@@ -55,6 +61,8 @@ struct FeedTitleIndexRow {
     feed_src_id: i64,
     occurrences: i64,
     total_occurrences: i64,
+    document_frequency: i64,
+    total_documents: i64,
 }
 
 pub trait FeedTitleIndexRepository {
@@ -93,17 +101,22 @@ async fn read_feed_title_index_rows(pool: &PgPool) -> Result<Vec<FeedTitleIndexR
         r#"
         WITH words AS (
             SELECT
+                id AS item_id,
                 feed_id,
                 lower(regexp_split_to_table(title, '[^a-zA-ZæøåÆØÅ]+')) AS word
             FROM feed_items
+        ),
+        filtered_words AS (
+            SELECT item_id, feed_id, word
+            FROM words
+            WHERE length(word) >= $1 AND word != ALL($2::TEXT[])
         ),
         counted_words AS (
             SELECT
                 feed_id,
                 word,
                 COUNT(*)::BIGINT AS occurrences
-            FROM words
-            WHERE length(word) >= $1 AND word != ALL($2::TEXT[])
+            FROM filtered_words
             GROUP BY feed_id, word
         ),
         totals AS (
@@ -112,15 +125,29 @@ async fn read_feed_title_index_rows(pool: &PgPool) -> Result<Vec<FeedTitleIndexR
                 SUM(occurrences)::BIGINT AS total_occurrences
             FROM counted_words
             GROUP BY word
+        ),
+        document_frequencies AS (
+            SELECT
+                word,
+                COUNT(DISTINCT item_id)::BIGINT AS document_frequency
+            FROM filtered_words
+            GROUP BY word
+        ),
+        corpus_size AS (
+            SELECT COUNT(*)::BIGINT AS total_documents FROM feed_items
         )
         SELECT
             cw.word AS "word!",
             cw.feed_id AS "feed_src_id!",
             cw.occurrences AS "occurrences!",
-            t.total_occurrences AS "total_occurrences!"
+            t.total_occurrences AS "total_occurrences!",
+            df.document_frequency AS "document_frequency!",
+            corpus_size.total_documents AS "total_documents!"
         FROM counted_words cw
         JOIN totals t USING (word)
-        ORDER BY t.total_occurrences DESC, cw.word ASC, cw.occurrences DESC, cw.feed_id ASC
+        JOIN document_frequencies df USING (word)
+        CROSS JOIN corpus_size
+        ORDER BY cw.word ASC, cw.occurrences DESC, cw.feed_id ASC
         "#,
         MIN_WORD_LENGTH,
         STOP_WORDS.as_slice(),
@@ -136,18 +163,23 @@ async fn read_recent_feed_title_index_rows(pool: &PgPool) -> Result<Vec<FeedTitl
         r#"
         WITH words AS (
             SELECT
+                id AS item_id,
                 feed_id,
                 lower(regexp_split_to_table(title, '[^a-zA-ZæøåÆØÅ]+')) AS word
             FROM feed_items
             WHERE inserted_at >= NOW() - INTERVAL '24 hours'
+        ),
+        filtered_words AS (
+            SELECT item_id, feed_id, word
+            FROM words
+            WHERE length(word) >= $1 AND word != ALL($2::TEXT[])
         ),
         counted_words AS (
             SELECT
                 feed_id,
                 word,
                 COUNT(*)::BIGINT AS occurrences
-            FROM words
-            WHERE length(word) >= $1 AND word != ALL($2::TEXT[])
+            FROM filtered_words
             GROUP BY feed_id, word
         ),
         totals AS (
@@ -156,15 +188,31 @@ async fn read_recent_feed_title_index_rows(pool: &PgPool) -> Result<Vec<FeedTitl
                 SUM(occurrences)::BIGINT AS total_occurrences
             FROM counted_words
             GROUP BY word
+        ),
+        document_frequencies AS (
+            SELECT
+                word,
+                COUNT(DISTINCT item_id)::BIGINT AS document_frequency
+            FROM filtered_words
+            GROUP BY word
+        ),
+        corpus_size AS (
+            SELECT COUNT(*)::BIGINT AS total_documents
+            FROM feed_items
+            WHERE inserted_at >= NOW() - INTERVAL '24 hours'
         )
         SELECT
             cw.word AS "word!",
             cw.feed_id AS "feed_src_id!",
             cw.occurrences AS "occurrences!",
-            t.total_occurrences AS "total_occurrences!"
+            t.total_occurrences AS "total_occurrences!",
+            df.document_frequency AS "document_frequency!",
+            corpus_size.total_documents AS "total_documents!"
         FROM counted_words cw
         JOIN totals t USING (word)
-        ORDER BY t.total_occurrences DESC, cw.word ASC, cw.occurrences DESC, cw.feed_id ASC
+        JOIN document_frequencies df USING (word)
+        CROSS JOIN corpus_size
+        ORDER BY cw.word ASC, cw.occurrences DESC, cw.feed_id ASC
         "#,
         MIN_WORD_LENGTH,
         STOP_WORDS.as_slice(),
@@ -176,6 +224,25 @@ async fn read_recent_feed_title_index_rows(pool: &PgPool) -> Result<Vec<FeedTitl
 
 fn count_to_u64(value: i64) -> Result<u64> {
     u64::try_from(value).context("title index count was negative")
+}
+
+/// Computes the TF-IDF score for a word: `tf * ln(N / df)`.
+///
+/// * `tf` (`total_occurrences`) is how many times the word occurs across the
+///   whole corpus.
+/// * `N` (`total_documents`) is the number of feed item titles in the corpus.
+/// * `df` (`document_frequency`) is how many distinct titles contain the word
+///   at least once.
+///
+/// A word present in every title has `df == N`, so `ln(N / df) == 0`: it
+/// carries no discriminative value regardless of how often it repeats. Words
+/// concentrated in a small subset of titles score higher.
+fn compute_tf_idf(total_occurrences: u64, document_frequency: u64, total_documents: u64) -> f64 {
+    if document_frequency == 0 || total_documents == 0 {
+        return 0.0;
+    }
+    let idf = (total_documents as f64 / document_frequency as f64).ln();
+    total_occurrences as f64 * idf
 }
 
 fn group_rows(rows: Vec<FeedTitleIndexRow>) -> Result<Vec<FeedTitleIndexEntry>> {
@@ -193,15 +260,29 @@ fn group_rows(rows: Vec<FeedTitleIndexRow>) -> Result<Vec<FeedTitleIndexEntry>> 
         }
 
         let total_occurrences = count_to_u64(row.total_occurrences)?;
+        let document_frequency = count_to_u64(row.document_frequency)?;
+        let total_documents = count_to_u64(row.total_documents)?;
+        let tf_idf = compute_tf_idf(total_occurrences, document_frequency, total_documents);
         entries.push(FeedTitleIndexEntry {
             word: row.word,
             total_occurrences,
+            document_frequency,
+            tf_idf,
             items: vec![FeedTitleIndexItem {
                 feed_src_id: row.feed_src_id,
                 occurrences,
             }],
         });
     }
+
+    entries.sort_by(|a, b| {
+        b.tf_idf
+            .partial_cmp(&a.tf_idf)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.total_occurrences.cmp(&a.total_occurrences))
+            .then_with(|| a.word.cmp(&b.word))
+    });
+
     Ok(entries)
 }
 
@@ -261,25 +342,52 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_feed_title_index_sorted_by_total_occurrences(pool: sqlx::PgPool) {
+    async fn test_feed_title_index_sorted_by_tf_idf(pool: sqlx::PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
             .await
             .unwrap();
 
-        insert_feed_item(&pool, feed.id, "ext-1", "Title One", "https://example.com")
+        // "alpha" appears in every title in the corpus: high raw frequency,
+        // but zero discriminative value once every document contains it.
+        insert_feed_item(
+            &pool,
+            feed.id,
+            "ext-1",
+            "Alpha Alpha",
+            "https://example.com",
+        )
+        .await
+        .unwrap();
+        insert_feed_item(&pool, feed.id, "ext-2", "Alpha", "https://example.com")
             .await
             .unwrap();
-        insert_feed_item(&pool, feed.id, "ext-2", "Title Two", "https://example.com")
-            .await
-            .unwrap();
-        insert_feed_item(&pool, feed.id, "ext-3", "Title", "https://example.com")
-            .await
-            .unwrap();
+        // "beta" only shows up in this one title out of three.
+        insert_feed_item(
+            &pool,
+            feed.id,
+            "ext-3",
+            "Alpha Beta Beta",
+            "https://example.com",
+        )
+        .await
+        .unwrap();
 
         let index = read_feed_title_index(&pool).await.unwrap();
 
-        assert_eq!(index[0].word, "title");
-        assert_eq!(index[0].total_occurrences, 3);
+        let alpha = find_entry(&index, "alpha").unwrap();
+        let beta = find_entry(&index, "beta").unwrap();
+
+        assert_eq!(alpha.total_occurrences, 4);
+        assert_eq!(alpha.document_frequency, 3);
+        assert_eq!(alpha.tf_idf, 0.0); // present in every title: no signal
+
+        assert_eq!(beta.total_occurrences, 2);
+        assert_eq!(beta.document_frequency, 1);
+        assert!(beta.tf_idf > 0.0);
+
+        // Despite fewer raw occurrences, "beta" is more distinctive than the
+        // ubiquitous "alpha" and should be ranked first.
+        assert_eq!(index[0].word, "beta");
     }
 
     #[sqlx::test]
@@ -384,6 +492,8 @@ mod tests {
         let json = serde_json::to_value(FeedTitleIndexEntry {
             word: "rust".to_string(),
             total_occurrences: 2,
+            document_frequency: 1,
+            tf_idf: 2.1972,
             items: vec![FeedTitleIndexItem {
                 feed_src_id: 1,
                 occurrences: 2,
@@ -395,5 +505,32 @@ mod tests {
         assert_eq!(json["items"][0]["occurences"], 2);
         assert!(json.get("total_occurrences").is_none());
         assert!(json["items"][0].get("occurrences").is_none());
+
+        // New fields are not part of the misspelling grandfathered in above
+        // and should serialize under their correctly-spelled names.
+        assert_eq!(json["document_frequency"], 1);
+        assert_eq!(json["tf_idf"], 2.1972);
+    }
+
+    #[test]
+    fn test_compute_tf_idf_is_zero_for_a_word_in_every_document() {
+        assert_eq!(compute_tf_idf(10, 5, 5), 0.0);
+    }
+
+    #[test]
+    fn test_compute_tf_idf_rewards_words_concentrated_in_fewer_documents() {
+        let ubiquitous = compute_tf_idf(4, 3, 3);
+        let rare = compute_tf_idf(2, 1, 3);
+
+        assert_eq!(ubiquitous, 0.0);
+        assert!(rare > ubiquitous);
+    }
+
+    #[test]
+    fn test_compute_tf_idf_scales_linearly_with_term_frequency() {
+        let once = compute_tf_idf(1, 1, 10);
+        let five_times = compute_tf_idf(5, 1, 10);
+
+        assert_eq!(five_times, once * 5.0);
     }
 }

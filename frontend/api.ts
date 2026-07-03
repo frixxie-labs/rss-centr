@@ -14,6 +14,8 @@ interface BackendFeedTitleIndexItem {
 interface BackendFeedTitleIndexEntry {
   word: string;
   total_occurences: number;
+  document_frequency: number;
+  tf_idf: number;
   items: BackendFeedTitleIndexItem[];
 }
 
@@ -176,6 +178,8 @@ export async function fetchRecentIndex(): Promise<FeedTitleIndexEntry[]> {
   return entries.map((entry) => ({
     word: entry.word,
     total_occurrences: entry.total_occurences,
+    document_frequency: entry.document_frequency,
+    tf_idf: entry.tf_idf,
     items: entry.items.map((item) => ({
       feed_src_id: item.feed_src_id,
       occurrences: item.occurences,
