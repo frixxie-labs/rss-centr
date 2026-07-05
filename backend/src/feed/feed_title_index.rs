@@ -49,7 +49,7 @@ pub struct FeedTitleIndexEntry {
     pub total_occurrences: u64,
     /// Number of distinct feed item titles containing this word at least once.
     pub document_frequency: u64,
-    /// TF-IDF score: `total_occurrences * ln(total_documents / document_frequency)`.
+    /// TF-IDF score: `ln(1 + total_occurrences) * ln(total_documents / document_frequency)`.
     /// Words that appear in nearly every title score close to `0.0` (uninformative);
     /// words concentrated in a small subset of titles score higher.
     pub tf_idf: f64,
@@ -226,10 +226,11 @@ fn count_to_u64(value: i64) -> Result<u64> {
     u64::try_from(value).context("title index count was negative")
 }
 
-/// Computes the TF-IDF score for a word: `tf * ln(N / df)`.
+/// Computes the TF-IDF score for a word: `ln(1 + tf) * ln(N / df)`.
 ///
 /// * `tf` (`total_occurrences`) is how many times the word occurs across the
-///   whole corpus.
+///   whole corpus. It is log-smoothed so one prolific source cannot dominate
+///   the index just by repeating the same word many times.
 /// * `N` (`total_documents`) is the number of feed item titles in the corpus.
 /// * `df` (`document_frequency`) is how many distinct titles contain the word
 ///   at least once.
@@ -241,8 +242,9 @@ fn compute_tf_idf(total_occurrences: u64, document_frequency: u64, total_documen
     if document_frequency == 0 || total_documents == 0 {
         return 0.0;
     }
+    let tf = (1.0 + total_occurrences as f64).ln();
     let idf = (total_documents as f64 / document_frequency as f64).ln();
-    total_occurrences as f64 * idf
+    tf * idf
 }
 
 fn group_rows(rows: Vec<FeedTitleIndexRow>) -> Result<Vec<FeedTitleIndexEntry>> {
@@ -527,10 +529,11 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_tf_idf_scales_linearly_with_term_frequency() {
+    fn test_compute_tf_idf_smooths_term_frequency() {
         let once = compute_tf_idf(1, 1, 10);
         let five_times = compute_tf_idf(5, 1, 10);
 
-        assert_eq!(five_times, once * 5.0);
+        assert!(five_times > once);
+        assert!(five_times < once * 5.0);
     }
 }
