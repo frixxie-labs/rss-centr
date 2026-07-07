@@ -48,11 +48,11 @@ fn text_value(t: &Text) -> &str {
 
 fn entry_external_id(entry: &Entry) -> String {
     if !entry.id.is_empty() {
-        return entry.id.clone();
+        return normalize_external_id(&entry.id);
     }
 
     if let Some(link) = entry.links.first() {
-        return link.href.clone();
+        return normalize_external_id(&link.href);
     }
 
     let title = entry
@@ -66,6 +66,27 @@ fn entry_external_id(entry: &Entry) -> String {
         .unwrap_or_default();
 
     format!("fallback:{title}:{published}")
+}
+
+/// Strip a URL fragment from guids/links that are HTTP(S) URLs.
+///
+/// `external_id` is the sole dedup key (`UNIQUE(feed_id, external_id)` in
+/// Postgres, enforced via `ON CONFLICT ... DO NOTHING`). Some feeds (e.g. BBC
+/// News) emit a `<guid>` that is the article URL with a volatile fragment
+/// appended, such as `.../c4gyxdeql5eo#8` on one poll and `.../c4gyxdeql5eo#0`
+/// on the next -- for the *same* still-live article. Left as-is, that rotating
+/// fragment defeats deduplication and reinserts the same article on every
+/// poll until it falls out of the feed. Stripping the fragment keeps the
+/// identifier stable across polls.
+fn normalize_external_id(id: &str) -> String {
+    if !(id.starts_with("http://") || id.starts_with("https://")) {
+        return id.to_string();
+    }
+
+    match id.split_once('#') {
+        Some((base, _fragment)) => base.to_string(),
+        None => id.to_string(),
+    }
 }
 
 fn entry_summary_and_content(entry: &Entry) -> (String, String) {
@@ -130,7 +151,7 @@ mod tests {
                 ..Default::default()
             };
 
-            TestResult::from_bool(entry_external_id(&entry) == id)
+            TestResult::from_bool(entry_external_id(&entry) == normalize_external_id(&id))
         }
 
         fn prop_entry_external_id_uses_first_link_when_id_is_empty(href: String, other_href: String) -> bool {
@@ -140,7 +161,21 @@ mod tests {
                 ..Default::default()
             };
 
-            entry_external_id(&entry) == href
+            entry_external_id(&entry) == normalize_external_id(&href)
+        }
+
+        fn prop_normalize_external_id_is_idempotent(id: String) -> bool {
+            let once = normalize_external_id(&id);
+            let twice = normalize_external_id(&once);
+            once == twice
+        }
+
+        fn prop_normalize_external_id_leaves_non_http_untouched(id: String) -> TestResult {
+            if id.starts_with("http://") || id.starts_with("https://") {
+                return TestResult::discard();
+            }
+
+            TestResult::from_bool(normalize_external_id(&id) == id)
         }
 
         fn prop_entry_published_at_prefers_published(published_seconds: i32, updated_seconds: i32) -> bool {
@@ -265,5 +300,83 @@ mod tests {
         assert_eq!(item.author.as_deref(), Some(""));
         // No <published>: falls back to "now" rather than `None`.
         assert!(item.published_at.is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression coverage for the BBC News dedup bug: BBC's <guid> is the
+    // article URL with a volatile `#<digit>` fragment appended, which rotates
+    // between polls for the *same* still-live article (observed values
+    // include #0, #1, #2, #4, #8 for one unchanged article across repeated
+    // polls). Since `external_id` is the sole dedup key
+    // (`UNIQUE(feed_id, external_id)`), that rotation reinserted the same
+    // article on every poll until it fell out of the feed.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_entry_external_id_strips_volatile_fragment_from_url_guid() {
+        let entry = Entry {
+            id: "https://www.bbc.co.uk/sport/football/articles/c4gyxdeql5eo#8".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            entry_external_id(&entry),
+            "https://www.bbc.co.uk/sport/football/articles/c4gyxdeql5eo"
+        );
+    }
+
+    #[test]
+    fn test_entry_external_id_same_article_different_fragment_polls_produce_same_id() {
+        let poll_one = Entry {
+            id: "https://www.bbc.co.uk/sport/football/articles/c4gyxdeql5eo#8".to_string(),
+            ..Default::default()
+        };
+        let poll_two = Entry {
+            id: "https://www.bbc.co.uk/sport/football/articles/c4gyxdeql5eo#0".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(entry_external_id(&poll_one), entry_external_id(&poll_two));
+    }
+
+    #[test]
+    fn test_entry_external_id_strips_fragment_from_link_fallback_too() {
+        let entry = Entry {
+            id: String::new(),
+            links: vec![link(
+                "https://www.bbc.co.uk/news/articles/c33y0n1v1xjo#4".to_string(),
+            )],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            entry_external_id(&entry),
+            "https://www.bbc.co.uk/news/articles/c33y0n1v1xjo"
+        );
+    }
+
+    #[test]
+    fn test_entry_external_id_leaves_non_url_guid_untouched() {
+        // A `#` in a non-HTTP(S) identifier isn't a URL fragment (e.g. a urn
+        // or an opaque provider-specific guid) so it must be left alone.
+        let entry = Entry {
+            id: "urn:uuid:1234#fragment-like-suffix".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            entry_external_id(&entry),
+            "urn:uuid:1234#fragment-like-suffix"
+        );
+    }
+
+    #[test]
+    fn test_entry_external_id_leaves_url_guid_without_fragment_untouched() {
+        let entry = Entry {
+            id: "https://example.com/1".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(entry_external_id(&entry), "https://example.com/1");
     }
 }
