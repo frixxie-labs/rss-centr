@@ -22,7 +22,11 @@ use tracing_subscriber::FmtSubscriber;
 async fn main() -> Result<()> {
     let opts = Opts::parse();
     let level: Level = opts.log_level.clone().into();
-    let subscriber = FmtSubscriber::builder().with_max_level(level).finish();
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(level)
+        .json()
+        .flatten_event(true)
+        .finish();
     tracing::subscriber::set_global_default(subscriber)
         .context("failed to install tracing subscriber")?;
 
