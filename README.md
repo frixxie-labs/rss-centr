@@ -232,8 +232,9 @@ GET    /metrics                      Prometheus metrics
 GET    /openapi                      OpenAPI JSON spec
 ```
 
-Backend and worker logs are emitted as newline-delimited JSON. When forwarding
-them to VictoriaLogs' `/insert/jsonline` endpoint, set `_time_field=timestamp`
+Backend, worker, and frontend logs are emitted as newline-delimited JSON. When
+forwarding them to VictoriaLogs' `/insert/jsonline` endpoint, set
+`_time_field=timestamp`
 and `_msg_field=message`. Select stable deployment metadata such as service,
 namespace, pod, and container names for `_stream_fields`; do not use request or
 feed identifiers as stream fields.

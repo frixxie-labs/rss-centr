@@ -10,70 +10,99 @@ Deno.test("getLogger - returns a Logger with debug, info, warn, error methods", 
   assertEquals(typeof log.error, "function");
 });
 
-Deno.test("getLogger - debug outputs to console.debug with formatted prefix", () => {
+Deno.test("getLogger - debug outputs structured JSON to console.debug", () => {
   const debugSpy = spy(console, "debug");
   try {
     const log = getLogger("mymodule");
     log.debug("hello", { key: "value" });
     assertSpyCalls(debugSpy, 1);
-    assertEquals(debugSpy.calls[0].args[0], "[DEBUG mymodule]");
-    assertEquals(debugSpy.calls[0].args[1], "hello");
-    assertEquals(debugSpy.calls[0].args[2], { key: "value" });
+    const entry = JSON.parse(debugSpy.calls[0].args[0]);
+    assertEquals(entry.level, "DEBUG");
+    assertEquals(entry.target, "mymodule");
+    assertEquals(entry.message, "hello");
+    assertEquals(entry.key, "value");
+    assertEquals(typeof entry.timestamp, "string");
+    assertEquals(debugSpy.calls[0].args.length, 1);
   } finally {
     debugSpy.restore();
   }
 });
 
-Deno.test("getLogger - info outputs to console.info with formatted prefix", () => {
+Deno.test("getLogger - info preserves additional scalar details", () => {
   const infoSpy = spy(console, "info");
   try {
     const log = getLogger("ssr");
     log.info("fetched news", 42);
     assertSpyCalls(infoSpy, 1);
-    assertEquals(infoSpy.calls[0].args[0], "[INFO ssr]");
-    assertEquals(infoSpy.calls[0].args[1], "fetched news");
-    assertEquals(infoSpy.calls[0].args[2], 42);
+    const entry = JSON.parse(infoSpy.calls[0].args[0]);
+    assertEquals(entry.level, "INFO");
+    assertEquals(entry.target, "ssr");
+    assertEquals(entry.message, "fetched news");
+    assertEquals(entry.details, [42]);
   } finally {
     infoSpy.restore();
   }
 });
 
-Deno.test("getLogger - warn outputs to console.warn with formatted prefix", () => {
+Deno.test("getLogger - warn outputs to console.warn", () => {
   const warnSpy = spy(console, "warn");
   try {
     const log = getLogger("proxy");
     log.warn("something off");
     assertSpyCalls(warnSpy, 1);
-    assertEquals(warnSpy.calls[0].args[0], "[WARN proxy]");
-    assertEquals(warnSpy.calls[0].args[1], "something off");
+    const entry = JSON.parse(warnSpy.calls[0].args[0]);
+    assertEquals(entry.level, "WARN");
+    assertEquals(entry.target, "proxy");
+    assertEquals(entry.message, "something off");
   } finally {
     warnSpy.restore();
   }
 });
 
-Deno.test("getLogger - error outputs to console.error with formatted prefix", () => {
+Deno.test("getLogger - error serializes error details", () => {
   const errorSpy = spy(console, "error");
   try {
     const log = getLogger("api");
     log.error("crash", new Error("boom"));
     assertSpyCalls(errorSpy, 1);
-    assertEquals(errorSpy.calls[0].args[0], "[ERROR api]");
-    assertEquals(errorSpy.calls[0].args[1], "crash");
+    const entry = JSON.parse(errorSpy.calls[0].args[0]);
+    assertEquals(entry.level, "ERROR");
+    assertEquals(entry.target, "api");
+    assertEquals(entry.message, "crash");
+    assertEquals(entry.error.name, "Error");
+    assertEquals(entry.error.message, "boom");
+    assertEquals(typeof entry.error.stack, "string");
   } finally {
     errorSpy.restore();
   }
 });
 
-Deno.test("getLogger - different logger names produce different prefixes", () => {
+Deno.test("getLogger - different logger names produce different targets", () => {
   const debugSpy = spy(console, "debug");
   try {
     const log1 = getLogger("alpha");
     const log2 = getLogger("beta");
     log1.debug("msg1");
     log2.debug("msg2");
-    assertEquals(debugSpy.calls[0].args[0], "[DEBUG alpha]");
-    assertEquals(debugSpy.calls[1].args[0], "[DEBUG beta]");
+    assertEquals(JSON.parse(debugSpy.calls[0].args[0]).target, "alpha");
+    assertEquals(JSON.parse(debugSpy.calls[1].args[0]).target, "beta");
   } finally {
     debugSpy.restore();
+  }
+});
+
+Deno.test("getLogger - serializes nested errors and circular values", () => {
+  const warnSpy = spy(console, "warn");
+  try {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const log = getLogger("test");
+    log.warn("context", { err: new Error("nested"), circular });
+
+    const entry = JSON.parse(warnSpy.calls[0].args[0]);
+    assertEquals(entry.err.message, "nested");
+    assertEquals(entry.circular.self, "[Circular]");
+  } finally {
+    warnSpy.restore();
   }
 });

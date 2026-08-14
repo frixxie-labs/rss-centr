@@ -1,29 +1,29 @@
 import { App, staticFiles } from "fresh";
+import { getLogger } from "./logger.ts";
 import type { State } from "./utils.ts";
 
 export const app = new App<State>();
+const log = getLogger("http");
 
 app.use(async (ctx) => {
   const url = new URL(ctx.req.url);
-  const timestamp = new Date().toISOString();
   const started = performance.now();
 
   try {
     const res = await ctx.next();
-    const elapsed = performance.now() - started;
-    console.log(
-      `${timestamp} ${ctx.req.method} ${url.pathname} ${res.status} ${
-        elapsed.toFixed(1)
-      }ms`,
-    );
+    log.info("Request completed", {
+      method: ctx.req.method,
+      path: url.pathname,
+      status: res.status,
+      duration_ms: Number((performance.now() - started).toFixed(1)),
+    });
     return res;
   } catch (err) {
-    const elapsed = performance.now() - started;
-    console.log(
-      `${timestamp} ${ctx.req.method} ${url.pathname} error ${
-        elapsed.toFixed(1)
-      }ms`,
-    );
+    log.error("Request failed", {
+      method: ctx.req.method,
+      path: url.pathname,
+      duration_ms: Number((performance.now() - started).toFixed(1)),
+    }, err);
     throw err;
   }
 });
