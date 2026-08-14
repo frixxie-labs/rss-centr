@@ -1,13 +1,5 @@
 /**
- * Structured logger built on top of `console.*` methods.
- *
- * Locally you get human-readable leveled output:
- *   [INFO ssr] Fetched 42 news stories
- *   [ERROR api-proxy] Backend unreachable { status: 502, path: "/api/feeds" }
- *
- * When running with `OTEL_DENO=true`, every `console.*` call is automatically
- * exported as an OpenTelemetry log record with the correct severity, span
- * context, and any structured data you pass — no extra dependencies needed.
+ * Structured logger that emits one JSON object per line for VictoriaLogs.
  *
  * Usage:
  *   import { getLogger } from "@/logger.ts";
@@ -45,6 +37,31 @@ export interface Logger {
   error(msg: string, ...args: unknown[]): void;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null &&
+    !Array.isArray(value) && !(value instanceof Error);
+}
+
+function stringify(entry: Record<string, unknown>): string {
+  const seen = new WeakSet<object>();
+
+  return JSON.stringify(entry, (_key, value: unknown) => {
+    if (value instanceof Error) {
+      return {
+        name: value.name,
+        message: value.message,
+        stack: value.stack,
+      };
+    }
+    if (typeof value === "bigint") return value.toString();
+    if (typeof value === "object" && value !== null) {
+      if (seen.has(value)) return "[Circular]";
+      seen.add(value);
+    }
+    return value;
+  });
+}
+
 /**
  * Returns a named logger for the given concern.
  *
@@ -60,25 +77,53 @@ export function getLogger(name: string): Logger {
     return LEVELS[level] >= LEVELS[minLevel];
   }
 
+  function write(level: Level, message: string, args: unknown[]): void {
+    const fields: Record<string, unknown> = {};
+    const details: unknown[] = [];
+    let error: Error | undefined;
+
+    for (const arg of args) {
+      if (arg instanceof Error && error === undefined) {
+        error = arg;
+      } else if (isRecord(arg)) {
+        Object.assign(fields, arg);
+      } else {
+        details.push(arg);
+      }
+    }
+
+    const entry: Record<string, unknown> = {
+      ...fields,
+      timestamp: new Date().toISOString(),
+      level: level.toUpperCase(),
+      target: name,
+      message,
+    };
+    if (error !== undefined) entry.error = error;
+    if (details.length > 0) entry.details = details;
+
+    console[level](stringify(entry));
+  }
+
   return {
     debug(msg: string, ...args: unknown[]) {
       if (shouldLog("debug")) {
-        console.debug(`[DEBUG ${name}]`, msg, ...args);
+        write("debug", msg, args);
       }
     },
     info(msg: string, ...args: unknown[]) {
       if (shouldLog("info")) {
-        console.info(`[INFO ${name}]`, msg, ...args);
+        write("info", msg, args);
       }
     },
     warn(msg: string, ...args: unknown[]) {
       if (shouldLog("warn")) {
-        console.warn(`[WARN ${name}]`, msg, ...args);
+        write("warn", msg, args);
       }
     },
     error(msg: string, ...args: unknown[]) {
       if (shouldLog("error")) {
-        console.error(`[ERROR ${name}]`, msg, ...args);
+        write("error", msg, args);
       }
     },
   };
