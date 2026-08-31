@@ -318,11 +318,11 @@ export default function Timeline(
 
   return (
     <div>
-      <div class="px-4 py-2 border-b border-sumi-ink3 flex items-center justify-between text-xs text-katana-gray">
+      <div class="flex flex-wrap items-center justify-between gap-2 border-b border-sumi-ink3 px-4 py-2 text-xs text-katana-gray">
         <span>
           {items.value.length} {items.value.length === 1 ? "story" : "stories"}
         </span>
-        <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center justify-end gap-2">
           {replayNotice.value && (
             <span class="text-sumi-ink4">{replayNotice.value}</span>
           )}

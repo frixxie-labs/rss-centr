@@ -142,7 +142,7 @@ export default function WordCloud(
       </div>
 
       {/* Legend */}
-      <div class="px-4 pb-2 flex items-center justify-center gap-4 text-xs text-fuji-gray">
+      <div class="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 px-4 pb-2 text-xs text-fuji-gray">
         <span class="flex items-center gap-1">
           <span class="inline-block w-2 h-2 rounded-full bg-carp-yellow" />
           most distinctive
@@ -164,8 +164,8 @@ export default function WordCloud(
       {/* Detail panel */}
       {selectedEntry && (
         <div class="mx-4 mb-4 rounded-lg border border-sumi-ink3 bg-sumi-ink2/60 p-4">
-          <div class="flex items-baseline justify-between mb-3">
-            <h3 class="text-lg font-semibold text-fuji-white">
+          <div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+            <h3 class="break-words text-lg font-semibold text-fuji-white">
               {selectedEntry.word}
             </h3>
             <div class="text-right text-sm text-fuji-gray">
