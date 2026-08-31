@@ -98,7 +98,7 @@ export default function FeedItemsView(
               const target = event.currentTarget as HTMLInputElement;
               query.value = target.value;
             }}
-            class="rounded-md border border-sumi-ink4 bg-sumi-ink0 px-3 py-2 text-sm text-old-white outline-none transition focus:border-carp-yellow"
+            class="min-w-0 rounded-md border border-sumi-ink4 bg-sumi-ink0 px-3 py-2 text-sm text-old-white outline-none transition focus:border-carp-yellow"
             placeholder="Filter by title, summary, author, URL, or source"
           />
           <select
@@ -107,7 +107,7 @@ export default function FeedItemsView(
               const target = event.currentTarget as HTMLSelectElement;
               selectedFeedId.value = target.value;
             }}
-            class="rounded-md border border-sumi-ink4 bg-sumi-ink0 px-3 py-2 text-sm text-old-white outline-none transition focus:border-carp-yellow"
+            class="min-w-0 rounded-md border border-sumi-ink4 bg-sumi-ink0 px-3 py-2 text-sm text-old-white outline-none transition focus:border-carp-yellow"
           >
             <option value="all">All sources</option>
             {feedOptions.map((feed) => (

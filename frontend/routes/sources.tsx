@@ -56,7 +56,7 @@ export default define.page<typeof handler>(function SourcesPage({ data }) {
           Topics
         </a>
       </Header>
-      <main class="mx-auto w-full max-w-3xl flex-1">
+      <main class="mx-auto w-full min-w-0 max-w-3xl flex-1">
         <FeedManagement
           initialFeeds={data.feeds}
           initialLoadError={data.loadError}

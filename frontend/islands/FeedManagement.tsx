@@ -256,7 +256,7 @@ export default function FeedManagement(
               const target = event.currentTarget as HTMLInputElement;
               urlInput.value = target.value;
             }}
-            class="flex-1 rounded-md border border-sumi-ink4 bg-sumi-ink0 px-3 py-2 text-sm text-old-white outline-none transition focus:border-carp-yellow"
+            class="min-w-0 flex-1 rounded-md border border-sumi-ink4 bg-sumi-ink0 px-3 py-2 text-sm text-old-white outline-none transition focus:border-carp-yellow"
             placeholder="https://example.com/feed.xml"
             required
           />
@@ -283,7 +283,7 @@ export default function FeedManagement(
       )}
 
       <section class="rounded-lg border border-sumi-ink3 bg-sumi-ink2/60">
-        <div class="flex items-center justify-between border-b border-sumi-ink3 px-4 py-3">
+        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-sumi-ink3 px-4 py-3">
           <h2 class="text-sm font-semibold text-fuji-white">
             Sources ({feeds.value.length})
           </h2>

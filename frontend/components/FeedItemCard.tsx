@@ -69,24 +69,24 @@ export function FeedItemCard(
       href={item.url}
       target="_blank"
       rel="noopener noreferrer"
-      class={`block px-4 py-3 border-b border-sumi-ink3 hover:bg-sumi-ink2 transition-colors ${
+      class={`block min-w-0 px-4 py-3 border-b border-sumi-ink3 hover:bg-sumi-ink2 transition-colors ${
         isNew ? "bg-wave-blue1/50 border-l-2 border-l-carp-yellow" : ""
       }`}
     >
-      <h3 class="text-sm font-medium text-fuji-white leading-snug">
+      <h3 class="break-words text-sm font-medium text-fuji-white leading-snug">
         {item.title}
       </h3>
       {preview && (
-        <p class="mt-2 line-clamp-3 text-sm leading-relaxed text-fuji-gray">
+        <p class="mt-2 line-clamp-3 break-words text-sm leading-relaxed text-fuji-gray">
           {preview}
         </p>
       )}
-      <div class="mt-1 flex items-center gap-2 text-xs text-katana-gray">
-        <span>{hostname(item.url)}</span>
+      <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-katana-gray">
+        <span class="break-all">{hostname(item.url)}</span>
         {item.author && (
           <>
             <span>&middot;</span>
-            <span class="text-fuji-gray">{item.author}</span>
+            <span class="break-words text-fuji-gray">{item.author}</span>
           </>
         )}
         {item.published_at && (
@@ -104,7 +104,7 @@ export function FeedItemCard(
         {feedName && (
           <>
             <span>&middot;</span>
-            <span class="text-fuji-gray">{feedName}</span>
+            <span class="break-words text-fuji-gray">{feedName}</span>
           </>
         )}
         <span>&middot;</span>
