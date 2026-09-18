@@ -10,6 +10,11 @@ export type AnalyticsScriptConfig =
     websiteId: string;
   };
 
+const DEFAULT_SCRIPT_SRC = {
+  plausible: "https://plausible.io/js/script.js",
+  umami: "https://cloud.umami.is/script.js",
+} as const;
+
 function readEnv(name: string): string | undefined {
   try {
     const value = typeof Deno !== "undefined" && "env" in Deno
@@ -21,11 +26,28 @@ function readEnv(name: string): string | undefined {
   }
 }
 
+function normalizeScriptSrc(scriptSrc: string | undefined): string | undefined {
+  if (!scriptSrc) {
+    return undefined;
+  }
+
+  if (scriptSrc.startsWith("/") && !scriptSrc.startsWith("//")) {
+    return scriptSrc;
+  }
+
+  try {
+    const url = new URL(scriptSrc);
+    return url.protocol === "https:" ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function getAnalyticsScriptConfig(
   env: (name: string) => string | undefined = readEnv,
 ): AnalyticsScriptConfig | undefined {
   const provider = env("ANALYTICS_PROVIDER")?.toLowerCase();
-  const scriptSrc = env("ANALYTICS_SCRIPT_SRC");
+  const scriptSrc = normalizeScriptSrc(env("ANALYTICS_SCRIPT_SRC"));
 
   switch (provider) {
     case "plausible": {
@@ -37,7 +59,7 @@ export function getAnalyticsScriptConfig(
       return {
         provider,
         domain,
-        scriptSrc: scriptSrc ?? "https://plausible.io/js/script.js",
+        scriptSrc: scriptSrc ?? DEFAULT_SCRIPT_SRC.plausible,
       };
     }
     case "umami": {
@@ -49,7 +71,7 @@ export function getAnalyticsScriptConfig(
       return {
         provider,
         websiteId,
-        scriptSrc: scriptSrc ?? "https://cloud.umami.is/script.js",
+        scriptSrc: scriptSrc ?? DEFAULT_SCRIPT_SRC.umami,
       };
     }
     default:

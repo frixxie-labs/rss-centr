@@ -161,12 +161,16 @@ export ANALYTICS_PROVIDER=plausible
 export ANALYTICS_DOMAIN=your-rss-centr-domain.example.com
 # Optional for self-hosting or a reverse proxy:
 # export ANALYTICS_SCRIPT_SRC=https://analytics.example.com/js/script.js
+# or:
+# export ANALYTICS_SCRIPT_SRC=/js/script.js
 
 # Or Umami Cloud / self-hosted Umami
 export ANALYTICS_PROVIDER=umami
 export ANALYTICS_WEBSITE_ID=your-website-id
 # Optional for self-hosting:
 # export ANALYTICS_SCRIPT_SRC=https://analytics.example.com/script.js
+# or:
+# export ANALYTICS_SCRIPT_SRC=/script.js
 ```
 
 With either provider enabled, RSS Centr will automatically emit page views for
