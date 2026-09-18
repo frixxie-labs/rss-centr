@@ -1,5 +1,7 @@
 import { Head } from "fresh/runtime";
 import { define } from "../utils.ts";
+import { AppNav } from "../components/AppNav.tsx";
+import AnalyticsTracker from "../islands/AnalyticsTracker.tsx";
 import { fetchFeeds, fetchLatestItems } from "../api.ts";
 import { Header } from "../components/Header.tsx";
 import Timeline, { MAX_TIMELINE_ITEMS } from "../islands/Timeline.tsx";
@@ -38,30 +40,7 @@ export default define.page<typeof handler>(function Home({ data }) {
         <title>RSS Centr</title>
       </Head>
       <Header>
-        <a
-          href="/"
-          class="rounded-md bg-sumi-ink3 px-2 py-1 text-sm text-fuji-white"
-        >
-          Timeline
-        </a>
-        <a
-          href="/news"
-          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
-        >
-          News
-        </a>
-        <a
-          href="/sources"
-          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
-        >
-          Sources
-        </a>
-        <a
-          href="/topics"
-          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
-        >
-          Topics
-        </a>
+        <AppNav currentPath="/" />
       </Header>
       <main class="mx-auto w-full min-w-0 max-w-2xl flex-1">
         {data.loadError && (
@@ -76,6 +55,7 @@ export default define.page<typeof handler>(function Home({ data }) {
           initialNowIso={data.initialNowIso}
         />
       </main>
+      <AnalyticsTracker path="/" />
     </div>
   );
 });

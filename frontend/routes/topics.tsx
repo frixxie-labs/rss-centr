@@ -5,6 +5,8 @@ import WordCloud from "../islands/WordCloud.tsx";
 import { getLogger } from "../logger.ts";
 import type { FeedTitleIndexEntry } from "../types.ts";
 import { define } from "../utils.ts";
+import { AppNav } from "../components/AppNav.tsx";
+import AnalyticsTracker from "../islands/AnalyticsTracker.tsx";
 
 const log = getLogger("ssr");
 
@@ -39,30 +41,7 @@ export default define.page<typeof handler>(function TopicsPage({ data }) {
         <title>RSS Centr - Topics</title>
       </Head>
       <Header>
-        <a
-          href="/"
-          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
-        >
-          Timeline
-        </a>
-        <a
-          href="/news"
-          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
-        >
-          News
-        </a>
-        <a
-          href="/sources"
-          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
-        >
-          Sources
-        </a>
-        <a
-          href="/topics"
-          class="rounded-md bg-sumi-ink3 px-2 py-1 text-sm text-fuji-white"
-        >
-          Topics
-        </a>
+        <AppNav currentPath="/topics" />
       </Header>
       <main class="mx-auto w-full min-w-0 max-w-3xl flex-1">
         {data.loadError && (
@@ -75,6 +54,7 @@ export default define.page<typeof handler>(function TopicsPage({ data }) {
           feedNames={data.feedNames}
         />
       </main>
+      <AnalyticsTracker path="/topics" />
     </div>
   );
 });

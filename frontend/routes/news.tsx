@@ -6,6 +6,8 @@ import { getLogger } from "../logger.ts";
 import { parseSourceId } from "../newsFilters.ts";
 import type { FeedItem } from "../types.ts";
 import { define } from "../utils.ts";
+import { AppNav } from "../components/AppNav.tsx";
+import AnalyticsTracker from "../islands/AnalyticsTracker.tsx";
 
 const log = getLogger("ssr");
 const ITEMS_LIMIT = 500;
@@ -58,30 +60,7 @@ export default define.page<typeof handler>(function NewsPage({ data }) {
         <title>RSS Centr - All News</title>
       </Head>
       <Header>
-        <a
-          href="/"
-          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
-        >
-          Timeline
-        </a>
-        <a
-          href="/news"
-          class="rounded-md bg-sumi-ink3 px-2 py-1 text-sm text-fuji-white"
-        >
-          News
-        </a>
-        <a
-          href="/sources"
-          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
-        >
-          Sources
-        </a>
-        <a
-          href="/topics"
-          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
-        >
-          Topics
-        </a>
+        <AppNav currentPath="/news" />
       </Header>
       <main class="mx-auto w-full min-w-0 max-w-3xl flex-1">
         {data.loadError && (
@@ -98,6 +77,7 @@ export default define.page<typeof handler>(function NewsPage({ data }) {
           limit={ITEMS_LIMIT}
         />
       </main>
+      <AnalyticsTracker path="/news" />
     </div>
   );
 });

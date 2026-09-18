@@ -1,5 +1,6 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
+import { trackEvent } from "../analytics.ts";
 import { fetchLatestItems } from "../api.ts";
 import { FeedItemCard } from "../components/FeedItemCard.tsx";
 import { sortByNewest } from "../feedItemOrdering.ts";
@@ -31,6 +32,7 @@ export default function FeedItemsView(
   const items = useSignal(sortByNewest(initialItems));
   const isLoading = useSignal(false);
   const loadError = useSignal(false);
+  const lastTrackedSearchKey = useSignal<string | null>(null);
   const nowMs = useSignal(new Date(initialNowIso).getTime());
 
   useEffect(() => {
@@ -76,6 +78,29 @@ export default function FeedItemsView(
       controller.abort();
     };
   }, [limit, normalizedQuery, selectedId]);
+
+  useEffect(() => {
+    if (!normalizedQuery) {
+      lastTrackedSearchKey.value = null;
+      return;
+    }
+
+    const key = `${selectedId ?? "all"}:${normalizedQuery}`;
+    const timeoutId = setTimeout(() => {
+      if (lastTrackedSearchKey.value === key) {
+        return;
+      }
+
+      lastTrackedSearchKey.value = key;
+      void trackEvent({
+        eventType: "search_performed",
+        path: globalThis.location?.pathname,
+        feedId: selectedId ?? undefined,
+      });
+    }, 1000);
+
+    return () => clearTimeout(timeoutId);
+  }, [normalizedQuery, selectedId]);
 
   const feedOptions = Object.entries(feedNames)
     .map(([id, name]) => ({ id, name }))
