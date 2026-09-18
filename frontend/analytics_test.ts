@@ -1,9 +1,13 @@
-import { assertEquals } from "@std/assert";
-
 import {
   normalizeAnalyticsPath,
   sanitizeAnalyticsReferrer,
 } from "./analytics.ts";
+
+function assertEquals<T>(actual: T, expected: T) {
+  if (actual !== expected) {
+    throw new Error(`Expected ${expected} but got ${actual}`);
+  }
+}
 
 Deno.test("normalizeAnalyticsPath falls back to root for invalid values", () => {
   assertEquals(normalizeAnalyticsPath(undefined), "/");
@@ -26,7 +30,10 @@ Deno.test("sanitizeAnalyticsReferrer keeps same-origin paths only", () => {
 Deno.test("sanitizeAnalyticsReferrer reduces cross-origin referrers to origin", () => {
   const currentUrl = new URL("https://rss.example/news");
   assertEquals(
-    sanitizeAnalyticsReferrer("https://search.example/results?q=rss", currentUrl),
+    sanitizeAnalyticsReferrer(
+      "https://search.example/results?q=rss",
+      currentUrl,
+    ),
     "https://search.example",
   );
 });

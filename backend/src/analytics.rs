@@ -164,8 +164,8 @@ async fn fetch_totals(pool: &PgPool, window: SummaryWindow) -> Result<AnalyticsT
         r#"
         SELECT
             COUNT(*) FILTER (WHERE event_type = 'page_view')::BIGINT AS page_views,
-            COUNT(DISTINCT visitor_id)::BIGINT AS unique_visitors,
-            COUNT(DISTINCT session_id)::BIGINT AS unique_sessions
+            COUNT(DISTINCT CASE WHEN event_type = 'page_view' THEN visitor_id END)::BIGINT AS unique_visitors,
+            COUNT(DISTINCT CASE WHEN event_type = 'page_view' THEN session_id END)::BIGINT AS unique_sessions
         FROM analytics_events
         WHERE occurred_at >= NOW() - ($1 * INTERVAL '1 day')
         "#,
@@ -277,6 +277,13 @@ async fn fetch_event_breakdown(
             COUNT(DISTINCT visitor_id)::BIGINT AS unique_visitors
         FROM analytics_events
         WHERE occurred_at >= NOW() - ($1 * INTERVAL '1 day')
+          AND event_type IN (
+              'page_view',
+              'item_open',
+              'search_performed',
+              'feed_added',
+              'feed_fetch_requested'
+          )
         GROUP BY event_type
         ORDER BY count DESC, event_type ASC
         "#,
@@ -288,21 +295,21 @@ async fn fetch_event_breakdown(
 
     Ok(rows
         .into_iter()
-        .filter_map(|row| {
+        .map(|row| {
             let event_type = match row.event_type.as_str() {
                 "page_view" => AnalyticsEventType::PageView,
                 "item_open" => AnalyticsEventType::ItemOpen,
                 "search_performed" => AnalyticsEventType::SearchPerformed,
                 "feed_added" => AnalyticsEventType::FeedAdded,
                 "feed_fetch_requested" => AnalyticsEventType::FeedFetchRequested,
-                _ => return None,
+                _ => unreachable!("query filters to known analytics event types"),
             };
 
-            Some(EventBreakdownStat {
+            EventBreakdownStat {
                 event_type,
                 count: row.count,
                 unique_visitors: row.unique_visitors,
-            })
+            }
         })
         .collect())
 }

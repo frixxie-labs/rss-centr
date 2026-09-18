@@ -1,13 +1,12 @@
 import { Head } from "fresh/runtime";
 
+import { renderAnalyticsEventType } from "../analyticsFormatting.ts";
 import { fetchAnalyticsSummary } from "../api.ts";
+import { AppNav } from "../components/AppNav.tsx";
 import { Header } from "../components/Header.tsx";
+import AnalyticsTracker from "../islands/AnalyticsTracker.tsx";
 import type { AnalyticsSummary } from "../types.ts";
 import { define } from "../utils.ts";
-
-function renderEventType(eventType: string): string {
-  return eventType.replaceAll("_", " ");
-}
 
 export const handler = define.handlers({
   async GET(_ctx) {
@@ -44,36 +43,7 @@ export default define.page<typeof handler>(function AnalyticsPage({ data }) {
         <title>RSS Centr - Analytics</title>
       </Head>
       <Header>
-        <a
-          href="/"
-          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
-        >
-          Timeline
-        </a>
-        <a
-          href="/news"
-          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
-        >
-          News
-        </a>
-        <a
-          href="/sources"
-          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
-        >
-          Sources
-        </a>
-        <a
-          href="/topics"
-          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
-        >
-          Topics
-        </a>
-        <a
-          href="/analytics"
-          class="rounded-md bg-sumi-ink3 px-2 py-1 text-sm text-fuji-white"
-        >
-          Analytics
-        </a>
+        <AppNav currentPath="/analytics" />
       </Header>
       <main class="mx-auto w-full min-w-0 max-w-4xl flex-1 px-4 py-5">
         {data.loadError && (
@@ -84,8 +54,9 @@ export default define.page<typeof handler>(function AnalyticsPage({ data }) {
         {!summary.enabled
           ? (
             <div class="rounded-lg border border-sumi-ink3 bg-sumi-ink2/60 p-4 text-sm text-fuji-gray">
-              Analytics is disabled. Set <code>ANALYTICS_ENABLED=true</code> on
-              the backend to collect visitor metrics.
+              Analytics is disabled. Set <code>ANALYTICS_ENABLED=true</code>
+              {" "}
+              on the backend to collect visitor metrics.
             </div>
           )
           : (
@@ -136,7 +107,9 @@ export default define.page<typeof handler>(function AnalyticsPage({ data }) {
                     <tbody>
                       {summary.daily_page_views.map((point) => (
                         <tr key={point.date} class="border-t border-sumi-ink3">
-                          <td class="px-4 py-2 text-fuji-white">{point.date}</td>
+                          <td class="px-4 py-2 text-fuji-white">
+                            {point.date}
+                          </td>
                           <td class="px-4 py-2 text-fuji-gray">
                             {point.page_views}
                           </td>
@@ -177,7 +150,9 @@ export default define.page<typeof handler>(function AnalyticsPage({ data }) {
                       <tbody>
                         {summary.top_pages.map((page) => (
                           <tr key={page.path} class="border-t border-sumi-ink3">
-                            <td class="px-4 py-2 text-fuji-white">{page.path}</td>
+                            <td class="px-4 py-2 text-fuji-white">
+                              {page.path}
+                            </td>
                             <td class="px-4 py-2 text-fuji-gray">
                               {page.page_views}
                             </td>
@@ -221,7 +196,7 @@ export default define.page<typeof handler>(function AnalyticsPage({ data }) {
                             class="border-t border-sumi-ink3"
                           >
                             <td class="px-4 py-2 text-fuji-white capitalize">
-                              {renderEventType(event.event_type)}
+                              {renderAnalyticsEventType(event.event_type)}
                             </td>
                             <td class="px-4 py-2 text-fuji-gray">
                               {event.count}
@@ -249,6 +224,7 @@ export default define.page<typeof handler>(function AnalyticsPage({ data }) {
             </div>
           )}
       </main>
+      <AnalyticsTracker path="/analytics" />
     </div>
   );
 });

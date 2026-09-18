@@ -26,13 +26,18 @@ export function shouldTrackAnalytics(): boolean {
   const navigatorWithLegacyDnt = globalThis.navigator as Navigator & {
     msDoNotTrack?: string;
   };
+  const globalWithDnt = globalThis as typeof globalThis & {
+    doNotTrack?: string;
+  };
   const doNotTrack = globalThis.navigator.doNotTrack ??
     navigatorWithLegacyDnt.msDoNotTrack ??
-    globalThis.doNotTrack;
+    globalWithDnt.doNotTrack;
   return doNotTrack !== "1";
 }
 
-export function normalizeAnalyticsPath(path: string | null | undefined): string {
+export function normalizeAnalyticsPath(
+  path: string | null | undefined,
+): string {
   const trimmed = path?.trim();
   if (!trimmed || !trimmed.startsWith("/")) {
     return "/";
@@ -92,7 +97,10 @@ export function getAnalyticsVisitorId(): string | null {
 }
 
 export function getAnalyticsSessionId(): string | null {
-  return getOrCreateStorageId(globalThis.sessionStorage, SESSION_ID_STORAGE_KEY);
+  return getOrCreateStorageId(
+    globalThis.sessionStorage,
+    SESSION_ID_STORAGE_KEY,
+  );
 }
 
 export async function trackEvent(input: AnalyticsEventInput): Promise<void> {

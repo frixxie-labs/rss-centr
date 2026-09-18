@@ -32,6 +32,7 @@ export default function FeedItemsView(
   const items = useSignal(sortByNewest(initialItems));
   const isLoading = useSignal(false);
   const loadError = useSignal(false);
+  const lastTrackedSearchKey = useSignal<string | null>(null);
   const nowMs = useSignal(new Date(initialNowIso).getTime());
 
   useEffect(() => {
@@ -60,13 +61,6 @@ export default function FeedItemsView(
           signal: controller.signal,
         });
         items.value = sortByNewest(result);
-        if (normalizedQuery) {
-          void trackEvent({
-            eventType: "search_performed",
-            path: globalThis.location?.pathname,
-            feedId: selectedId ?? undefined,
-          });
-        }
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") {
           return;
@@ -84,6 +78,29 @@ export default function FeedItemsView(
       controller.abort();
     };
   }, [limit, normalizedQuery, selectedId]);
+
+  useEffect(() => {
+    if (!normalizedQuery) {
+      lastTrackedSearchKey.value = null;
+      return;
+    }
+
+    const key = `${selectedId ?? "all"}:${normalizedQuery}`;
+    const timeoutId = setTimeout(() => {
+      if (lastTrackedSearchKey.value === key) {
+        return;
+      }
+
+      lastTrackedSearchKey.value = key;
+      void trackEvent({
+        eventType: "search_performed",
+        path: globalThis.location?.pathname,
+        feedId: selectedId ?? undefined,
+      });
+    }, 1000);
+
+    return () => clearTimeout(timeoutId);
+  }, [normalizedQuery, selectedId]);
 
   const feedOptions = Object.entries(feedNames)
     .map(([id, name]) => ({ id, name }))

@@ -5,6 +5,8 @@ import FeedManagement from "../islands/FeedManagement.tsx";
 import { getLogger } from "../logger.ts";
 import type { FeedSubscription } from "../types.ts";
 import { define } from "../utils.ts";
+import { AppNav } from "../components/AppNav.tsx";
+import AnalyticsTracker from "../islands/AnalyticsTracker.tsx";
 
 const log = getLogger("ssr");
 
@@ -31,36 +33,7 @@ export default define.page<typeof handler>(function SourcesPage({ data }) {
         <title>RSS Centr - Sources</title>
       </Head>
       <Header>
-        <a
-          href="/"
-          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
-        >
-          Timeline
-        </a>
-        <a
-          href="/news"
-          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
-        >
-          News
-        </a>
-        <a
-          href="/sources"
-          class="rounded-md bg-sumi-ink3 px-2 py-1 text-sm text-fuji-white"
-        >
-          Sources
-        </a>
-        <a
-          href="/topics"
-          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
-        >
-          Topics
-        </a>
-        <a
-          href="/analytics"
-          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
-        >
-          Analytics
-        </a>
+        <AppNav currentPath="/sources" />
       </Header>
       <main class="mx-auto w-full min-w-0 max-w-3xl flex-1">
         <FeedManagement
@@ -68,6 +41,7 @@ export default define.page<typeof handler>(function SourcesPage({ data }) {
           initialLoadError={data.loadError}
         />
       </main>
+      <AnalyticsTracker path="/sources" />
     </div>
   );
 });

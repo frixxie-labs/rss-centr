@@ -2,10 +2,14 @@ import { useEffect } from "preact/hooks";
 
 import { trackPageView } from "../analytics.ts";
 
-export default function AnalyticsTracker() {
+interface AnalyticsTrackerProps {
+  path: string;
+}
+
+export default function AnalyticsTracker({ path }: AnalyticsTrackerProps) {
   useEffect(() => {
-    void trackPageView();
-  }, []);
+    void trackPageView(path);
+  }, [path]);
 
   return null;
 }

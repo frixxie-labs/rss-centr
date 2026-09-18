@@ -1,5 +1,4 @@
 import { define } from "../utils.ts";
-import AnalyticsTracker from "../islands/AnalyticsTracker.tsx";
 
 export default define.page(function App({ Component, state }) {
   return (
@@ -13,7 +12,6 @@ export default define.page(function App({ Component, state }) {
       </head>
       <body class="bg-sumi-ink1 text-fuji-white min-h-screen">
         <Component />
-        <AnalyticsTracker />
       </body>
     </html>
   );
