@@ -42,7 +42,8 @@ function normalizeScriptSrc(scriptSrc: string | undefined): string | undefined {
     }
 
     const url = new URL(scriptSrc);
-    return url.protocol === "https:" && !url.username && !url.password
+    return url.protocol === "https:" && !url.username && !url.password &&
+        url.pathname.endsWith(".js")
       ? url.toString()
       : undefined;
   } catch {

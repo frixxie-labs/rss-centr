@@ -159,3 +159,24 @@ Deno.test("getAnalyticsScriptConfig - rejects credential-bearing https script UR
     scriptSrc: "https://plausible.io/js/script.js",
   });
 });
+
+Deno.test("getAnalyticsScriptConfig - rejects https URLs that do not target a script file", () => {
+  const config = getAnalyticsScriptConfig((name) => {
+    switch (name) {
+      case "ANALYTICS_PROVIDER":
+        return "umami";
+      case "ANALYTICS_WEBSITE_ID":
+        return "site-123";
+      case "ANALYTICS_SCRIPT_SRC":
+        return "https://analytics.example.com/dashboard";
+      default:
+        return undefined;
+    }
+  });
+
+  assertEquals(config, {
+    provider: "umami",
+    websiteId: "site-123",
+    scriptSrc: "https://cloud.umami.is/script.js",
+  });
+});
