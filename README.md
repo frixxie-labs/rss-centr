@@ -141,6 +141,49 @@ deno task start    # serve built app
 deno task check    # fmt --check + lint + type check
 ```
 
+### Optional visitor analytics
+
+RSS Centr can optionally load a privacy-focused analytics script from the
+frontend. This is disabled by default and does not add any first-party visitor
+database or raw IP storage inside RSS Centr itself.
+
+Supported providers:
+
+- **Plausible** (recommended for cookie-free page views, unique visitors, top
+  pages, and self-hosting)
+- **Umami** (also works for self-hosted page-view and visitor dashboards)
+
+Set frontend environment variables before `deno task dev` / `deno task start`:
+
+```bash
+# Plausible Cloud or self-hosted Plausible
+export ANALYTICS_PROVIDER=plausible
+export ANALYTICS_DOMAIN=your-rss-centr-domain.example.com
+# Optional for self-hosting or a reverse proxy:
+# export ANALYTICS_SCRIPT_SRC=https://analytics.example.com/js/script.js
+# or:
+# export ANALYTICS_SCRIPT_SRC=/js/script.js
+
+# Or Umami Cloud / self-hosted Umami
+export ANALYTICS_PROVIDER=umami
+export ANALYTICS_WEBSITE_ID=your-website-id
+# Optional for self-hosting:
+# export ANALYTICS_SCRIPT_SRC=https://analytics.example.com/script.js
+# or:
+# export ANALYTICS_SCRIPT_SRC=/script.js
+```
+
+With either provider enabled, RSS Centr will automatically emit page views for
+every frontend route via the shared Fresh app shell, allowing you to see:
+
+- page views per day
+- estimated unique visitors over time
+- most-visited pages
+
+This keeps analytics optional and compatible with self-hosted deployments while
+letting the analytics provider handle privacy controls, dashboards, and bot
+filtering.
+
 ### Backend CLI Options
 
 ```
