@@ -63,6 +63,12 @@ export default define.page<typeof handler>(function TopicsPage({ data }) {
         >
           Topics
         </a>
+        <a
+          href="/analytics"
+          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
+        >
+          Analytics
+        </a>
       </Header>
       <main class="mx-auto w-full min-w-0 max-w-3xl flex-1">
         {data.loadError && (

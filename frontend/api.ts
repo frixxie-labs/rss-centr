@@ -1,5 +1,6 @@
 import { BACKEND_URL } from "./backendUrl.ts";
 import type {
+  AnalyticsSummary,
   FeedItem,
   FeedItemDetail,
   FeedSubscription,
@@ -185,4 +186,12 @@ export async function fetchRecentIndex(): Promise<FeedTitleIndexEntry[]> {
       occurrences: item.occurences,
     })),
   }));
+}
+
+export async function fetchAnalyticsSummary(days = 7): Promise<AnalyticsSummary> {
+  const res = await fetch(`${apiUrl("analytics/summary")}?days=${days}`);
+  if (!res.ok) {
+    await throwRequestError("Failed to fetch analytics summary", res);
+  }
+  return await res.json();
 }

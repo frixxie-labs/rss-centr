@@ -58,3 +58,43 @@ export interface FeedTitleIndexEntry {
   tf_idf: number;
   items: FeedTitleIndexItem[];
 }
+
+export type AnalyticsEventType =
+  | "page_view"
+  | "item_open"
+  | "search_performed"
+  | "feed_added"
+  | "feed_fetch_requested";
+
+export interface AnalyticsTotals {
+  page_views: number;
+  unique_visitors: number;
+  unique_sessions: number;
+}
+
+export interface DailyAnalyticsPoint {
+  date: string;
+  page_views: number;
+  unique_visitors: number;
+}
+
+export interface TopPageStat {
+  path: string;
+  page_views: number;
+  unique_visitors: number;
+}
+
+export interface EventBreakdownStat {
+  event_type: AnalyticsEventType;
+  count: number;
+  unique_visitors: number;
+}
+
+export interface AnalyticsSummary {
+  enabled: boolean;
+  window_days: number;
+  totals: AnalyticsTotals;
+  daily_page_views: DailyAnalyticsPoint[];
+  top_pages: TopPageStat[];
+  event_breakdown: EventBreakdownStat[];
+}

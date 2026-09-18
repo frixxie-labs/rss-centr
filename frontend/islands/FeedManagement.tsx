@@ -1,4 +1,5 @@
 import { useSignal } from "@preact/signals";
+import { trackEvent } from "../analytics.ts";
 import {
   createFeed,
   deleteFeed,
@@ -115,10 +116,15 @@ export default function FeedManagement(
     successMessage.value = null;
 
     try {
-      await createFeed(url);
+      const createdFeed = await createFeed(url);
       urlInput.value = "";
       await refreshFeeds();
       successMessage.value = "Source saved.";
+      void trackEvent({
+        eventType: "feed_added",
+        path: globalThis.location?.pathname,
+        feedId: createdFeed.id,
+      });
     } catch (err) {
       errorMessage.value = err instanceof Error
         ? err.message
@@ -163,6 +169,11 @@ export default function FeedManagement(
     try {
       await queueFeedIngest(feedId);
       successMessage.value = "Fetch queued.";
+      void trackEvent({
+        eventType: "feed_fetch_requested",
+        path: globalThis.location?.pathname,
+        feedId,
+      });
     } catch (err) {
       errorMessage.value = err instanceof Error
         ? err.message

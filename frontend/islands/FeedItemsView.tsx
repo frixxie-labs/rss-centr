@@ -1,5 +1,6 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
+import { trackEvent } from "../analytics.ts";
 import { fetchLatestItems } from "../api.ts";
 import { FeedItemCard } from "../components/FeedItemCard.tsx";
 import { sortByNewest } from "../feedItemOrdering.ts";
@@ -59,6 +60,13 @@ export default function FeedItemsView(
           signal: controller.signal,
         });
         items.value = sortByNewest(result);
+        if (normalizedQuery) {
+          void trackEvent({
+            eventType: "search_performed",
+            path: globalThis.location?.pathname,
+            feedId: selectedId ?? undefined,
+          });
+        }
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") {
           return;

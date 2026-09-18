@@ -18,6 +18,7 @@ use utoipa::OpenApi;
 
 use crate::events::NewFeedItemEvent;
 
+mod analytics;
 mod error;
 mod feed_title_index;
 mod feed_update_queue;
@@ -58,6 +59,7 @@ pub fn create_router(
     pool: PgPool,
     metrics_handler: PrometheusHandle,
     new_item_tx: broadcast::Sender<NewFeedItemEvent>,
+    analytics_enabled: bool,
 ) -> Router {
     let feeds = Router::new()
         .route("/feeds", get(feeds::fetch_feeds))
@@ -98,6 +100,14 @@ pub fn create_router(
         .route("/items/{item_id}/detail", get(items::fetch_item_detail))
         .with_state(pool.clone());
 
+    let analytics_routes = Router::new()
+        .route("/analytics/events", post(analytics::create_event))
+        .route("/analytics/summary", get(analytics::get_summary))
+        .with_state(analytics::AnalyticsState {
+            pool: pool.clone(),
+            enabled: analytics_enabled,
+        });
+
     let item_events = Router::new()
         .route("/items/stream", get(sse::stream_new_items))
         .with_state((pool.clone(), new_item_tx));
@@ -105,6 +115,7 @@ pub fn create_router(
     let api_routes = Router::new()
         .nest("/api", feeds)
         .nest("/api", items)
+        .nest("/api", analytics_routes)
         .nest("/api", item_events)
         .layer(
             ServiceBuilder::new()
@@ -169,6 +180,8 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
         items::fetch_latest_items,
         items::fetch_item_by_id,
         items::fetch_item_detail,
+        analytics::create_event,
+        analytics::get_summary,
     ),
     components(
         schemas(
@@ -186,6 +199,14 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
             crate::feed::feed_item::FeedItemDetail,
             crate::feed::feed_title_index::FeedTitleIndexEntry,
             crate::feed::feed_title_index::FeedTitleIndexItem,
+            crate::analytics::AnalyticsEventType,
+            crate::analytics::AnalyticsSummary,
+            crate::analytics::AnalyticsTotals,
+            crate::analytics::DailyAnalyticsPoint,
+            crate::analytics::TopPageStat,
+            crate::analytics::EventBreakdownStat,
+            analytics::AnalyticsEventRequest,
+            analytics::AnalyticsEventAccepted,
             ping::PingResponse,
             health::HealthResponse,
             health::HealthChecks,
@@ -196,6 +217,7 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
         (name = "feeds", description = "Feed subscription endpoints"),
         (name = "feed update queue", description = "Worker feed update queue endpoints"),
         (name = "items", description = "Feed item endpoints"),
+        (name = "analytics", description = "Product analytics endpoints"),
         (name = "system", description = "System health and metrics endpoints"),
     )
 )]

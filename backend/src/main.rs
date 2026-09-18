@@ -11,6 +11,7 @@ use crate::{
     handlers::create_router,
 };
 
+pub mod analytics;
 pub mod events;
 pub mod feed;
 pub mod handlers;
@@ -66,6 +67,9 @@ pub struct Opts {
 
     #[arg(short, long, default_value = "info")]
     log_level: LogLevel,
+
+    #[arg(long, env = "ANALYTICS_ENABLED", default_value_t = false)]
+    analytics_enabled: bool,
 }
 
 #[tokio::main]
@@ -107,7 +111,7 @@ async fn main() -> Result<()> {
             .await
     });
 
-    let app = create_router(pool, metrics_handler, new_item_tx);
+    let app = create_router(pool, metrics_handler, new_item_tx, opts.analytics_enabled);
 
     let listener = TcpListener::bind(&opts.host).await?;
     tokio::select! {

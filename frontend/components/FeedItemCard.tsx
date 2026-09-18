@@ -1,4 +1,5 @@
 import type { FeedItem } from "../types.ts";
+import { trackEvent } from "../analytics.ts";
 
 export function timeAgo(dateStr: string, nowMs: number): string {
   const date = new Date(dateStr);
@@ -69,6 +70,14 @@ export function FeedItemCard(
       href={item.url}
       target="_blank"
       rel="noopener noreferrer"
+      onClick={() => {
+        void trackEvent({
+          eventType: "item_open",
+          path: globalThis.location?.pathname,
+          feedId: item.feed_id,
+          itemId: item.id,
+        });
+      }}
       class={`block min-w-0 px-4 py-3 border-b border-sumi-ink3 hover:bg-sumi-ink2 transition-colors ${
         isNew ? "bg-wave-blue1/50 border-l-2 border-l-carp-yellow" : ""
       }`}
