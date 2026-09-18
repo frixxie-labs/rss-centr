@@ -14,12 +14,14 @@ export default define.page(function App({ Component, state }) {
           <script
             defer
             data-domain={ANALYTICS_SCRIPT_CONFIG.domain}
+            data-spa="auto"
             src={ANALYTICS_SCRIPT_CONFIG.scriptSrc}
           />
         )}
         {ANALYTICS_SCRIPT_CONFIG?.provider === "umami" && (
           <script
             defer
+            data-spa="auto"
             data-website-id={ANALYTICS_SCRIPT_CONFIG.websiteId}
             src={ANALYTICS_SCRIPT_CONFIG.scriptSrc}
           />
