@@ -136,3 +136,26 @@ Deno.test("getAnalyticsScriptConfig - rejects protocol-relative and non-normaliz
     scriptSrc: "https://plausible.io/js/script.js",
   });
 });
+
+Deno.test("getAnalyticsScriptConfig - rejects credential-bearing https script URLs", () => {
+  const credentialUrl = "https://" + "user:pass@" +
+    "analytics.example.com/script.js";
+  const config = getAnalyticsScriptConfig((name) => {
+    switch (name) {
+      case "ANALYTICS_PROVIDER":
+        return "plausible";
+      case "ANALYTICS_DOMAIN":
+        return "rss.example.com";
+      case "ANALYTICS_SCRIPT_SRC":
+        return credentialUrl;
+      default:
+        return undefined;
+    }
+  });
+
+  assertEquals(config, {
+    provider: "plausible",
+    domain: "rss.example.com",
+    scriptSrc: "https://plausible.io/js/script.js",
+  });
+});

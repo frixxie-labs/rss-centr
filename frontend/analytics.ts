@@ -42,7 +42,9 @@ function normalizeScriptSrc(scriptSrc: string | undefined): string | undefined {
     }
 
     const url = new URL(scriptSrc);
-    return url.protocol === "https:" ? url.toString() : undefined;
+    return url.protocol === "https:" && !url.username && !url.password
+      ? url.toString()
+      : undefined;
   } catch {
     return undefined;
   }
