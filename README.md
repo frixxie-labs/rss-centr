@@ -16,6 +16,7 @@ A lightweight, self-hostable RSS/Atom aggregator that:
 - Pushes live updates to the browser using Server-Sent Events (SSE)
 - Supports full-text search across items and feed metadata
 - Exposes Prometheus metrics and an OpenAPI spec
+- Offers optional first-party visitor analytics
 - Uses Fresh 2 for SSR + interactive islands
 
 ### Architecture
@@ -88,6 +89,7 @@ docker compose up -d db
 
 # Backend (listens on http://localhost:8080)
 export DATABASE_URL='postgres://postgres:postgres@localhost:5432/rss_centr'
+export ANALYTICS_ENABLED=true
 cargo run --manifest-path backend/Cargo.toml
 
 # Worker (leases due feeds from the backend)
@@ -232,6 +234,17 @@ GET    /metrics                      Prometheus metrics
 GET    /openapi                      OpenAPI JSON spec
 ```
 
+### Analytics
+
+When `ANALYTICS_ENABLED=true` is set on the backend, RSS Centr records
+privacy-conscious first-party analytics using browser-generated opaque visitor
+and session identifiers. The frontend also respects `Do Not Track`.
+
+```
+POST   /api/analytics/events         Ingest first-party analytics events
+GET    /api/analytics/summary        Daily views, unique visitors, top pages
+```
+
 Backend, worker, and frontend logs are emitted as newline-delimited JSON. When
 forwarding them to VictoriaLogs' `/insert/jsonline` endpoint, set
 `_time_field=timestamp`
@@ -246,9 +259,10 @@ feed identifiers as stream fields.
 | Path | Description |
 |------|-------------|
 | `/` | Timeline with live SSE updates |
-| `/items` | All items view (limit 500) |
-| `/feeds` | Feed management (add/enable/disable/delete) |
-| `/index-words` | Word cloud from title index |
+| `/news` | All items view (limit 500) |
+| `/sources` | Feed management (add/enable/disable/delete) |
+| `/topics` | Word cloud from title index |
+| `/analytics` | Daily views, unique visitors, and top pages |
 
 ---
 

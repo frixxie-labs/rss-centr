@@ -23,8 +23,11 @@ export function shouldTrackAnalytics(): boolean {
     return false;
   }
 
+  const navigatorWithLegacyDnt = globalThis.navigator as Navigator & {
+    msDoNotTrack?: string;
+  };
   const doNotTrack = globalThis.navigator.doNotTrack ??
-    globalThis.navigator.msDoNotTrack ??
+    navigatorWithLegacyDnt.msDoNotTrack ??
     globalThis.doNotTrack;
   return doNotTrack !== "1";
 }

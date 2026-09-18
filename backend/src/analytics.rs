@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use chrono::{NaiveDate, Utc};
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
 use utoipa::ToSchema;
@@ -355,8 +355,8 @@ mod tests {
                 referrer: None,
                 visitor_id: Some("visitor-b".to_string()),
                 session_id: Some("session-c".to_string()),
-                feed_id: Some(1),
-                item_id: Some(2),
+                feed_id: None,
+                item_id: None,
             },
         )
         .await

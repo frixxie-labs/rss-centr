@@ -9,8 +9,8 @@ use tracing::{instrument, warn};
 use utoipa::ToSchema;
 
 use crate::analytics::{
-    AnalyticsEventType, AnalyticsSummary, MAX_SUMMARY_DAYS, NewAnalyticsEvent, SummaryWindow,
-    disabled_summary, fetch_summary, record_event,
+    AnalyticsEventType, AnalyticsSummary, NewAnalyticsEvent, SummaryWindow, disabled_summary,
+    fetch_summary, record_event,
 };
 
 use super::error::HandlerError;
@@ -166,6 +166,9 @@ mod tests {
 
     #[test]
     fn test_summary_days_cap_matches_documented_limit() {
-        assert_eq!(SummaryWindow::new(Some(MAX_SUMMARY_DAYS + 50)).days, MAX_SUMMARY_DAYS);
+        assert_eq!(
+            SummaryWindow::new(Some(crate::analytics::MAX_SUMMARY_DAYS + 50)).days,
+            crate::analytics::MAX_SUMMARY_DAYS
+        );
     }
 }
