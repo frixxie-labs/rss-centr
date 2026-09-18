@@ -85,7 +85,9 @@ pub struct SummaryWindow {
 
 impl SummaryWindow {
     pub fn new(days: Option<i64>) -> Self {
-        let days = days.unwrap_or(DEFAULT_SUMMARY_DAYS).clamp(1, MAX_SUMMARY_DAYS);
+        let days = days
+            .unwrap_or(DEFAULT_SUMMARY_DAYS)
+            .clamp(1, MAX_SUMMARY_DAYS);
         Self { days }
     }
 }
@@ -180,7 +182,10 @@ async fn fetch_totals(pool: &PgPool, window: SummaryWindow) -> Result<AnalyticsT
     })
 }
 
-async fn fetch_daily_page_views(pool: &PgPool, window: SummaryWindow) -> Result<Vec<DailyAnalyticsPoint>> {
+async fn fetch_daily_page_views(
+    pool: &PgPool,
+    window: SummaryWindow,
+) -> Result<Vec<DailyAnalyticsPoint>> {
     #[derive(FromRow)]
     struct DailyRow {
         date: NaiveDate,
@@ -253,7 +258,10 @@ async fn fetch_top_pages(pool: &PgPool, window: SummaryWindow) -> Result<Vec<Top
         .collect())
 }
 
-async fn fetch_event_breakdown(pool: &PgPool, window: SummaryWindow) -> Result<Vec<EventBreakdownStat>> {
+async fn fetch_event_breakdown(
+    pool: &PgPool,
+    window: SummaryWindow,
+) -> Result<Vec<EventBreakdownStat>> {
     #[derive(FromRow)]
     struct EventBreakdownRow {
         event_type: String,
@@ -362,7 +370,9 @@ mod tests {
         .await
         .unwrap();
 
-        let summary = fetch_summary(&pool, SummaryWindow::new(Some(7))).await.unwrap();
+        let summary = fetch_summary(&pool, SummaryWindow::new(Some(7)))
+            .await
+            .unwrap();
 
         assert!(summary.enabled);
         assert_eq!(summary.window_days, 7);

@@ -127,7 +127,9 @@ pub async fn get_summary(
 fn normalize_path(path: &str) -> Result<String, HandlerError> {
     let path = path.trim();
     if path.is_empty() || !path.starts_with('/') {
-        return Err(HandlerError::bad_request("analytics path must start with /"));
+        return Err(HandlerError::bad_request(
+            "analytics path must start with /",
+        ));
     }
     if path.len() > 255 {
         return Err(HandlerError::bad_request("analytics path is too long"));
@@ -159,9 +161,15 @@ mod tests {
 
     #[test]
     fn test_normalize_optional_text_trims_and_limits() {
-        assert_eq!(normalize_optional_text(Some("  ref  ".to_string()), 10), Some("ref".to_string()));
+        assert_eq!(
+            normalize_optional_text(Some("  ref  ".to_string()), 10),
+            Some("ref".to_string())
+        );
         assert_eq!(normalize_optional_text(Some("".to_string()), 10), None);
-        assert_eq!(normalize_optional_text(Some("abcdef".to_string()), 3), Some("abc".to_string()));
+        assert_eq!(
+            normalize_optional_text(Some("abcdef".to_string()), 3),
+            Some("abc".to_string())
+        );
     }
 
     #[test]
