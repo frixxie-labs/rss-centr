@@ -77,3 +77,62 @@ Deno.test("getAnalyticsScriptConfig - falls back when custom script URL is unsaf
     scriptSrc: "https://cloud.umami.is/script.js",
   });
 });
+
+Deno.test("getAnalyticsScriptConfig - accepts a normalized root-relative script path", () => {
+  const config = getAnalyticsScriptConfig((name) => {
+    switch (name) {
+      case "ANALYTICS_PROVIDER":
+        return "umami";
+      case "ANALYTICS_WEBSITE_ID":
+        return "site-123";
+      case "ANALYTICS_SCRIPT_SRC":
+        return "/js/analytics.js";
+      default:
+        return undefined;
+    }
+  });
+
+  assertEquals(config, {
+    provider: "umami",
+    websiteId: "site-123",
+    scriptSrc: "/js/analytics.js",
+  });
+});
+
+Deno.test("getAnalyticsScriptConfig - rejects protocol-relative and non-normalized script paths", () => {
+  const protocolRelative = getAnalyticsScriptConfig((name) => {
+    switch (name) {
+      case "ANALYTICS_PROVIDER":
+        return "plausible";
+      case "ANALYTICS_DOMAIN":
+        return "rss.example.com";
+      case "ANALYTICS_SCRIPT_SRC":
+        return "//evil.example.com/script.js";
+      default:
+        return undefined;
+    }
+  });
+  const nonNormalized = getAnalyticsScriptConfig((name) => {
+    switch (name) {
+      case "ANALYTICS_PROVIDER":
+        return "plausible";
+      case "ANALYTICS_DOMAIN":
+        return "rss.example.com";
+      case "ANALYTICS_SCRIPT_SRC":
+        return "/../evil.js";
+      default:
+        return undefined;
+    }
+  });
+
+  assertEquals(protocolRelative, {
+    provider: "plausible",
+    domain: "rss.example.com",
+    scriptSrc: "https://plausible.io/js/script.js",
+  });
+  assertEquals(nonNormalized, {
+    provider: "plausible",
+    domain: "rss.example.com",
+    scriptSrc: "https://plausible.io/js/script.js",
+  });
+});

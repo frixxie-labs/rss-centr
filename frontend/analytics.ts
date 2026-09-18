@@ -31,11 +31,16 @@ function normalizeScriptSrc(scriptSrc: string | undefined): string | undefined {
     return undefined;
   }
 
-  if (scriptSrc.startsWith("/") && !scriptSrc.startsWith("//")) {
-    return scriptSrc;
-  }
-
   try {
+    if (scriptSrc.startsWith("/")) {
+      const url = new URL(scriptSrc, "https://rss-centr.local");
+      const isConcreteScriptPath = scriptSrc === url.pathname &&
+        url.pathname.endsWith(".js");
+      return url.origin === "https://rss-centr.local" && isConcreteScriptPath
+        ? url.pathname
+        : undefined;
+    }
+
     const url = new URL(scriptSrc);
     return url.protocol === "https:" ? url.toString() : undefined;
   } catch {
