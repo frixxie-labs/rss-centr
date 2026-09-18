@@ -1,3 +1,4 @@
+import { ANALYTICS_SCRIPT_CONFIG } from "../analytics.ts";
 import { define } from "../utils.ts";
 
 export default define.page(function App({ Component, state }) {
@@ -9,6 +10,20 @@ export default define.page(function App({ Component, state }) {
         <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
         <link rel="alternate icon" href="/favicon.ico" />
         <title>{state.title}</title>
+        {ANALYTICS_SCRIPT_CONFIG?.provider === "plausible" && (
+          <script
+            defer
+            data-domain={ANALYTICS_SCRIPT_CONFIG.domain}
+            src={ANALYTICS_SCRIPT_CONFIG.scriptSrc}
+          />
+        )}
+        {ANALYTICS_SCRIPT_CONFIG?.provider === "umami" && (
+          <script
+            defer
+            data-website-id={ANALYTICS_SCRIPT_CONFIG.websiteId}
+            src={ANALYTICS_SCRIPT_CONFIG.scriptSrc}
+          />
+        )}
       </head>
       <body class="bg-sumi-ink1 text-fuji-white min-h-screen">
         <Component />

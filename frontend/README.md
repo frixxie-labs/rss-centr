@@ -21,3 +21,16 @@ deno task dev
 ```
 
 This will watch the project directory and restart as necessary.
+
+### Optional analytics
+
+The frontend can include a privacy-focused analytics script when configured with
+environment variables. This is disabled by default.
+
+- `ANALYTICS_PROVIDER=plausible` with `ANALYTICS_DOMAIN=your-domain`
+- `ANALYTICS_PROVIDER=umami` with `ANALYTICS_WEBSITE_ID=your-site-id`
+- `ANALYTICS_SCRIPT_SRC=...` to override the default hosted script URL for
+  self-hosting
+
+Because the script is injected into the shared app shell, page views are tracked
+across the main RSS Centr pages without changing backend behavior.
