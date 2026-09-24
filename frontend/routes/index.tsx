@@ -3,6 +3,7 @@ import { define } from "../utils.ts";
 import { fetchFeeds, fetchLatestItems } from "../api.ts";
 import { Header } from "../components/Header.tsx";
 import Timeline, { MAX_TIMELINE_ITEMS } from "../islands/Timeline.tsx";
+import DailySummary from "../islands/DailySummary.tsx";
 import type { FeedItem } from "../types.ts";
 import { getLogger } from "../logger.ts";
 
@@ -64,6 +65,7 @@ export default define.page<typeof handler>(function Home({ data }) {
         </a>
       </Header>
       <main class="mx-auto w-full min-w-0 max-w-2xl flex-1">
+        <DailySummary />
         {data.loadError && (
           <div class="mx-4 my-4 rounded-md border border-ronin-yellow/50 bg-winter-yellow/50 px-3 py-2 text-sm text-ronin-yellow">
             Could not load the latest news. Showing available data and waiting

@@ -20,6 +20,13 @@ export interface FeedItemDetail {
   published_at: string;
 }
 
+export interface DailySummary {
+  summary: string;
+  articles_sampled: number;
+  articles_available: number;
+  generated_at: string;
+}
+
 export interface FeedSubscription {
   id: number;
   url: string;

@@ -18,6 +18,7 @@ use utoipa::OpenApi;
 
 use crate::events::NewFeedItemEvent;
 
+mod daily_summary;
 mod error;
 mod feed_title_index;
 mod feed_update_queue;
@@ -102,10 +103,23 @@ pub fn create_router(
         .route("/items/stream", get(sse::stream_new_items))
         .with_state((pool.clone(), new_item_tx));
 
+    let summary_state = daily_summary::SummaryState::new(pool.clone());
+    let daily_summary = Router::new()
+        .route("/items/summary", get(daily_summary::fetch_daily_summary))
+        .with_state(summary_state.clone());
+
+    let summary_refresh = Router::new()
+        .route(
+            "/items/summary/refresh",
+            post(daily_summary::refresh_daily_summary),
+        )
+        .with_state(summary_state);
+
     let api_routes = Router::new()
         .nest("/api", feeds)
         .nest("/api", items)
         .nest("/api", item_events)
+        .nest("/api", daily_summary)
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
@@ -118,11 +132,14 @@ pub fn create_router(
     // keeps them unreachable from the public internet-facing surface (the
     // backend service itself is not otherwise publicly exposed; only the
     // frontend is).
-    let internal_routes = Router::new().nest("/internal", feed_update_queue).layer(
-        ServiceBuilder::new()
-            .layer(TraceLayer::new_for_http())
-            .layer(middleware::from_fn(profile_endpoint)),
-    );
+    let internal_routes = Router::new()
+        .nest("/internal", feed_update_queue)
+        .nest("/internal", summary_refresh)
+        .layer(
+            ServiceBuilder::new()
+                .layer(TraceLayer::new_for_http())
+                .layer(middleware::from_fn(profile_endpoint)),
+        );
 
     let health_routes = Router::new()
         .route("/status/health", get(health::health))
@@ -169,6 +186,8 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
         items::fetch_latest_items,
         items::fetch_item_by_id,
         items::fetch_item_detail,
+        daily_summary::fetch_daily_summary,
+        daily_summary::refresh_daily_summary,
     ),
     components(
         schemas(
@@ -186,6 +205,7 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
             crate::feed::feed_item::FeedItemDetail,
             crate::feed::feed_title_index::FeedTitleIndexEntry,
             crate::feed::feed_title_index::FeedTitleIndexItem,
+            daily_summary::DailySummary,
             ping::PingResponse,
             health::HealthResponse,
             health::HealthChecks,

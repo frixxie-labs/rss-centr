@@ -1,10 +1,21 @@
 import { BACKEND_URL } from "./backendUrl.ts";
 import type {
+  DailySummary,
   FeedItem,
   FeedItemDetail,
   FeedSubscription,
   FeedTitleIndexEntry,
 } from "./types.ts";
+
+export async function fetchDailySummary(
+  signal?: AbortSignal,
+): Promise<DailySummary> {
+  const res = await fetch(apiUrl("items/summary"), { signal });
+  if (!res.ok) {
+    await throwRequestError("Failed to fetch daily summary", res);
+  }
+  return await res.json() as DailySummary;
+}
 
 interface BackendFeedTitleIndexItem {
   feed_src_id: number;
