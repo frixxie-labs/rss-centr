@@ -3,6 +3,7 @@ mod feed_fetcher;
 mod feed_mapper;
 mod queue_client;
 mod runner;
+mod summary_refresh;
 mod telemetry;
 
 use std::net::SocketAddr;
@@ -52,6 +53,9 @@ async fn main() -> Result<()> {
         .timeout(Duration::from_secs(20))
         .build()
         .context("failed to build HTTP client")?;
+    if !opts.once {
+        tokio::spawn(summary_refresh::run(opts.backend_url.clone(), http.clone()));
+    }
     let queue = QueueClient::new(opts.backend_url, http.clone());
     let idle_sleep = Duration::from_secs(opts.idle_sleep_seconds);
 
