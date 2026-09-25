@@ -37,7 +37,7 @@ export default function DailySummary() {
       </h2>
       {loading.value && (
         <p role="status" class="mt-2 text-sm text-fuji-gray">
-          Generating overview…
+          Loading latest overview…
         </p>
       )}
       {error.value && (
@@ -45,17 +45,22 @@ export default function DailySummary() {
           Could not load the overview.
         </p>
       )}
+      {!loading.value && !error.value && !data.value && (
+        <p role="status" class="mt-2 text-sm text-fuji-gray">
+          No summary is available yet. The next scheduled generation will appear
+          here.
+        </p>
+      )}
       {data.value && (
         <>
           <p class="mt-2 whitespace-pre-line text-sm leading-relaxed text-fuji-gray">
             {data.value.summary}
           </p>
-          {data.value.articles_sampled > 0 && (
-            <p class="mt-3 text-xs text-katana-gray">
-              AI overview based on {data.value.articles_sampled}{" "}
-              articles collected in the last 24 hours.
-            </p>
-          )}
+          <p class="mt-3 text-xs text-katana-gray">
+            Generated {new Date(data.value.generated_at).toLocaleString()} using
+            {" "}
+            {data.value.model} · {data.value.feed_ids.length} sources
+          </p>
         </>
       )}
     </section>

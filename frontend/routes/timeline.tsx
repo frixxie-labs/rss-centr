@@ -1,42 +1,41 @@
 import { Head } from "fresh/runtime";
-import { fetchFeeds, fetchRecentIndex } from "../api.ts";
-import { Header } from "../components/Header.tsx";
-import WordCloud from "../islands/WordCloud.tsx";
-import { getLogger } from "../logger.ts";
-import type { FeedTitleIndexEntry } from "../types.ts";
 import { define } from "../utils.ts";
+import { fetchFeeds, fetchLatestItems } from "../api.ts";
+import { Header } from "../components/Header.tsx";
+import Timeline, { MAX_TIMELINE_ITEMS } from "../islands/Timeline.tsx";
+import type { FeedItem } from "../types.ts";
+import { getLogger } from "../logger.ts";
 
 const log = getLogger("ssr");
 
 export const handler = define.handlers({
   async GET(_ctx) {
-    let entries: FeedTitleIndexEntry[] = [];
+    let items: FeedItem[] = [];
     let feedNames: Record<number, string> = {};
     let loadError = false;
-
+    const initialNowIso = new Date().toISOString();
     try {
-      const [indexResult, feeds] = await Promise.all([
-        fetchRecentIndex(),
+      const [itemsResult, feeds] = await Promise.all([
+        fetchLatestItems({ limit: MAX_TIMELINE_ITEMS }),
         fetchFeeds(),
       ]);
-      entries = indexResult;
+      items = itemsResult;
       feedNames = Object.fromEntries(
         feeds.map((f) => [f.id, f.title ?? f.url]),
       );
     } catch (err) {
-      log.error("Failed to fetch topics for SSR", err);
+      log.error("Failed to fetch data for SSR", err);
       loadError = true;
     }
-
-    return { data: { entries, feedNames, loadError } };
+    return { data: { items, feedNames, loadError, initialNowIso } };
   },
 });
 
-export default define.page<typeof handler>(function TopicsPage({ data }) {
+export default define.page<typeof handler>(function Home({ data }) {
   return (
     <div class="min-h-screen flex flex-col">
       <Head>
-        <title>RSS Centr - Topics</title>
+        <title>RSS Centr - Timeline</title>
       </Head>
       <Header>
         <a
@@ -47,7 +46,7 @@ export default define.page<typeof handler>(function TopicsPage({ data }) {
         </a>
         <a
           href="/timeline"
-          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
+          class="rounded-md bg-sumi-ink3 px-2 py-1 text-sm text-fuji-white"
         >
           Timeline
         </a>
@@ -65,20 +64,22 @@ export default define.page<typeof handler>(function TopicsPage({ data }) {
         </a>
         <a
           href="/topics"
-          class="rounded-md bg-sumi-ink3 px-2 py-1 text-sm text-fuji-white"
+          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
         >
           Topics
         </a>
       </Header>
-      <main class="mx-auto w-full min-w-0 max-w-3xl flex-1">
+      <main class="mx-auto w-full min-w-0 max-w-2xl flex-1">
         {data.loadError && (
           <div class="mx-4 my-4 rounded-md border border-ronin-yellow/50 bg-winter-yellow/50 px-3 py-2 text-sm text-ronin-yellow">
-            Could not load topics.
+            Could not load the latest news. Showing available data and waiting
+            for live updates.
           </div>
         )}
-        <WordCloud
-          initialEntries={data.entries}
+        <Timeline
+          initialItems={data.items}
           feedNames={data.feedNames}
+          initialNowIso={data.initialNowIso}
         />
       </main>
     </div>

@@ -21,10 +21,12 @@ export interface FeedItemDetail {
 }
 
 export interface DailySummary {
+  id: number;
   summary: string;
-  articles_sampled: number;
-  articles_available: number;
+  feed_ids: number[];
+  feed_item_ids: number[];
   generated_at: string;
+  model: string;
 }
 
 export interface FeedSubscription {

@@ -35,6 +35,12 @@ export default define.page<typeof handler>(function SourcesPage({ data }) {
           href="/"
           class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
         >
+          AI Summary
+        </a>
+        <a
+          href="/timeline"
+          class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
+        >
           Timeline
         </a>
         <a
