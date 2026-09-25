@@ -9,8 +9,9 @@ import type {
 
 export async function fetchDailySummary(
   signal?: AbortSignal,
-): Promise<DailySummary> {
+): Promise<DailySummary | null> {
   const res = await fetch(apiUrl("items/summary"), { signal });
+  if (res.status === 404) return null;
   if (!res.ok) {
     await throwRequestError("Failed to fetch daily summary", res);
   }

@@ -13,7 +13,7 @@ export function Header({ children }: HeaderProps) {
         </h1>
       </div>
       {children && (
-        <nav class="flex w-full items-center justify-between gap-1 sm:w-auto sm:justify-start sm:gap-2">
+        <nav class="flex w-full flex-wrap items-center justify-between gap-1 sm:w-auto sm:justify-start sm:gap-2">
           {children}
         </nav>
       )}
