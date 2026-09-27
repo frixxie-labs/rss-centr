@@ -35,7 +35,7 @@ fn entry_to_item(entry: &Entry) -> FeedUpdateItemInput {
             entry
                 .authors
                 .first()
-                .map(|author| author.name.clone())
+                .and_then(|author| author.name.clone())
                 .unwrap_or_default(),
         ),
         published_at: Some(entry_published_at(entry).unwrap_or(now)),
@@ -129,6 +129,7 @@ mod tests {
             href_lang: None,
             title: None,
             length: None,
+            target: None,
         }
     }
 
