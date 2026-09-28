@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use feed_rs::model::Feed;
-use feed_rs::parser;
 use reqwest::{StatusCode, header};
 use rss_centr_core::feed_update_queue::DequeuedFeedUpdate;
 use tokio::time::Instant;
@@ -76,7 +75,7 @@ async fn fetch_feed_inner(
         .bytes()
         .await
         .with_context(|| format!("failed to read response body from {}", feed.url))?;
-    let feed = parser::parse(&bytes[..])
+    let feed = crate::feed_parser::parse_feed(&bytes)
         .with_context(|| format!("failed to parse feed from {}", feed.url))?;
 
     Ok(FetchOutcome::Fetched {
@@ -93,6 +92,34 @@ fn header_value_to_string(value: Option<&header::HeaderValue>) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires access to NRK's live feed"]
+    async fn test_fetch_live_nrk_feed() {
+        let feed = DequeuedFeedUpdate {
+            feed_id: 1,
+            url: "https://www.nrk.no/nyheter/siste.rss".to_string(),
+            title: None,
+            site_url: None,
+            etag: None,
+            last_modified: None,
+            poll_interval_seconds: 300,
+            last_checked_at: None,
+            last_success_at: None,
+            last_inserted_at: None,
+            failure_count: 0,
+            lease_token: String::new(),
+            lease_expires_at: chrono::Utc::now(),
+        };
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .unwrap();
+        match fetch_feed(&http, &feed).await.unwrap() {
+            FetchOutcome::Fetched { feed, .. } => assert!(!feed.entries.is_empty()),
+            FetchOutcome::NotModified { .. } => panic!("expected a fresh feed"),
+        }
+    }
 
     #[test]
     fn test_header_value_to_string_returns_ascii_header_text() {

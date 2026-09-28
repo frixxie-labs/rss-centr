@@ -3174,6 +3174,7 @@ dependencies = [
  "feed-rs",
  "metrics",
  "metrics-exporter-prometheus",
+ "quick-xml",
  "quickcheck",
  "reqwest",
  "rss-centr-core",
