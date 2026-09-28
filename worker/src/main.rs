@@ -1,6 +1,7 @@
 mod cli;
 mod feed_fetcher;
 mod feed_mapper;
+mod feed_parser;
 mod queue_client;
 mod runner;
 mod summary_refresh;
