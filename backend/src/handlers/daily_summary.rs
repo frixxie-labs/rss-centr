@@ -30,7 +30,7 @@ impl SummaryState {
             ollama_url: std::env::var("OLLAMA_URL")
                 .unwrap_or_else(|_| "http://desktop:11434".to_string()),
             ollama_model: std::env::var("OLLAMA_MODEL")
-                .unwrap_or_else(|_| "gemma4:e2b".to_string()),
+                .unwrap_or_else(|_| "gemma4:e4b".to_string()),
             generation_slot: Arc::new(Semaphore::new(1)),
         }
     }
