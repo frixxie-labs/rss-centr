@@ -6,7 +6,7 @@ use tracing::{info, warn};
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const RETRY_INTERVAL: Duration = Duration::from_secs(60);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) async fn run(backend_url: String, http: reqwest::Client) {
     let url = format!(
@@ -22,7 +22,7 @@ pub(crate) async fn run(backend_url: String, http: reqwest::Client) {
             info!("refreshing daily news summary");
             match refresh(&http, &url).await {
                 Ok(()) => {
-                    info!("daily news summary refreshed");
+                    info!("daily news summary refresh accepted");
                     break;
                 }
                 Err(err) => {

@@ -1,11 +1,11 @@
 use std::{sync::Arc, time::Duration};
 
-use axum::{Json, extract::State};
+use axum::{Json, extract::State, http::StatusCode};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
-use tokio::sync::Semaphore;
-use tracing::{error, instrument};
+use tokio::sync::{Semaphore, TryAcquireError};
+use tracing::{Instrument, error, info, instrument};
 use utoipa::ToSchema;
 
 use super::error::HandlerError;
@@ -240,31 +240,35 @@ async fn save_summary(
     path = "/internal/items/summary/refresh",
     tag = "items",
     responses(
-        (status = 200, description = "Generate and store a daily overview", body = DailySummary),
-        (status = 404, description = "No recent articles available"),
-        (status = 500, description = "Database error"),
-        (status = 502, description = "Ollama unavailable"),
+        (status = 202, description = "Summary refresh accepted or already in progress"),
+        (status = 500, description = "Summary service unavailable"),
     )
 )]
 #[instrument(skip(state))]
 pub async fn refresh_daily_summary(
     State(state): State<SummaryState>,
-) -> Result<Json<DailySummary>, HandlerError> {
-    generate_summary(&state).await
+) -> Result<StatusCode, HandlerError> {
+    let slot = match state.generation_slot.clone().try_acquire_owned() {
+        Ok(slot) => slot,
+        Err(TryAcquireError::NoPermits) => return Ok(StatusCode::ACCEPTED),
+        Err(TryAcquireError::Closed) => {
+            return Err(HandlerError::internal("Summary service unavailable"));
+        }
+    };
+    tokio::spawn(
+        async move {
+            let _slot = slot;
+            match generate_summary(&state).await {
+                Ok(summary) => info!(summary_id = summary.id, "daily news summary refreshed"),
+                Err(err) => error!(%err, "background summary refresh failed"),
+            }
+        }
+        .in_current_span(),
+    );
+    Ok(StatusCode::ACCEPTED)
 }
 
-async fn generate_summary(state: &SummaryState) -> Result<Json<DailySummary>, HandlerError> {
-    let started = Utc::now();
-    let _slot = state.generation_slot.acquire().await.map_err(|err| {
-        error!(%err, "summary generation slot closed");
-        HandlerError::internal("Summary service unavailable")
-    })?;
-    if let Some(summary) = latest_summary(&state.pool).await?
-        && summary.generated_at >= started
-    {
-        return Ok(Json(summary));
-    }
-
+async fn generate_summary(state: &SummaryState) -> Result<DailySummary, HandlerError> {
     let articles = fetch_articles(&state.pool).await.map_err(|err| {
         error!(%err, "failed to fetch summary articles");
         HandlerError::internal("Failed to fetch recent articles")
@@ -302,7 +306,7 @@ async fn generate_summary(state: &SummaryState) -> Result<Json<DailySummary>, Ha
         &state.ollama_model,
     )
     .await?;
-    Ok(Json(result))
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -313,10 +317,16 @@ mod tests {
     async fn worker_refresh_generates_and_persists_source_ids(pool: PgPool) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
+        let responses = Arc::new(Semaphore::new(0));
+        let response_gate = responses.clone();
         let app = axum::Router::new().route(
             "/api/generate",
-            axum::routing::post(|| async {
-                Json(serde_json::json!({"response": "News overview (Example)."}))
+            axum::routing::post(move || {
+                let response_gate = response_gate.clone();
+                async move {
+                    response_gate.acquire().await.unwrap().forget();
+                    Json(serde_json::json!({"response": "News overview (Example)."}))
+                }
             }),
         );
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -345,18 +355,53 @@ mod tests {
         .unwrap();
         state.ollama_url = format!("http://{address}");
         state.ollama_model = "test-model".to_string();
-        let generated = refresh_daily_summary(State(state)).await.unwrap().0;
-        assert_eq!(generated.feed_ids, vec![feed_id]);
-        assert_eq!(generated.feed_item_ids, expected_ids);
-        assert_eq!(generated.model, "test-model");
+        for _ in 0..2 {
+            let status = tokio::time::timeout(
+                Duration::from_secs(1),
+                refresh_daily_summary(State(state.clone())),
+            )
+            .await
+            .expect("refresh should return without waiting for generation")
+            .unwrap();
+            assert_eq!(status, StatusCode::ACCEPTED);
+        }
+        assert!(latest_summary(&pool).await.unwrap().is_none());
+        responses.add_permits(2);
+        let _slot = tokio::time::timeout(Duration::from_secs(5), state.generation_slot.acquire())
+            .await
+            .expect("background generation should finish")
+            .unwrap();
         let stored = fetch_daily_summary(State(SummaryState::new(pool)))
             .await
             .unwrap()
             .0;
-        assert_eq!(stored.id, generated.id);
+        assert_eq!(stored.feed_ids, vec![feed_id]);
         assert_eq!(stored.feed_item_ids, expected_ids);
+        assert_eq!(stored.model, "test-model");
         assert_eq!(stored.summary, "News overview (Example).");
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ai_summaries")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
         server.abort();
+    }
+
+    #[sqlx::test]
+    async fn failed_background_refresh_releases_generation_slot(pool: PgPool) {
+        let state = SummaryState::new(pool);
+        for _ in 0..2 {
+            assert_eq!(
+                refresh_daily_summary(State(state.clone())).await.unwrap(),
+                StatusCode::ACCEPTED
+            );
+            let _slot =
+                tokio::time::timeout(Duration::from_secs(5), state.generation_slot.acquire())
+                    .await
+                    .expect("failed refresh should release the generation slot")
+                    .unwrap();
+            assert!(latest_summary(&state.pool).await.unwrap().is_none());
+        }
     }
 
     #[sqlx::test]
