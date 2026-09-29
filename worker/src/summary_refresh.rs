@@ -4,7 +4,8 @@ use anyhow::{Context, Result};
 use tokio::time::{MissedTickBehavior, interval, sleep};
 use tracing::{info, warn};
 
-const REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 60);
+// PostgreSQL owns the hourly schedule; all workers poll for due work.
+const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 const RETRY_INTERVAL: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 

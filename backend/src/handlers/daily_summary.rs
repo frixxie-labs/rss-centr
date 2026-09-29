@@ -1,16 +1,18 @@
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use axum::{Json, extract::State, http::StatusCode};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
-use tokio::sync::{Semaphore, TryAcquireError};
 use tracing::{Instrument, error, info, instrument};
 use utoipa::ToSchema;
 
 use super::error::HandlerError;
 
 const ARTICLES_PER_BATCH: usize = 25;
+// Bound the whole job below its lease, including all sequential Ollama calls.
+const GENERATION_TIMEOUT: Duration = Duration::from_secs(14 * 60);
+const LEASE_SECONDS: i64 = 15 * 60;
 const SUMMARY_SYSTEM_PROMPT: &str = "Du er nyhetsredaktør. Bruk bare opplysninger fra de oppgitte artiklene eller deloppsummeringene. Oppgi navnet på nyhetskilden i parentes etter hver omtalt sak. Ikke tilskriv en sak en kilde som ikke er oppgitt i grunnlaget, og ikke finn på fakta eller kilder.";
 
 #[derive(Clone)]
@@ -19,7 +21,6 @@ pub struct SummaryState {
     http: reqwest::Client,
     ollama_url: String,
     ollama_model: String,
-    generation_slot: Arc<Semaphore>,
 }
 
 impl SummaryState {
@@ -31,7 +32,6 @@ impl SummaryState {
                 .unwrap_or_else(|_| "http://desktop:11434".to_string()),
             ollama_model: std::env::var("OLLAMA_MODEL")
                 .unwrap_or_else(|_| "gemma4:e4b".to_string()),
-            generation_slot: Arc::new(Semaphore::new(1)),
         }
     }
 }
@@ -211,8 +211,8 @@ async fn latest_summary(pool: &PgPool) -> Result<Option<DailySummary>, HandlerEr
     })
 }
 
-async fn save_summary(
-    pool: &PgPool,
+async fn save_summary<'a>(
+    executor: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
     summary: &str,
     feed_ids: &[i64],
     feed_item_ids: &[i64],
@@ -227,7 +227,7 @@ async fn save_summary(
     .bind(feed_ids)
     .bind(feed_item_ids)
     .bind(model)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
     .map_err(|err| {
         error!(%err, "failed to persist summary");
@@ -240,7 +240,7 @@ async fn save_summary(
     path = "/internal/items/summary/refresh",
     tag = "items",
     responses(
-        (status = 202, description = "Summary refresh accepted or already in progress"),
+        (status = 202, description = "Summary refresh accepted, already in progress, or not due yet"),
         (status = 500, description = "Summary service unavailable"),
     )
 )]
@@ -248,19 +248,30 @@ async fn save_summary(
 pub async fn refresh_daily_summary(
     State(state): State<SummaryState>,
 ) -> Result<StatusCode, HandlerError> {
-    let slot = match state.generation_slot.clone().try_acquire_owned() {
-        Ok(slot) => slot,
-        Err(TryAcquireError::NoPermits) => return Ok(StatusCode::ACCEPTED),
-        Err(TryAcquireError::Closed) => {
-            return Err(HandlerError::internal("Summary service unavailable"));
-        }
+    let Some(token) = claim_summary_refresh(&state.pool).await? else {
+        return Ok(StatusCode::ACCEPTED);
     };
     tokio::spawn(
         async move {
-            let _slot = slot;
-            match generate_summary(&state).await {
-                Ok(summary) => info!(summary_id = summary.id, "daily news summary refreshed"),
-                Err(err) => error!(%err, "background summary refresh failed"),
+            match tokio::time::timeout(GENERATION_TIMEOUT, generate_summary(&state, &token)).await {
+                Ok(Ok(summary)) => {
+                    info!(summary_id = summary.id, "daily news summary refreshed");
+                    return;
+                }
+                Ok(Err(err)) => error!(%err, "background summary refresh failed"),
+                Err(err) => error!(%err, "background summary refresh timed out"),
+            }
+            if let Err(err) = sqlx::query(
+                r#"UPDATE summary_refresh_queue
+                   SET lease_token = NULL, lease_expires_at = NULL,
+                       due_at = NOW() + INTERVAL '1 minute'
+                   WHERE id = TRUE AND lease_token = $1"#,
+            )
+            .bind(&token)
+            .execute(&state.pool)
+            .await
+            {
+                error!(%err, "failed to release summary refresh lease");
             }
         }
         .in_current_span(),
@@ -268,7 +279,30 @@ pub async fn refresh_daily_summary(
     Ok(StatusCode::ACCEPTED)
 }
 
-async fn generate_summary(state: &SummaryState) -> Result<DailySummary, HandlerError> {
+async fn claim_summary_refresh(pool: &PgPool) -> Result<Option<String>, HandlerError> {
+    sqlx::query_scalar(
+        r#"WITH due AS (
+               SELECT id FROM summary_refresh_queue
+               WHERE due_at <= NOW()
+                 AND (lease_expires_at IS NULL OR lease_expires_at <= NOW())
+               FOR UPDATE SKIP LOCKED
+           )
+           UPDATE summary_refresh_queue q
+           SET lease_token = md5(random()::TEXT || clock_timestamp()::TEXT),
+               lease_expires_at = NOW() + ($1::BIGINT * INTERVAL '1 second')
+           FROM due WHERE q.id = due.id
+           RETURNING q.lease_token"#,
+    )
+    .bind(LEASE_SECONDS)
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| {
+        error!(%err, "failed to claim summary refresh lease");
+        HandlerError::internal("Failed to claim summary refresh")
+    })
+}
+
+async fn generate_summary(state: &SummaryState, token: &str) -> Result<DailySummary, HandlerError> {
     let articles = fetch_articles(&state.pool).await.map_err(|err| {
         error!(%err, "failed to fetch summary articles");
         HandlerError::internal("Failed to fetch recent articles")
@@ -298,20 +332,67 @@ async fn generate_summary(state: &SummaryState) -> Result<DailySummary, HandlerE
     feed_ids.sort_unstable();
     feed_ids.dedup();
     let feed_item_ids: Vec<i64> = articles.iter().map(|article| article.id).collect();
+    let mut tx = state.pool.begin().await.map_err(|err| {
+        error!(%err, "failed to begin summary completion");
+        HandlerError::internal("Failed to save summary")
+    })?;
+    // Fence stale jobs and reschedule atomically with persistence, like feed completion.
+    let completed = sqlx::query(
+        r#"UPDATE summary_refresh_queue
+           SET lease_token = NULL, lease_expires_at = NULL,
+               due_at = NOW() + INTERVAL '1 hour'
+           WHERE id = TRUE AND lease_token = $1 AND lease_expires_at > NOW()"#,
+    )
+    .bind(token)
+    .execute(&mut *tx)
+    .await
+    .map_err(|err| {
+        error!(%err, "failed to complete summary refresh lease");
+        HandlerError::internal("Failed to complete summary refresh")
+    })?;
+    if completed.rows_affected() == 0 {
+        return Err(HandlerError::internal("Summary refresh lease conflict"));
+    }
     let result = save_summary(
-        &state.pool,
+        &mut *tx,
         &summary,
         &feed_ids,
         &feed_item_ids,
         &state.ollama_model,
     )
     .await?;
+    tx.commit().await.map_err(|err| {
+        error!(%err, "failed to commit summary completion");
+        HandlerError::internal("Failed to save summary")
+    })?;
     Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
+
     use super::*;
+
+    async fn wait_for_refresh(pool: &PgPool) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let released: bool = sqlx::query_scalar(
+                    "SELECT lease_token IS NULL FROM summary_refresh_queue WHERE id = TRUE",
+                )
+                .fetch_one(pool)
+                .await
+                .unwrap();
+                if released {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("background refresh should release its lease");
+    }
 
     #[sqlx::test]
     async fn worker_refresh_generates_and_persists_source_ids(pool: PgPool) {
@@ -355,10 +436,18 @@ mod tests {
         .unwrap();
         state.ollama_url = format!("http://{address}");
         state.ollama_model = "test-model".to_string();
-        for _ in 0..2 {
+        // Independent state and pool represent separate backend instances.
+        let other_pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_with((*pool.connect_options()).clone())
+            .await
+            .unwrap();
+        let mut other_state = SummaryState::new(other_pool.clone());
+        other_state.ollama_url = state.ollama_url.clone();
+        other_state.ollama_model = state.ollama_model.clone();
+        for instance in [state.clone(), other_state.clone()] {
             let status = tokio::time::timeout(
                 Duration::from_secs(1),
-                refresh_daily_summary(State(state.clone())),
+                refresh_daily_summary(State(instance)),
             )
             .await
             .expect("refresh should return without waiting for generation")
@@ -367,10 +456,10 @@ mod tests {
         }
         assert!(latest_summary(&pool).await.unwrap().is_none());
         responses.add_permits(2);
-        let _slot = tokio::time::timeout(Duration::from_secs(5), state.generation_slot.acquire())
-            .await
-            .expect("background generation should finish")
-            .unwrap();
+        wait_for_refresh(&pool).await;
+        // A staggered worker must not generate again immediately after completion.
+        refresh_daily_summary(State(other_state)).await.unwrap();
+        assert!(claim_summary_refresh(&pool).await.unwrap().is_none());
         let stored = fetch_daily_summary(State(SummaryState::new(pool)))
             .await
             .unwrap()
@@ -385,23 +474,46 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1);
         server.abort();
+        other_pool.close().await;
     }
 
     #[sqlx::test]
-    async fn failed_background_refresh_releases_generation_slot(pool: PgPool) {
+    async fn failed_background_refresh_releases_lease_and_backs_off(pool: PgPool) {
         let state = SummaryState::new(pool);
         for _ in 0..2 {
             assert_eq!(
                 refresh_daily_summary(State(state.clone())).await.unwrap(),
                 StatusCode::ACCEPTED
             );
-            let _slot =
-                tokio::time::timeout(Duration::from_secs(5), state.generation_slot.acquire())
-                    .await
-                    .expect("failed refresh should release the generation slot")
-                    .unwrap();
+            wait_for_refresh(&state.pool).await;
             assert!(latest_summary(&state.pool).await.unwrap().is_none());
+            assert!(claim_summary_refresh(&state.pool).await.unwrap().is_none());
+            sqlx::query("UPDATE summary_refresh_queue SET due_at = NOW()")
+                .execute(&state.pool)
+                .await
+                .unwrap();
         }
+    }
+
+    #[sqlx::test]
+    async fn concurrent_claims_have_one_winner_and_expired_leases_are_recoverable(pool: PgPool) {
+        let (first, second) =
+            tokio::join!(claim_summary_refresh(&pool), claim_summary_refresh(&pool));
+        let winners: Vec<_> = [first.unwrap(), second.unwrap()]
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(winners.len(), 1);
+        assert!(claim_summary_refresh(&pool).await.unwrap().is_none());
+        sqlx::query(
+            "UPDATE summary_refresh_queue SET lease_expires_at = NOW() - INTERVAL '1 second'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let replacement = claim_summary_refresh(&pool).await.unwrap().unwrap();
+        assert_ne!(replacement, winners[0]);
+        assert!(claim_summary_refresh(&pool).await.unwrap().is_none());
     }
 
     #[sqlx::test]
