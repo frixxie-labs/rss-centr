@@ -123,6 +123,15 @@ Oversized individual inputs, missing usage metadata, and incomplete or
 over-budget generations fail the refresh rather than saving a partial summary;
 the previous summary remains available.
 
+Generation allows up to 1,024 output tokens per batch and 1,536 for the final
+overview, while the prompts still request concise summaries. Each Ollama call
+has a five-minute timeout. The complete background job has a 59-minute deadline
+and a 60-minute database lease to accommodate sequential batches on slower
+models. Failed jobs release the lease and become eligible for retry after one
+minute. HTTP 202 only acknowledges the refresh request; look for
+`daily news summary refreshed` to confirm completion. Logs include the batch
+plan, progress, token usage, and timeout causes.
+
 ### Backend Commands
 
 From the repo root:

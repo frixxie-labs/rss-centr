@@ -28,7 +28,7 @@ mod items;
 mod ping;
 mod sse;
 
-#[instrument]
+#[instrument(skip_all)]
 pub async fn profile_endpoint(request: Request, next: Next) -> Response {
     let method = request.method().clone().to_string();
     let route = request
@@ -47,6 +47,7 @@ pub async fn profile_endpoint(request: Request, next: Next) -> Response {
     histogram!("handler", &labels).record(elapsed);
 
     info!(
+        status = response.status().as_u16(),
         "Finished handling {} at {}, used {} ms",
         method,
         route,
