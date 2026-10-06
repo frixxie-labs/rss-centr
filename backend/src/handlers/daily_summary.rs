@@ -10,6 +10,9 @@ use utoipa::ToSchema;
 use super::error::HandlerError;
 
 const ARTICLES_PER_BATCH: usize = 25;
+const SUMMARY_CONTEXT_TOKENS: u32 = 32 * 1024;
+// Conservative allowance for the model's chat template and special tokens.
+const TEMPLATE_TOKEN_RESERVE: usize = 256;
 // Bound the whole job below its lease, including all sequential Ollama calls.
 const GENERATION_TIMEOUT: Duration = Duration::from_secs(14 * 60);
 const LEASE_SECONDS: i64 = 15 * 60;
@@ -31,7 +34,7 @@ impl SummaryState {
             ollama_url: std::env::var("OLLAMA_URL")
                 .unwrap_or_else(|_| "http://desktop:11434".to_string()),
             ollama_model: std::env::var("OLLAMA_MODEL")
-                .unwrap_or_else(|_| "gemma4:e4b".to_string()),
+                .unwrap_or_else(|_| "gemma4:12b".to_string()),
         }
     }
 }
@@ -75,6 +78,111 @@ struct GenerateOptions {
 #[derive(Deserialize)]
 struct GenerateResponse {
     response: String,
+    prompt_eval_count: u32,
+    eval_count: u32,
+    done_reason: String,
+}
+
+#[derive(Deserialize)]
+struct ShowResponse {
+    model_info: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Clone, Copy)]
+struct ContextBudget {
+    num_ctx: u32,
+}
+
+impl ContextBudget {
+    fn estimated_input_tokens(self, prompt: &str) -> usize {
+        // One token per UTF-8 byte deliberately overestimates ordinary news text.
+        // This is a sizing heuristic, not the model's tokenizer; actual usage is
+        // checked and logged from Ollama's response as well.
+        SUMMARY_SYSTEM_PROMPT.len() + prompt.len() + TEMPLATE_TOKEN_RESERVE
+    }
+
+    fn fits(self, prompt: &str, num_predict: u32) -> bool {
+        self.estimated_input_tokens(prompt)
+            .saturating_add(num_predict as usize)
+            <= self.num_ctx as usize
+    }
+}
+
+async fn fetch_context_budget(state: &SummaryState) -> Result<ContextBudget, HandlerError> {
+    let response = state
+        .http
+        .post(format!(
+            "{}/api/show",
+            state.ollama_url.trim_end_matches('/')
+        ))
+        .timeout(Duration::from_secs(30))
+        .json(&serde_json::json!({"model": state.ollama_model}))
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|err| {
+            error!(%err, "failed to fetch Ollama model metadata");
+            HandlerError::new(
+                StatusCode::BAD_GATEWAY,
+                "Summary model unavailable".to_string(),
+            )
+        })?;
+    let metadata: ShowResponse = response.json().await.map_err(|err| {
+        error!(%err, "invalid Ollama model metadata");
+        HandlerError::new(
+            StatusCode::BAD_GATEWAY,
+            "Invalid summary model metadata".to_string(),
+        )
+    })?;
+    let model_context = metadata
+        .model_info
+        .iter()
+        .filter(|(key, _)| key.ends_with(".context_length"))
+        .filter_map(|(_, value)| value.as_u64())
+        .min()
+        .filter(|limit| *limit > 0)
+        .ok_or_else(|| {
+            HandlerError::new(
+                StatusCode::BAD_GATEWAY,
+                "Summary model context limit missing".to_string(),
+            )
+        })?;
+    let num_ctx = model_context.min(u64::from(SUMMARY_CONTEXT_TOKENS)) as u32;
+    info!(model = %state.ollama_model, model_context, num_ctx, "summary model context budget");
+    Ok(ContextBudget { num_ctx })
+}
+
+fn budgeted_prompts<T>(
+    items: &[T],
+    build: impl Fn(&[T]) -> String,
+    budget: ContextBudget,
+    num_predict: u32,
+    max_items: usize,
+) -> Result<Vec<String>, HandlerError> {
+    let mut prompts = Vec::new();
+    let mut start = 0;
+    while start < items.len() {
+        let mut end = start;
+        let mut accepted = None;
+        while end < items.len() && end - start < max_items {
+            let candidate = build(&items[start..=end]);
+            if !budget.fits(&candidate, num_predict) {
+                break;
+            }
+            accepted = Some(candidate);
+            end += 1;
+        }
+        let prompt = accepted.ok_or_else(|| {
+            error!(
+                num_ctx = budget.num_ctx,
+                num_predict, "single summary input exceeds context budget"
+            );
+            HandlerError::internal("Summary input exceeds model context budget")
+        })?;
+        prompts.push(prompt);
+        start = end;
+    }
+    Ok(prompts)
 }
 
 fn build_batch_prompt(articles: &[SummaryArticle]) -> String {
@@ -129,9 +237,17 @@ async fn fetch_articles(pool: &PgPool) -> Result<Vec<SummaryArticle>, sqlx::Erro
 
 async fn generate(
     state: &SummaryState,
+    budget: ContextBudget,
     prompt: String,
     num_predict: u32,
 ) -> Result<String, HandlerError> {
+    if !budget.fits(&prompt, num_predict) {
+        return Err(HandlerError::internal(
+            "Summary input exceeds model context budget",
+        ));
+    }
+    info!(model = %state.ollama_model, estimated_input_tokens = budget.estimated_input_tokens(&prompt),
+        num_ctx = budget.num_ctx, num_predict, "generating summary within context budget");
     let request = GenerateRequest {
         model: &state.ollama_model,
         system: SUMMARY_SYSTEM_PROMPT,
@@ -139,7 +255,7 @@ async fn generate(
         stream: false,
         think: false,
         options: GenerateOptions {
-            num_ctx: 8192,
+            num_ctx: budget.num_ctx,
             num_predict,
             temperature: 0.0,
         },
@@ -169,6 +285,21 @@ async fn generate(
             "Invalid summary response".to_string(),
         )
     })?;
+    info!(model = %state.ollama_model, prompt_tokens = generated.prompt_eval_count,
+        output_tokens = generated.eval_count, num_ctx = budget.num_ctx,
+        done_reason = %generated.done_reason, "summary token usage");
+    if generated.done_reason != "stop"
+        || generated
+            .prompt_eval_count
+            .saturating_add(generated.eval_count)
+            > budget.num_ctx
+        || generated.prompt_eval_count.saturating_add(num_predict) > budget.num_ctx
+    {
+        return Err(HandlerError::new(
+            StatusCode::BAD_GATEWAY,
+            "Summary generation truncated or exceeded context budget".to_string(),
+        ));
+    }
     if generated.response.trim().is_empty() {
         return Err(HandlerError::new(
             axum::http::StatusCode::BAD_GATEWAY,
@@ -313,19 +444,33 @@ async fn generate_summary(state: &SummaryState, token: &str) -> Result<DailySumm
             "No recent articles available for summary generation.",
         ));
     }
+    let budget = fetch_context_budget(state).await?;
     let summary = {
         let mut batch_summaries = Vec::new();
-        for batch in articles.chunks(ARTICLES_PER_BATCH) {
-            batch_summaries.push(generate(state, build_batch_prompt(batch), 320).await?);
+        for prompt in budgeted_prompts(
+            &articles,
+            build_batch_prompt,
+            budget,
+            320,
+            ARTICLES_PER_BATCH,
+        )? {
+            batch_summaries.push(generate(state, budget, prompt, 320).await?);
         }
-        while batch_summaries.len() > 16 {
+        while batch_summaries.len() > 16 || !budget.fits(&build_final_prompt(&batch_summaries), 700)
+        {
             let mut merged = Vec::new();
-            for group in batch_summaries.chunks(8) {
-                merged.push(generate(state, build_final_prompt(group), 320).await?);
+            let prompts = budgeted_prompts(&batch_summaries, build_final_prompt, budget, 320, 8)?;
+            if prompts.len() >= batch_summaries.len() {
+                return Err(HandlerError::internal(
+                    "Summary context budget too small to merge summaries",
+                ));
+            }
+            for prompt in prompts {
+                merged.push(generate(state, budget, prompt, 320).await?);
             }
             batch_summaries = merged;
         }
-        generate(state, build_final_prompt(&batch_summaries), 700).await?
+        generate(state, budget, build_final_prompt(&batch_summaries), 700).await?
     };
 
     let mut feed_ids: Vec<i64> = articles.iter().map(|article| article.feed_id).collect();
@@ -375,6 +520,219 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn context_budget_reserves_system_template_and_output_tokens() {
+        let prompt = "Nyheter: blåbær 世界";
+        let num_predict = 700;
+        let required = SUMMARY_SYSTEM_PROMPT.len()
+            + prompt.len()
+            + TEMPLATE_TOKEN_RESERVE
+            + num_predict as usize;
+        assert!(
+            ContextBudget {
+                num_ctx: required as u32
+            }
+            .fits(prompt, num_predict)
+        );
+        assert!(
+            !ContextBudget {
+                num_ctx: required as u32 - 1
+            }
+            .fits(prompt, num_predict)
+        );
+    }
+
+    #[test]
+    fn batches_split_by_context_and_preserve_every_input() {
+        let items = vec!["a".repeat(2000), "b".repeat(2000), "c".repeat(2000)];
+        let budget = ContextBudget { num_ctx: 6000 };
+        let prompts = budgeted_prompts(&items, |group| group.concat(), budget, 700, 25).unwrap();
+        assert_eq!(prompts.len(), 2);
+        assert_eq!(prompts.concat(), items.concat());
+        assert!(prompts.iter().all(|prompt| budget.fits(prompt, 700)));
+        let limited = budgeted_prompts(&items, |group| group.concat(), budget, 700, 1).unwrap();
+        assert_eq!(limited.len(), 3);
+    }
+
+    #[test]
+    fn configured_context_is_32k_and_batches_reserve_output_space() {
+        assert_eq!(SUMMARY_CONTEXT_TOKENS, 32768);
+        let budget = ContextBudget {
+            num_ctx: SUMMARY_CONTEXT_TOKENS,
+        };
+        let num_predict = 700;
+        let max_prompt_bytes = budget.num_ctx as usize
+            - SUMMARY_SYSTEM_PROMPT.len()
+            - TEMPLATE_TOKEN_RESERVE
+            - num_predict as usize;
+        assert!(budget.fits(&"x".repeat(max_prompt_bytes), num_predict));
+        assert!(!budget.fits(&"x".repeat(max_prompt_bytes + 1), num_predict));
+
+        let items = vec!["a".repeat(16000), "b".repeat(16000), "c".repeat(16000)];
+        let prompts =
+            budgeted_prompts(&items, |group| group.concat(), budget, num_predict, 25).unwrap();
+        assert!(prompts.len() > 1);
+        assert_eq!(prompts.concat(), items.concat());
+        assert!(
+            prompts
+                .iter()
+                .all(|prompt| budget.fits(prompt, num_predict))
+        );
+    }
+
+    #[test]
+    fn oversized_single_input_fails_instead_of_being_silently_truncated() {
+        let items = vec!["x".repeat(8192)];
+        assert!(
+            budgeted_prompts(
+                &items,
+                build_final_prompt,
+                ContextBudget { num_ctx: 8192 },
+                700,
+                8
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn final_merge_is_batched_by_size_not_just_summary_count() {
+        let summaries = vec!["æ".repeat(1200); 4];
+        let budget = ContextBudget { num_ctx: 8192 };
+        assert!(!budget.fits(&build_final_prompt(&summaries), 700));
+        let prompts = budgeted_prompts(&summaries, build_final_prompt, budget, 320, 8).unwrap();
+        assert!(prompts.len() > 1 && prompts.len() < summaries.len());
+        assert!(prompts.iter().all(|prompt| budget.fits(prompt, 320)));
+    }
+
+    async fn mock_ollama(
+        metadata: serde_json::Value,
+        generated: serde_json::Value,
+    ) -> (SummaryState, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = axum::Router::new()
+            .route(
+                "/api/show",
+                axum::routing::post(move |Json(request): Json<serde_json::Value>| {
+                    let metadata = metadata.clone();
+                    async move {
+                        assert_eq!(request["model"], "test-model");
+                        Json(metadata)
+                    }
+                }),
+            )
+            .route(
+                "/api/generate",
+                axum::routing::post(move |Json(request): Json<serde_json::Value>| {
+                    let generated = generated.clone();
+                    async move {
+                        assert_eq!(request["model"], "test-model");
+                        assert_eq!(request["options"]["num_ctx"], SUMMARY_CONTEXT_TOKENS);
+                        assert_eq!(request["options"]["num_predict"], 700);
+                        assert_eq!(request["think"], false);
+                        Json(generated)
+                    }
+                }),
+            );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://postgres:postgres@localhost/rss_centr")
+            .unwrap();
+        let mut state = SummaryState::new(pool);
+        state.ollama_url = format!("http://{address}");
+        state.ollama_model = "test-model".to_string();
+        (state, server)
+    }
+
+    #[tokio::test]
+    async fn model_metadata_caps_context_and_requires_a_limit() {
+        for (metadata, expected) in [
+            (
+                serde_json::json!({"model_info": {"gemma4.context_length": 262144}}),
+                Some(32768),
+            ),
+            (
+                serde_json::json!({"model_info": {"gemma4.context_length": 32768}}),
+                Some(32768),
+            ),
+            (
+                serde_json::json!({"model_info": {"gemma4.context_length": 4096}}),
+                Some(4096),
+            ),
+            (serde_json::json!({"model_info": {}}), None),
+            (
+                serde_json::json!({"model_info": {"gemma4.context_length": 0}}),
+                None,
+            ),
+        ] {
+            let (state, server) = mock_ollama(metadata, serde_json::json!({})).await;
+            let result = fetch_context_budget(&state).await;
+            assert_eq!(result.ok().map(|budget| budget.num_ctx), expected);
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn generation_checks_actual_usage_and_rejects_incomplete_responses() {
+        for (response, success) in [
+            (
+                serde_json::json!({"response": " News ", "prompt_eval_count": 100, "eval_count": 20, "done_reason": "stop"}),
+                true,
+            ),
+            (
+                serde_json::json!({"response": "News", "prompt_eval_count": 100, "eval_count": 700, "done_reason": "length"}),
+                false,
+            ),
+            (
+                serde_json::json!({"response": "News", "prompt_eval_count": 32069, "eval_count": 20, "done_reason": "stop"}),
+                false,
+            ),
+            (
+                serde_json::json!({"response": "News", "prompt_eval_count": 32000, "eval_count": 800, "done_reason": "stop"}),
+                false,
+            ),
+            (
+                serde_json::json!({"response": "News", "prompt_eval_count": 32068, "eval_count": 700, "done_reason": "stop"}),
+                true,
+            ),
+            (
+                serde_json::json!({"response": " ", "prompt_eval_count": 100, "eval_count": 20, "done_reason": "stop"}),
+                false,
+            ),
+            (serde_json::json!({"response": "News"}), false),
+        ] {
+            let (state, server) = mock_ollama(serde_json::json!({}), response).await;
+            let result = generate(
+                &state,
+                ContextBudget {
+                    num_ctx: SUMMARY_CONTEXT_TOKENS,
+                },
+                "News".to_string(),
+                700,
+            )
+            .await;
+            assert_eq!(result.is_ok(), success);
+            if success {
+                assert_eq!(result.unwrap(), "News");
+            }
+            // Rejected before making any request, independently of Ollama's response.
+            assert!(
+                generate(
+                    &state,
+                    ContextBudget {
+                        num_ctx: SUMMARY_CONTEXT_TOKENS,
+                    },
+                    "x".repeat(SUMMARY_CONTEXT_TOKENS as usize),
+                    700
+                )
+                .await
+                .is_err()
+            );
+            server.abort();
+        }
+    }
+
     async fn wait_for_refresh(pool: &PgPool) {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -401,12 +759,17 @@ mod tests {
         let responses = Arc::new(Semaphore::new(0));
         let response_gate = responses.clone();
         let app = axum::Router::new().route(
+            "/api/show",
+            axum::routing::post(|| async {
+                Json(serde_json::json!({"model_info": {"gemma4.context_length": 262144}}))
+            }),
+        ).route(
             "/api/generate",
             axum::routing::post(move || {
                 let response_gate = response_gate.clone();
                 async move {
                     response_gate.acquire().await.unwrap().forget();
-                    Json(serde_json::json!({"response": "News overview (Example)."}))
+                    Json(serde_json::json!({"response": "News overview (Example).", "prompt_eval_count": 100, "eval_count": 20, "done_reason": "stop"}))
                 }
             }),
         );
