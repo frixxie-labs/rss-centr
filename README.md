@@ -103,19 +103,36 @@ Migrations are applied automatically on backend startup.
 ### AI news summaries
 
 The backend generates an hourly Norwegian overview of articles collected in the
-last 24 hours using Ollama. The default model is `gemma4:12b`; pull it on the
-Ollama host before enabling summaries:
+last 24 hours using Ollama. By default, `gemma4:e4b` extracts article notes and
+performs intermediate merges, then `gemma4:12b` writes the final overview. Pull
+both models on the Ollama host before enabling summaries:
 
 ```bash
+ollama pull gemma4:e4b
 ollama pull gemma4:12b
 ```
 
-Set `OLLAMA_URL` (default `http://desktop:11434`) and optionally `OLLAMA_MODEL`
-on the backend to use another host or model.
+Set `OLLAMA_URL` (default `http://desktop:11434`) on the backend to use another
+host. Model selection is configurable:
 
-Each refresh reads the model's context limit from Ollama's `/api/show` and uses
-the smaller of that limit and 32,768 tokens (32K) to keep memory use bounded. Article
-batches and intermediate merges are sized against this budget, reserving space
+- `OLLAMA_BATCH_MODEL`: article extraction and intermediate merges (default
+  `gemma4:e4b`).
+- `OLLAMA_FINAL_MODEL`: final synthesis (default `gemma4:12b`).
+- `OLLAMA_MODEL`: backward-compatible fallback for both stages. Stage-specific
+  variables take precedence; setting only `OLLAMA_MODEL` keeps single-model
+  generation. Remove it to use the split defaults.
+
+All extraction and merging calls finish before final synthesis, avoiding repeated
+model switching within a refresh. Ollama manages model loading and eviction;
+loading the final model may still add overhead. Saved summaries record both
+models as `batch-model → final-model`, or one name when both stages use the same
+model. No automatic fallback is attempted if either model is unavailable.
+
+Each refresh reads both models' context limits from Ollama's `/api/show` (only
+once if they are identical) and caps each at 32,768 tokens (32K) to keep memory
+use bounded. Article batches and intermediate merges use the batch model's
+budget; notes are merged further when needed to fit the final model's budget.
+Both models are checked before generation begins. Each stage reserves space
 for the system prompt, chat template, and generated output. Input sizing uses a
 conservative UTF-8-byte estimate rather than an exact tokenizer. Logs include the
 estimated input size and Ollama's actual input/output token counts for each call.
@@ -123,8 +140,17 @@ Oversized individual inputs, missing usage metadata, and incomplete or
 over-budget generations fail the refresh rather than saving a partial summary;
 the previous summary remains available.
 
+Article batches extract structured story notes rather than heavily compressed
+paragraphs: topic, event, key facts, uncertainty, and source names. The prompts
+request up to eight distinct stories within 220 words, consolidate duplicate
+coverage, and preserve numbers, caveats, and conflicting claims with attribution.
+Intermediate merges keep the same note format. The final overview targets
+250–350 words in short topic-grouped paragraphs with source names per story;
+sparse input can produce a shorter overview rather than invented filler.
+These are prompt instructions, not a schema or an enforced word count.
+
 Generation allows up to 1,024 output tokens per batch and 1,536 for the final
-overview, while the prompts still request concise summaries. Each Ollama call
+overview. Thinking stays disabled and temperature is zero. Each Ollama call
 has a five-minute timeout. The complete background job has a 59-minute deadline
 and a 60-minute database lease to accommodate sequential batches on slower
 models. Failed jobs release the lease and become eligible for retry after one
