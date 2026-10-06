@@ -100,6 +100,29 @@ deno task dev
 
 Migrations are applied automatically on backend startup.
 
+### AI news summaries
+
+The backend generates an hourly Norwegian overview of articles collected in the
+last 24 hours using Ollama. The default model is `gemma4:12b`; pull it on the
+Ollama host before enabling summaries:
+
+```bash
+ollama pull gemma4:12b
+```
+
+Set `OLLAMA_URL` (default `http://desktop:11434`) and optionally `OLLAMA_MODEL`
+on the backend to use another host or model.
+
+Each refresh reads the model's context limit from Ollama's `/api/show` and uses
+the smaller of that limit and 32,768 tokens (32K) to keep memory use bounded. Article
+batches and intermediate merges are sized against this budget, reserving space
+for the system prompt, chat template, and generated output. Input sizing uses a
+conservative UTF-8-byte estimate rather than an exact tokenizer. Logs include the
+estimated input size and Ollama's actual input/output token counts for each call.
+Oversized individual inputs, missing usage metadata, and incomplete or
+over-budget generations fail the refresh rather than saving a partial summary;
+the previous summary remains available.
+
 ### Backend Commands
 
 From the repo root:
