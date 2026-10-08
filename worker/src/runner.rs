@@ -6,7 +6,7 @@ use rss_centr_core::feed_update_queue::{
 use tokio::task::JoinSet;
 use tracing::{error, info, warn};
 
-use crate::feed_fetcher::{FetchOutcome, fetch_feed};
+use crate::feed_fetcher::{FeedFetchFailure, FetchOutcome, fetch_feed};
 use crate::feed_mapper::{feed_title_and_site_url, feed_to_items};
 use crate::queue_client::QueueClient;
 use crate::telemetry::record_feed_processed;
@@ -121,14 +121,26 @@ async fn process_feed(
         }
         Err(fetch_error) => {
             record_feed_processed("failed");
+            let failure = fetch_error.downcast_ref::<FeedFetchFailure>();
+            let retry_after = failure.and_then(|failure| failure.retry_after);
+            let blocked_by_bot_protection =
+                failure.is_some_and(|failure| failure.blocked_by_bot_protection);
             let failed = queue
-                .failed(feed_id, FailedFeedUpdateRequest { lease_token })
+                .failed(
+                    feed_id,
+                    FailedFeedUpdateRequest {
+                        lease_token,
+                        retry_after,
+                    },
+                )
                 .await;
             match failed {
                 Ok(result) => {
                     warn!(
                         feed_id = feed_id,
                         next_due_at = %result.next_due_at,
+                        blocked_by_bot_protection,
+                        retry_after = ?retry_after,
                         error = %fetch_error,
                         "feed update rescheduled after fetch failure"
                     );
