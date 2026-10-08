@@ -257,7 +257,7 @@ pub async fn fail_feed_update(
     let poll_interval_seconds = backoff_poll_interval_seconds(current.poll_interval_seconds);
     touch_feed_failure_in_tx(&mut tx, feed_id, checked_at, poll_interval_seconds).await?;
 
-    let next_due_at = checked_at + Duration::seconds(poll_interval_seconds);
+    let next_due_at = failure_next_due_at(checked_at, poll_interval_seconds, request.retry_after);
     let result = sqlx::query!(
         r#"
         UPDATE feed_update_queue
@@ -286,6 +286,17 @@ pub async fn fail_feed_update(
         .with_context(|| format!("failed to commit feed update failure for feed_id={feed_id}"))?;
 
     Ok(FailedFeedUpdateResult { next_due_at })
+}
+
+fn failure_next_due_at(
+    checked_at: DateTime<Utc>,
+    poll_interval_seconds: i64,
+    retry_after: Option<DateTime<Utc>>,
+) -> DateTime<Utc> {
+    let backoff_due_at = checked_at + Duration::seconds(poll_interval_seconds);
+    retry_after.map_or(backoff_due_at, |retry_after| {
+        retry_after.max(backoff_due_at)
+    })
 }
 
 async fn ensure_current_lease(
@@ -431,6 +442,76 @@ mod tests {
     use crate::feed::feed_item::read_feed_items_by_feed;
     use crate::feed::feed_subscription::{read_feed, set_feed_enabled, upsert_feed_by_url};
 
+    #[test]
+    fn test_failed_feed_update_request_accepts_older_workers() {
+        let request: FailedFeedUpdateRequest =
+            serde_json::from_str(r#"{"lease_token":"token"}"#).unwrap();
+        assert_eq!(request.lease_token, "token");
+        assert_eq!(request.retry_after, None);
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({"lease_token": "token"})
+        );
+    }
+
+    #[test]
+    fn test_failure_next_due_at_respects_retry_after_without_shortening_backoff() {
+        let now = Utc::now();
+        let backoff_due_at = now + Duration::seconds(600);
+        for retry_after in [
+            None,
+            Some(now - Duration::hours(1)),
+            Some(now + Duration::seconds(120)),
+        ] {
+            assert_eq!(failure_next_due_at(now, 600, retry_after), backoff_due_at);
+        }
+        let retry_after = now + Duration::hours(24);
+        assert_eq!(
+            failure_next_due_at(now, 600, Some(retry_after)),
+            retry_after
+        );
+    }
+
+    #[sqlx::test]
+    async fn test_failed_feed_update_honors_retry_after(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/queue-retry-after.xml")
+            .await
+            .unwrap();
+        enqueue_feed_now(&pool, feed.id).await.unwrap();
+        let leased = dequeue_due_feeds(&pool, 100, 300)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.feed_id == feed.id)
+            .unwrap();
+        let retry_after = Utc::now() + Duration::hours(24);
+        let result = fail_feed_update(
+            &pool,
+            feed.id,
+            FailedFeedUpdateRequest {
+                lease_token: leased.lease_token,
+                retry_after: Some(retry_after),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.next_due_at, retry_after);
+        let due_at: DateTime<Utc> =
+            sqlx::query_scalar("SELECT due_at FROM feed_update_queue WHERE feed_id = $1")
+                .bind(feed.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        // PostgreSQL stores microsecond precision.
+        assert_eq!(due_at.timestamp_micros(), retry_after.timestamp_micros());
+        let updated = read_feed(&pool, feed.id).await.unwrap();
+        assert_eq!(updated.failure_count, 1);
+        assert_eq!(
+            updated.poll_interval_seconds,
+            backoff_poll_interval_seconds(feed.poll_interval_seconds)
+        );
+    }
+
     #[sqlx::test]
     async fn test_dequeue_leases_due_feed_once(pool: PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/queue-once.xml")
@@ -573,6 +654,7 @@ mod tests {
             feed.id,
             FailedFeedUpdateRequest {
                 lease_token: leased.lease_token,
+                retry_after: None,
             },
         )
         .await

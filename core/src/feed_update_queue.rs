@@ -48,6 +48,9 @@ pub struct CompleteFeedUpdateRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct FailedFeedUpdateRequest {
     pub lease_token: String,
+    /// Do not retry before this time, if supplied by the publisher's Retry-After header.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
