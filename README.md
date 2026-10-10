@@ -103,24 +103,23 @@ Migrations are applied automatically on backend startup.
 ### AI news summaries
 
 The backend generates an hourly Norwegian overview of articles collected in the
-last 24 hours using Ollama. By default, `gemma4:e4b` extracts article notes and
-performs intermediate merges, then `gemma4:12b` writes the final overview. Pull
-both models on the Ollama host before enabling summaries:
+last 24 hours using Ollama. By default, `qwen3.5:4b` handles article extraction,
+intermediate merges, and the final overview. Pull the model on the Ollama host
+before enabling summaries:
 
 ```bash
-ollama pull gemma4:e4b
-ollama pull gemma4:12b
+ollama pull qwen3.5:4b
 ```
 
 Set `OLLAMA_URL` (default `http://desktop:11434`) on the backend to use another
 host. Model selection is configurable:
 
 - `OLLAMA_BATCH_MODEL`: article extraction and intermediate merges (default
-  `gemma4:e4b`).
-- `OLLAMA_FINAL_MODEL`: final synthesis (default `gemma4:12b`).
+  `qwen3.5:4b`).
+- `OLLAMA_FINAL_MODEL`: final synthesis (default `qwen3.5:4b`).
 - `OLLAMA_MODEL`: backward-compatible fallback for both stages. Stage-specific
   variables take precedence; setting only `OLLAMA_MODEL` keeps single-model
-  generation. Remove it to use the split defaults.
+  generation. Remove overrides to use the default model for both stages.
 
 All extraction and merging calls finish before final synthesis, avoiding repeated
 model switching within a refresh. Ollama manages model loading and eviction;
