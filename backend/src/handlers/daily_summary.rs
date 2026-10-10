@@ -56,10 +56,10 @@ impl SummaryModels {
         Self {
             batch: batch
                 .or_else(|| legacy.clone())
-                .unwrap_or_else(|| "gemma4:e4b".to_string()),
+                .unwrap_or_else(|| "qwen3.5:4b".to_string()),
             final_summary: final_summary
                 .or(legacy)
-                .unwrap_or_else(|| "gemma4:12b".to_string()),
+                .unwrap_or_else(|| "qwen3.5:4b".to_string()),
         }
     }
 
@@ -647,12 +647,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn model_selection_defaults_to_split_models_and_preserves_legacy_overrides() {
+    fn model_selection_defaults_to_qwen_for_both_stages_and_preserves_overrides() {
         for (legacy, batch, final_summary, expected_batch, expected_final) in [
-            (None, None, None, "gemma4:e4b", "gemma4:12b"),
+            (None, None, None, "qwen3.5:4b", "qwen3.5:4b"),
             (Some("single"), None, None, "single", "single"),
-            (None, Some("fast"), None, "fast", "gemma4:12b"),
-            (None, None, Some("quality"), "gemma4:e4b", "quality"),
+            (None, Some("fast"), None, "fast", "qwen3.5:4b"),
+            (None, None, Some("quality"), "qwen3.5:4b", "quality"),
             (Some("single"), Some("fast"), None, "fast", "single"),
             (Some("single"), None, Some("quality"), "single", "quality"),
             (

@@ -13,7 +13,7 @@ metrics-exporter-prometheus = "0.18.3"
 quick-xml = "0.42.0"
 reqwest = { version = "0.13.5", features = ["json"] }
 rss-centr-core = { path = "../core" }
-tokio = { version = "1.53.1", features = ["full", "tracing"] }
+tokio = { version = "1.53.2", features = ["full", "tracing"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["json", "tracing"] }
 
