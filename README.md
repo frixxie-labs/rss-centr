@@ -148,8 +148,13 @@ Intermediate merges keep the same note format. The final overview targets
 sparse input can produce a shorter overview rather than invented filler.
 These are prompt instructions, not a schema or an enforced word count.
 
-Generation allows up to 1,024 output tokens per batch and 1,536 for the final
-overview. Thinking stays disabled and temperature is zero. Each Ollama call
+Generation initially allows up to 2,048 output tokens per batch and 1,536 for the
+final overview. A truncated response (`done_reason: length`) is retried once with
+double the output allowance (4,096 for batches, 3,072 for the final overview),
+only when both estimated and actual input usage leave enough context headroom.
+Repeated truncation still fails the refresh; incomplete output is never saved.
+Logs distinguish output truncation from context-budget overflow. Thinking stays
+disabled and temperature is zero. Each Ollama call
 has a five-minute timeout. The complete background job has a 59-minute deadline
 and a 60-minute database lease to accommodate sequential batches on slower
 models. Failed jobs release the lease and become eligible for retry after one
