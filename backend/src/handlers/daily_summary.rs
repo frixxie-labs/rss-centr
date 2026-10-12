@@ -4,7 +4,7 @@ use axum::{Json, extract::State, http::StatusCode};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
-use tracing::{Instrument, error, info, instrument};
+use tracing::{Instrument, error, info, instrument, warn};
 use utoipa::ToSchema;
 
 use super::error::HandlerError;
@@ -13,7 +13,7 @@ const ARTICLES_PER_BATCH: usize = 25;
 const SUMMARY_CONTEXT_TOKENS: u32 = 32 * 1024;
 // Word limits in the prompts are guidance, not tokenizer limits. Leave enough
 // headroom for Norwegian text and source names without accepting cut-off output.
-const BATCH_OUTPUT_TOKENS: u32 = 1024;
+const BATCH_OUTPUT_TOKENS: u32 = 2048;
 const FINAL_OUTPUT_TOKENS: u32 = 1536;
 const OLLAMA_REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 // Conservative allowance for the model's chat template and special tokens.
@@ -111,7 +111,7 @@ struct SummaryArticle {
 struct GenerateRequest<'a> {
     model: &'a str,
     system: &'static str,
-    prompt: String,
+    prompt: &'a str,
     stream: bool,
     think: bool,
     options: GenerateOptions,
@@ -318,26 +318,31 @@ async fn generate(
             "Summary input exceeds model context budget",
         ));
     }
-    info!(
-        model,
-        estimated_input_tokens = budget.estimated_input_tokens(&prompt),
-        num_ctx = budget.num_ctx,
-        num_predict,
-        "generating summary within context budget"
-    );
-    let request = GenerateRequest {
-        model,
-        system: SUMMARY_SYSTEM_PROMPT,
-        prompt,
-        stream: false,
-        think: false,
-        options: GenerateOptions {
-            num_ctx: budget.num_ctx,
-            num_predict,
-            temperature: 0.0,
-        },
-    };
-    let response = state
+    for (attempt, allowance) in [num_predict, num_predict.saturating_mul(2)]
+        .into_iter()
+        .enumerate()
+    {
+        info!(
+            model,
+            estimated_input_tokens = budget.estimated_input_tokens(&prompt),
+            num_ctx = budget.num_ctx,
+            num_predict = allowance,
+            attempt = attempt + 1,
+            "generating summary within context budget"
+        );
+        let request = GenerateRequest {
+            model,
+            system: SUMMARY_SYSTEM_PROMPT,
+            prompt: &prompt,
+            stream: false,
+            think: false,
+            options: GenerateOptions {
+                num_ctx: budget.num_ctx,
+                num_predict: allowance,
+                temperature: 0.0,
+            },
+        };
+        let response = state
         .http
         .post(format!(
             "{}/api/generate",
@@ -355,35 +360,75 @@ async fn generate(
                 "Summary service unavailable".to_string(),
             )
         })?;
-    let generated: GenerateResponse = response.json().await.map_err(|err| {
-        error!(error = ?err, timeout = err.is_timeout(), "invalid Ollama response");
-        HandlerError::new(
-            axum::http::StatusCode::BAD_GATEWAY,
-            "Invalid summary response".to_string(),
-        )
-    })?;
-    info!(model, prompt_tokens = generated.prompt_eval_count,
+        let generated: GenerateResponse = response.json().await.map_err(|err| {
+            error!(error = ?err, timeout = err.is_timeout(), "invalid Ollama response");
+            HandlerError::new(
+                axum::http::StatusCode::BAD_GATEWAY,
+                "Invalid summary response".to_string(),
+            )
+        })?;
+        info!(model, prompt_tokens = generated.prompt_eval_count,
         output_tokens = generated.eval_count, num_ctx = budget.num_ctx,
         done_reason = %generated.done_reason, "summary token usage");
-    if generated.done_reason != "stop"
-        || generated
+        if generated
             .prompt_eval_count
             .saturating_add(generated.eval_count)
             > budget.num_ctx
-        || generated.prompt_eval_count.saturating_add(num_predict) > budget.num_ctx
-    {
-        return Err(HandlerError::new(
-            StatusCode::BAD_GATEWAY,
-            "Summary generation truncated or exceeded context budget".to_string(),
-        ));
+            || generated.prompt_eval_count.saturating_add(allowance) > budget.num_ctx
+        {
+            error!(
+                model,
+                prompt_tokens = generated.prompt_eval_count,
+                output_tokens = generated.eval_count,
+                num_predict = allowance,
+                num_ctx = budget.num_ctx,
+                "summary generation exceeded context budget"
+            );
+            return Err(HandlerError::new(
+                StatusCode::BAD_GATEWAY,
+                "Summary generation exceeded context budget".to_string(),
+            ));
+        }
+        if generated.done_reason == "length" {
+            let retry_allowance = num_predict.saturating_mul(2);
+            let retry = attempt == 0
+                && budget.fits(&prompt, retry_allowance)
+                && generated.prompt_eval_count.saturating_add(retry_allowance) <= budget.num_ctx;
+            warn!(
+                model,
+                output_tokens = generated.eval_count,
+                num_predict = allowance,
+                retry,
+                retry_num_predict = retry_allowance,
+                "summary generation truncated"
+            );
+            if retry {
+                continue;
+            }
+            return Err(HandlerError::new(
+                StatusCode::BAD_GATEWAY,
+                "Summary generation truncated".to_string(),
+            ));
+        }
+        if generated.done_reason != "stop" {
+            error!(model, done_reason = %generated.done_reason, "summary generation incomplete");
+            return Err(HandlerError::new(
+                StatusCode::BAD_GATEWAY,
+                "Summary generation incomplete".to_string(),
+            ));
+        }
+        if generated.response.trim().is_empty() {
+            return Err(HandlerError::new(
+                axum::http::StatusCode::BAD_GATEWAY,
+                "Empty summary response".to_string(),
+            ));
+        }
+        return Ok(generated.response.trim().to_string());
     }
-    if generated.response.trim().is_empty() {
-        return Err(HandlerError::new(
-            axum::http::StatusCode::BAD_GATEWAY,
-            "Empty summary response".to_string(),
-        ));
-    }
-    Ok(generated.response.trim().to_string())
+    Err(HandlerError::new(
+        StatusCode::BAD_GATEWAY,
+        "Summary generation truncated".to_string(),
+    ))
 }
 
 #[utoipa::path(
@@ -641,7 +686,10 @@ async fn generate_summary(state: &SummaryState, token: &str) -> Result<DailySumm
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex},
+    };
     use tokio::sync::Semaphore;
 
     use super::*;
@@ -845,7 +893,7 @@ mod tests {
 
     #[test]
     fn final_merge_is_batched_by_size_not_just_summary_count() {
-        let summaries = vec!["æ".repeat(1200); 4];
+        let summaries = vec!["æ".repeat(1000); 4];
         let budget = ContextBudget { num_ctx: 8192 };
         assert!(!budget.fits(&build_final_prompt(&summaries), FINAL_OUTPUT_TOKENS));
         let prompts = budgeted_prompts(
@@ -869,6 +917,21 @@ mod tests {
         generated: serde_json::Value,
         num_predict: u32,
     ) -> (SummaryState, tokio::task::JoinHandle<()>) {
+        mock_ollama_responses(
+            metadata,
+            vec![
+                (generated.clone(), num_predict),
+                (generated, num_predict * 2),
+            ],
+        )
+        .await
+    }
+
+    async fn mock_ollama_responses(
+        metadata: serde_json::Value,
+        generated: Vec<(serde_json::Value, u32)>,
+    ) -> (SummaryState, tokio::task::JoinHandle<()>) {
+        let responses = Arc::new(Mutex::new(VecDeque::from(generated)));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let app = axum::Router::new()
@@ -885,7 +948,11 @@ mod tests {
             .route(
                 "/api/generate",
                 axum::routing::post(move |Json(request): Json<serde_json::Value>| {
-                    let generated = generated.clone();
+                    let (generated, num_predict) = responses
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .expect("unexpected generation attempt");
                     async move {
                         assert_eq!(request["model"], "test-model");
                         assert_eq!(request["options"]["num_ctx"], SUMMARY_CONTEXT_TOKENS);
@@ -990,6 +1057,150 @@ mod tests {
                 .await
                 .is_err()
             );
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn truncated_generation_retries_once_with_more_headroom() {
+        for num_predict in [BATCH_OUTPUT_TOKENS, FINAL_OUTPUT_TOKENS] {
+            let (state, server) = mock_ollama_responses(
+                serde_json::json!({}),
+                vec![
+                    (
+                        serde_json::json!({
+                            "response": "Partial notes", "prompt_eval_count": 2169,
+                            "eval_count": num_predict, "done_reason": "length",
+                        }),
+                        num_predict,
+                    ),
+                    (
+                        serde_json::json!({
+                            "response": " Complete notes (Source). ", "prompt_eval_count": 2169,
+                            "eval_count": num_predict + 100, "done_reason": "stop",
+                        }),
+                        num_predict * 2,
+                    ),
+                ],
+            )
+            .await;
+            let result = generate(
+                &state,
+                "test-model",
+                ContextBudget {
+                    num_ctx: SUMMARY_CONTEXT_TOKENS,
+                },
+                "News".to_string(),
+                num_predict,
+            )
+            .await
+            .unwrap();
+            assert_eq!(result, "Complete notes (Source).");
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn repeated_truncation_rejects_partial_output() {
+        let num_predict = BATCH_OUTPUT_TOKENS;
+        let (state, server) = mock_ollama_responses(
+            serde_json::json!({}),
+            [num_predict, num_predict * 2]
+                .into_iter()
+                .map(|allowance| {
+                    (
+                        serde_json::json!({
+                            "response": "Partial notes", "prompt_eval_count": 2169,
+                            "eval_count": allowance, "done_reason": "length",
+                        }),
+                        allowance,
+                    )
+                })
+                .collect(),
+        )
+        .await;
+        let err = generate(
+            &state,
+            "test-model",
+            ContextBudget {
+                num_ctx: SUMMARY_CONTEXT_TOKENS,
+            },
+            "News".to_string(),
+            num_predict,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.message, "Summary generation truncated");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn truncation_retry_requires_estimated_and_actual_context_headroom() {
+        let num_predict = BATCH_OUTPUT_TOKENS;
+        for (prompt, prompt_tokens) in [
+            ("x".repeat(30000), 100),
+            ("News".to_string(), SUMMARY_CONTEXT_TOKENS - num_predict),
+        ] {
+            let (state, server) = mock_ollama_responses(
+                serde_json::json!({}),
+                vec![(
+                    serde_json::json!({
+                        "response": "Partial notes", "prompt_eval_count": prompt_tokens,
+                        "eval_count": num_predict, "done_reason": "length",
+                    }),
+                    num_predict,
+                )],
+            )
+            .await;
+            let err = generate(
+                &state,
+                "test-model",
+                ContextBudget {
+                    num_ctx: SUMMARY_CONTEXT_TOKENS,
+                },
+                prompt,
+                num_predict,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(err.message, "Summary generation truncated");
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn context_overflow_and_other_incomplete_responses_do_not_retry() {
+        for (prompt_tokens, done_reason, message) in [
+            (
+                32000,
+                "length",
+                "Summary generation exceeded context budget",
+            ),
+            (100, "unexpected", "Summary generation incomplete"),
+        ] {
+            let (state, server) = mock_ollama_responses(
+                serde_json::json!({}),
+                vec![(
+                    serde_json::json!({
+                        "response": "Partial notes", "prompt_eval_count": prompt_tokens,
+                        "eval_count": BATCH_OUTPUT_TOKENS, "done_reason": done_reason,
+                    }),
+                    BATCH_OUTPUT_TOKENS,
+                )],
+            )
+            .await;
+            let err = generate(
+                &state,
+                "test-model",
+                ContextBudget {
+                    num_ctx: SUMMARY_CONTEXT_TOKENS,
+                },
+                "News".to_string(),
+                BATCH_OUTPUT_TOKENS,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(err.message, message);
             server.abort();
         }
     }
