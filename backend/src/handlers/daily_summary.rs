@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::{Json, extract::State, http::StatusCode};
 use chrono::{DateTime, Utc};
@@ -10,7 +10,12 @@ use utoipa::ToSchema;
 use super::error::HandlerError;
 
 const ARTICLES_PER_BATCH: usize = 25;
-const SUMMARY_CONTEXT_TOKENS: u32 = 32 * 1024;
+// The Ollama host has a 4 GB GPU; 16k keeps qwen3.5:2b mostly on the GPU with
+// only a small CPU spill (~39 vs ~42 tokens/s at 8k).
+const SUMMARY_CONTEXT_TOKENS: u32 = 16 * 1024;
+const DEFAULT_MODEL: &str = "qwen3.5:2b";
+// Observed Ollama usage is about 3.2 UTF-8 bytes per token for these prompts.
+const BYTES_PER_TOKEN: usize = 3;
 // Word limits in the prompts are guidance, not tokenizer limits. Leave enough
 // headroom for Norwegian text and source names without accepting cut-off output.
 const BATCH_OUTPUT_TOKENS: u32 = 2048;
@@ -56,10 +61,10 @@ impl SummaryModels {
         Self {
             batch: batch
                 .or_else(|| legacy.clone())
-                .unwrap_or_else(|| "qwen3.5:4b".to_string()),
+                .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
             final_summary: final_summary
                 .or(legacy)
-                .unwrap_or_else(|| "qwen3.5:4b".to_string()),
+                .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
         }
     }
 
@@ -96,6 +101,21 @@ pub struct DailySummary {
     pub feed_item_ids: Vec<i64>,
     pub generated_at: DateTime<Utc>,
     pub model: String,
+    pub generation_ms: Option<i64>,
+    pub llm_calls: Option<i32>,
+    pub prompt_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub llm_ms: Option<i64>,
+    pub eval_ms: Option<i64>,
+}
+
+#[derive(Default)]
+struct SummaryUsage {
+    llm_calls: i32,
+    prompt_tokens: i64,
+    output_tokens: i64,
+    llm_ms: i64,
+    eval_ms: i64,
 }
 
 #[derive(FromRow)]
@@ -130,6 +150,10 @@ struct GenerateResponse {
     prompt_eval_count: u32,
     eval_count: u32,
     done_reason: String,
+    #[serde(default)]
+    total_duration: u64,
+    #[serde(default)]
+    eval_duration: u64,
 }
 
 #[derive(Deserialize)]
@@ -144,10 +168,10 @@ struct ContextBudget {
 
 impl ContextBudget {
     fn estimated_input_tokens(self, prompt: &str) -> usize {
-        // One token per UTF-8 byte deliberately overestimates ordinary news text.
         // This is a sizing heuristic, not the model's tokenizer; actual usage is
         // checked and logged from Ollama's response as well.
-        SUMMARY_SYSTEM_PROMPT.len() + prompt.len() + TEMPLATE_TOKEN_RESERVE
+        (SUMMARY_SYSTEM_PROMPT.len() + prompt.len()).div_ceil(BYTES_PER_TOKEN)
+            + TEMPLATE_TOKEN_RESERVE
     }
 
     fn fits(self, prompt: &str, num_predict: u32) -> bool {
@@ -312,6 +336,7 @@ async fn generate(
     budget: ContextBudget,
     prompt: String,
     num_predict: u32,
+    usage: &mut SummaryUsage,
 ) -> Result<String, HandlerError> {
     if !budget.fits(&prompt, num_predict) {
         return Err(HandlerError::internal(
@@ -367,9 +392,16 @@ async fn generate(
                 "Invalid summary response".to_string(),
             )
         })?;
+        let duration_ms = (generated.total_duration / 1_000_000) as i64;
+        let eval_ms = (generated.eval_duration / 1_000_000) as i64;
+        usage.llm_calls += 1;
+        usage.prompt_tokens += i64::from(generated.prompt_eval_count);
+        usage.output_tokens += i64::from(generated.eval_count);
+        usage.llm_ms += duration_ms;
+        usage.eval_ms += eval_ms;
         info!(model, prompt_tokens = generated.prompt_eval_count,
         output_tokens = generated.eval_count, num_ctx = budget.num_ctx,
-        done_reason = %generated.done_reason, "summary token usage");
+        duration_ms, eval_ms, done_reason = %generated.done_reason, "summary token usage");
         if generated
             .prompt_eval_count
             .saturating_add(generated.eval_count)
@@ -453,7 +485,8 @@ pub async fn fetch_daily_summary(
 
 async fn latest_summary(pool: &PgPool) -> Result<Option<DailySummary>, HandlerError> {
     sqlx::query_as::<_, DailySummary>(
-        r#"SELECT id, summary, feed_ids, feed_item_ids, generated_at, model
+        r#"SELECT id, summary, feed_ids, feed_item_ids, generated_at, model,
+                  generation_ms, llm_calls, prompt_tokens, output_tokens, llm_ms, eval_ms
            FROM ai_summaries ORDER BY generated_at DESC, id DESC LIMIT 1"#,
     )
     .fetch_optional(pool)
@@ -470,16 +503,26 @@ async fn save_summary<'a>(
     feed_ids: &[i64],
     feed_item_ids: &[i64],
     model: &str,
+    generation_ms: i64,
+    usage: &SummaryUsage,
 ) -> Result<DailySummary, HandlerError> {
     sqlx::query_as::<_, DailySummary>(
-        r#"INSERT INTO ai_summaries (summary, feed_ids, feed_item_ids, model)
-           VALUES ($1, $2, $3, $4)
-           RETURNING id, summary, feed_ids, feed_item_ids, generated_at, model"#,
+        r#"INSERT INTO ai_summaries (summary, feed_ids, feed_item_ids, model, generation_ms,
+                                     llm_calls, prompt_tokens, output_tokens, llm_ms, eval_ms)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           RETURNING id, summary, feed_ids, feed_item_ids, generated_at, model,
+                     generation_ms, llm_calls, prompt_tokens, output_tokens, llm_ms, eval_ms"#,
     )
     .bind(summary)
     .bind(feed_ids)
     .bind(feed_item_ids)
     .bind(model)
+    .bind(generation_ms)
+    .bind(usage.llm_calls)
+    .bind(usage.prompt_tokens)
+    .bind(usage.output_tokens)
+    .bind(usage.llm_ms)
+    .bind(usage.eval_ms)
     .fetch_one(executor)
     .await
     .map_err(|err| {
@@ -557,6 +600,8 @@ async fn claim_summary_refresh(pool: &PgPool) -> Result<Option<String>, HandlerE
 }
 
 async fn generate_summary(state: &SummaryState, token: &str) -> Result<DailySummary, HandlerError> {
+    let started = Instant::now();
+    let mut usage = SummaryUsage::default();
     let articles = fetch_articles(&state.pool).await.map_err(|err| {
         error!(%err, "failed to fetch summary articles");
         HandlerError::internal("Failed to fetch recent articles")
@@ -596,6 +641,7 @@ async fn generate_summary(state: &SummaryState, token: &str) -> Result<DailySumm
                     batch_budget,
                     prompt,
                     BATCH_OUTPUT_TOKENS,
+                    &mut usage,
                 )
                 .await?,
             );
@@ -624,6 +670,7 @@ async fn generate_summary(state: &SummaryState, token: &str) -> Result<DailySumm
                         batch_budget,
                         prompt,
                         BATCH_OUTPUT_TOKENS,
+                        &mut usage,
                     )
                     .await?,
                 );
@@ -640,6 +687,7 @@ async fn generate_summary(state: &SummaryState, token: &str) -> Result<DailySumm
             final_budget,
             build_final_prompt(&batch_summaries),
             FINAL_OUTPUT_TOKENS,
+            &mut usage,
         )
         .await?
     };
@@ -675,8 +723,19 @@ async fn generate_summary(state: &SummaryState, token: &str) -> Result<DailySumm
         &feed_ids,
         &feed_item_ids,
         &state.models.label(),
+        started.elapsed().as_millis() as i64,
+        &usage,
     )
     .await?;
+    info!(
+        generation_ms = result.generation_ms,
+        llm_calls = usage.llm_calls,
+        prompt_tokens = usage.prompt_tokens,
+        output_tokens = usage.output_tokens,
+        llm_ms = usage.llm_ms,
+        eval_ms = usage.eval_ms,
+        "summary generation usage"
+    );
     tx.commit().await.map_err(|err| {
         error!(%err, "failed to commit summary completion");
         HandlerError::internal("Failed to save summary")
@@ -695,12 +754,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn model_selection_defaults_to_qwen_for_both_stages_and_preserves_overrides() {
+    fn model_selection_defaults_to_small_qwen_for_both_stages_and_preserves_overrides() {
         for (legacy, batch, final_summary, expected_batch, expected_final) in [
-            (None, None, None, "qwen3.5:4b", "qwen3.5:4b"),
+            (None, None, None, "qwen3.5:2b", "qwen3.5:2b"),
             (Some("single"), None, None, "single", "single"),
-            (None, Some("fast"), None, "fast", "qwen3.5:4b"),
-            (None, None, Some("quality"), "qwen3.5:4b", "quality"),
+            (None, Some("fast"), None, "fast", "qwen3.5:2b"),
+            (None, None, Some("quality"), "qwen3.5:2b", "quality"),
             (Some("single"), Some("fast"), None, "fast", "single"),
             (Some("single"), None, Some("quality"), "single", "quality"),
             (
@@ -820,8 +879,7 @@ mod tests {
     fn context_budget_reserves_system_template_and_output_tokens() {
         let prompt = "Nyheter: blåbær 世界";
         let num_predict = 700;
-        let required = SUMMARY_SYSTEM_PROMPT.len()
-            + prompt.len()
+        let required = (SUMMARY_SYSTEM_PROMPT.len() + prompt.len()).div_ceil(BYTES_PER_TOKEN)
             + TEMPLATE_TOKEN_RESERVE
             + num_predict as usize;
         assert!(
@@ -840,7 +898,7 @@ mod tests {
 
     #[test]
     fn batches_split_by_context_and_preserve_every_input() {
-        let items = vec!["a".repeat(2000), "b".repeat(2000), "c".repeat(2000)];
+        let items = vec!["a".repeat(6000), "b".repeat(6000), "c".repeat(6000)];
         let budget = ContextBudget { num_ctx: 6000 };
         let prompts = budgeted_prompts(&items, |group| group.concat(), budget, 700, 25).unwrap();
         assert_eq!(prompts.len(), 2);
@@ -851,16 +909,16 @@ mod tests {
     }
 
     #[test]
-    fn configured_context_is_32k_and_batches_reserve_output_space() {
-        assert_eq!(SUMMARY_CONTEXT_TOKENS, 32768);
+    fn configured_context_fits_small_gpu_and_batches_reserve_output_space() {
+        assert_eq!(SUMMARY_CONTEXT_TOKENS, 16384);
         let budget = ContextBudget {
             num_ctx: SUMMARY_CONTEXT_TOKENS,
         };
         let num_predict = 700;
-        let max_prompt_bytes = budget.num_ctx as usize
-            - SUMMARY_SYSTEM_PROMPT.len()
-            - TEMPLATE_TOKEN_RESERVE
-            - num_predict as usize;
+        let max_prompt_bytes =
+            (budget.num_ctx as usize - TEMPLATE_TOKEN_RESERVE - num_predict as usize)
+                * BYTES_PER_TOKEN
+                - SUMMARY_SYSTEM_PROMPT.len();
         assert!(budget.fits(&"x".repeat(max_prompt_bytes), num_predict));
         assert!(!budget.fits(&"x".repeat(max_prompt_bytes + 1), num_predict));
 
@@ -878,7 +936,7 @@ mod tests {
 
     #[test]
     fn oversized_single_input_fails_instead_of_being_silently_truncated() {
-        let items = vec!["x".repeat(8192)];
+        let items = vec!["x".repeat(8192 * BYTES_PER_TOKEN)];
         assert!(
             budgeted_prompts(
                 &items,
@@ -893,7 +951,7 @@ mod tests {
 
     #[test]
     fn final_merge_is_batched_by_size_not_just_summary_count() {
-        let summaries = vec!["æ".repeat(1000); 4];
+        let summaries = vec!["æ".repeat(3000); 4];
         let budget = ContextBudget { num_ctx: 8192 };
         assert!(!budget.fits(&build_final_prompt(&summaries), FINAL_OUTPUT_TOKENS));
         let prompts = budgeted_prompts(
@@ -976,11 +1034,11 @@ mod tests {
         for (metadata, expected) in [
             (
                 serde_json::json!({"model_info": {"gemma4.context_length": 262144}}),
-                Some(32768),
+                Some(16384),
             ),
             (
                 serde_json::json!({"model_info": {"gemma4.context_length": 32768}}),
-                Some(32768),
+                Some(16384),
             ),
             (
                 serde_json::json!({"model_info": {"gemma4.context_length": 4096}}),
@@ -1011,15 +1069,15 @@ mod tests {
                 false,
             ),
             (
-                serde_json::json!({"response": "News", "prompt_eval_count": 32069, "eval_count": 20, "done_reason": "stop"}),
+                serde_json::json!({"response": "News", "prompt_eval_count": 15685, "eval_count": 20, "done_reason": "stop"}),
                 false,
             ),
             (
-                serde_json::json!({"response": "News", "prompt_eval_count": 32000, "eval_count": 800, "done_reason": "stop"}),
+                serde_json::json!({"response": "News", "prompt_eval_count": 15616, "eval_count": 800, "done_reason": "stop"}),
                 false,
             ),
             (
-                serde_json::json!({"response": "News", "prompt_eval_count": 32068, "eval_count": 700, "done_reason": "stop"}),
+                serde_json::json!({"response": "News", "prompt_eval_count": 15684, "eval_count": 700, "done_reason": "stop"}),
                 true,
             ),
             (
@@ -1037,6 +1095,7 @@ mod tests {
                 },
                 "News".to_string(),
                 700,
+                &mut SummaryUsage::default(),
             )
             .await;
             assert_eq!(result.is_ok(), success);
@@ -1051,8 +1110,9 @@ mod tests {
                     ContextBudget {
                         num_ctx: SUMMARY_CONTEXT_TOKENS,
                     },
-                    "x".repeat(SUMMARY_CONTEXT_TOKENS as usize),
-                    700
+                    "x".repeat(SUMMARY_CONTEXT_TOKENS as usize * BYTES_PER_TOKEN),
+                    700,
+                    &mut SummaryUsage::default()
                 )
                 .await
                 .is_err()
@@ -1092,6 +1152,7 @@ mod tests {
                 },
                 "News".to_string(),
                 num_predict,
+                &mut SummaryUsage::default(),
             )
             .await
             .unwrap();
@@ -1127,6 +1188,7 @@ mod tests {
             },
             "News".to_string(),
             num_predict,
+            &mut SummaryUsage::default(),
         )
         .await
         .unwrap_err();
@@ -1138,7 +1200,7 @@ mod tests {
     async fn truncation_retry_requires_estimated_and_actual_context_headroom() {
         let num_predict = BATCH_OUTPUT_TOKENS;
         for (prompt, prompt_tokens) in [
-            ("x".repeat(30000), 100),
+            ("x".repeat(38000), 100),
             ("News".to_string(), SUMMARY_CONTEXT_TOKENS - num_predict),
         ] {
             let (state, server) = mock_ollama_responses(
@@ -1160,6 +1222,7 @@ mod tests {
                 },
                 prompt,
                 num_predict,
+                &mut SummaryUsage::default(),
             )
             .await
             .unwrap_err();
@@ -1197,6 +1260,7 @@ mod tests {
                 },
                 "News".to_string(),
                 BATCH_OUTPUT_TOKENS,
+                &mut SummaryUsage::default(),
             )
             .await
             .unwrap_err();
@@ -1228,6 +1292,7 @@ mod tests {
                     },
                     "News".to_string(),
                     num_predict,
+                    &mut SummaryUsage::default(),
                 )
                 .await;
                 assert_eq!(result.is_ok(), done_reason == "stop");
@@ -1414,10 +1479,10 @@ mod tests {
                         let prompt = request["prompt"].as_str().unwrap();
                         let model = request["model"].as_str().unwrap();
                         let (stage, response) = if prompt.starts_with("Trekk ut saksnotater") {
-                            ("batch", "x".repeat(1400))
+                            ("batch", "x".repeat(4200))
                         } else if prompt.starts_with("Slå sammen saksnotatene") {
                             assert!(!shared_model);
-                            assert_eq!(prompt.matches(&"x".repeat(1400)).count(), 2);
+                            assert_eq!(prompt.matches(&"x".repeat(4200)).count(), 2);
                             ("merge", "Merged fact (Example).".to_string())
                         } else {
                             assert!(prompt.starts_with("Skriv en samlet nyhetsoversikt"));
@@ -1526,12 +1591,28 @@ mod tests {
         };
         assert_eq!(error.status, axum::http::StatusCode::NOT_FOUND);
         assert_eq!(error.message, "No summary is available yet.");
-        let first = save_summary(&pool, "First", &[1, 2], &[10, 20], "model-a")
-            .await
-            .unwrap();
-        let second = save_summary(&pool, "Second", &[2, 3], &[20, 30], "model-b")
-            .await
-            .unwrap();
+        let first = save_summary(
+            &pool,
+            "First",
+            &[1, 2],
+            &[10, 20],
+            "model-a",
+            1,
+            &SummaryUsage::default(),
+        )
+        .await
+        .unwrap();
+        let second = save_summary(
+            &pool,
+            "Second",
+            &[2, 3],
+            &[20, 30],
+            "model-b",
+            1,
+            &SummaryUsage::default(),
+        )
+        .await
+        .unwrap();
         let result = fetch_daily_summary(State(SummaryState::new(pool.clone())))
             .await
             .unwrap()
