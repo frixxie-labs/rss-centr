@@ -24,6 +24,8 @@ services:
       - "8080:8080"
     environment:
       DATABASE_URL: postgres://postgres:postgres@db:5432/rss_centr
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3.5:9b-mlx}
     depends_on:
       db:
         condition: service_healthy
