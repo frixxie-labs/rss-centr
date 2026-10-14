@@ -13,7 +13,7 @@ const ARTICLES_PER_BATCH: usize = 25;
 // The Ollama host has a 4 GB GPU; 16k keeps context memory bounded. qwen3.5:2b
 // ignored the per-batch story limit and truncated, so gemma4:e4b is the default.
 const SUMMARY_CONTEXT_TOKENS: u32 = 16 * 1024;
-const DEFAULT_MODEL: &str = "gemma4:e4b";
+const DEFAULT_MODEL: &str = "gemma4:e2b";
 // Observed Ollama usage is about 3.2 UTF-8 bytes per token for these prompts.
 const BYTES_PER_TOKEN: usize = 3;
 // Word limits in the prompts are guidance, not tokenizer limits. Leave enough
