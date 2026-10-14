@@ -11,7 +11,7 @@ use super::error::HandlerError;
 
 const ARTICLES_PER_BATCH: usize = 25;
 // The Ollama host has a 4 GB GPU; 16k keeps context memory bounded. qwen3.5:2b
-// ignored the per-batch story limit and truncated, so gemma4:e4b is the default.
+// ignored the per-batch story limit and truncated, so gemma4:e2b is the default.
 const SUMMARY_CONTEXT_TOKENS: u32 = 16 * 1024;
 const DEFAULT_MODEL: &str = "gemma4:e2b";
 // Observed Ollama usage is about 3.2 UTF-8 bytes per token for these prompts.
@@ -756,10 +756,10 @@ mod tests {
     #[test]
     fn model_selection_defaults_to_gemma_for_both_stages_and_preserves_overrides() {
         for (legacy, batch, final_summary, expected_batch, expected_final) in [
-            (None, None, None, "gemma4:e4b", "gemma4:e4b"),
+            (None, None, None, "gemma4:e2b", "gemma4:e2b"),
             (Some("single"), None, None, "single", "single"),
-            (None, Some("fast"), None, "fast", "gemma4:e4b"),
-            (None, None, Some("quality"), "gemma4:e4b", "quality"),
+            (None, Some("fast"), None, "fast", "gemma4:e2b"),
+            (None, None, Some("quality"), "gemma4:e2b", "quality"),
             (Some("single"), Some("fast"), None, "fast", "single"),
             (Some("single"), None, Some("quality"), "single", "quality"),
             (
