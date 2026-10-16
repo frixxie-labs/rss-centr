@@ -7,6 +7,8 @@ use sqlx::PgPool;
 
 pub const DEFAULT_EMBED_MODEL: &str = "embeddinggemma";
 pub const DEFAULT_MIN_SIMILARITY: f32 = 0.2;
+/// Keep the embedding model loaded between searches; loading it takes ~2 s.
+pub const DEFAULT_EMBED_KEEP_ALIVE: &str = "1h";
 
 pub type EmbedFuture<'a> = Pin<Box<dyn Future<Output = Result<Vec<f32>>> + Send + 'a>>;
 
@@ -19,14 +21,21 @@ pub struct OllamaQueryEmbedder {
     http: reqwest::Client,
     ollama_url: String,
     model: String,
+    keep_alive: String,
 }
 
 impl QueryEmbedder for OllamaQueryEmbedder {
     fn embed_query<'a>(&'a self, query: &'a str) -> EmbedFuture<'a> {
         Box::pin(async move {
             let inputs = [query_input(query)];
-            let mut vectors =
-                ollama::embed(&self.http, &self.ollama_url, &self.model, &inputs).await?;
+            let mut vectors = ollama::embed(
+                &self.http,
+                &self.ollama_url,
+                &self.model,
+                &inputs,
+                Some(&self.keep_alive),
+            )
+            .await?;
             vectors
                 .pop()
                 .ok_or_else(|| anyhow::anyhow!("Ollama returned no query embedding"))
@@ -61,6 +70,8 @@ impl SearchState {
                 ollama_url: std::env::var("OLLAMA_URL")
                     .unwrap_or_else(|_| "http://desktop:11434".to_string()),
                 model: model.clone(),
+                keep_alive: std::env::var("OLLAMA_EMBED_KEEP_ALIVE")
+                    .unwrap_or_else(|_| DEFAULT_EMBED_KEEP_ALIVE.to_string()),
             }),
             model,
             min_similarity,
