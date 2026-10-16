@@ -75,7 +75,11 @@ pub async fn store_item_embeddings(
     model: &str,
     embeddings: &[ItemEmbedding],
 ) -> Result<u64> {
-    let mut normalized = Vec::with_capacity(embeddings.len());
+    // Store everything in one statement: the database is a network hop away,
+    // so per-item round-trips dominate the cost.
+    let mut ids = Vec::with_capacity(embeddings.len());
+    let mut hashes = Vec::with_capacity(embeddings.len());
+    let mut vectors = Vec::with_capacity(embeddings.len());
     for item in embeddings {
         let Some(vector) = normalize(&item.embedding) else {
             bail!(
@@ -83,57 +87,51 @@ pub async fn store_item_embeddings(
                 item.feed_item_id
             );
         };
-        normalized.push((item, vector));
+        ids.push(item.feed_item_id);
+        hashes.push(item.content_hash.clone());
+        vectors.push(serde_json::to_string(&vector).context("failed to encode embedding")?);
     }
 
-    let mut tx = pool
-        .begin()
-        .await
-        .context("failed to begin embedding transaction")?;
-    let mut stored = 0;
-    for (item, vector) in normalized {
-        let result = sqlx::query!(
-            r#"
+    let stored = sqlx::query_scalar!(
+        r#"
+        WITH input AS (
+            SELECT DISTINCT ON (feed_item_id) *
+            FROM UNNEST($2::BIGINT[], $3::TEXT[], $4::TEXT[]) WITH ORDINALITY
+                AS t(feed_item_id, content_hash, embedding, ord)
+            ORDER BY feed_item_id, ord DESC
+        ),
+        released AS (
+            DELETE FROM feed_item_embedding_leases
+            WHERE feed_item_id IN (SELECT feed_item_id FROM input)
+        ),
+        stored AS (
             INSERT INTO feed_item_embeddings (feed_item_id, model, content_hash, embedding, embedded_at)
-            SELECT id, $2, $3, $4, NOW() FROM feed_items WHERE id = $1
+            SELECT f.id, $1, i.content_hash,
+                   ARRAY(
+                       SELECT v::REAL
+                       FROM jsonb_array_elements_text(i.embedding::JSONB) WITH ORDINALITY AS e(v, n)
+                       ORDER BY n
+                   ), NOW()
+            FROM input i
+            INNER JOIN feed_items f ON f.id = i.feed_item_id
             ON CONFLICT (feed_item_id) DO UPDATE
                 SET model = excluded.model,
                     content_hash = excluded.content_hash,
                     embedding = excluded.embedding,
                     embedded_at = excluded.embedded_at
-            "#,
-            item.feed_item_id,
-            model,
-            item.content_hash,
-            &vector,
+            RETURNING 1
         )
-        .execute(&mut *tx)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to store embedding for feed_item_id={}",
-                item.feed_item_id
-            )
-        })?;
-        stored += result.rows_affected();
-
-        sqlx::query!(
-            "DELETE FROM feed_item_embedding_leases WHERE feed_item_id = $1",
-            item.feed_item_id
-        )
-        .execute(&mut *tx)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to release embedding lease for feed_item_id={}",
-                item.feed_item_id
-            )
-        })?;
-    }
-    tx.commit()
-        .await
-        .context("failed to commit embedding transaction")?;
-    Ok(stored)
+        SELECT COUNT(*) as "count!" FROM stored
+        "#,
+        model,
+        &ids,
+        &hashes,
+        &vectors,
+    )
+    .fetch_one(pool)
+    .await
+    .with_context(|| format!("failed to store {} embeddings", ids.len()))?;
+    Ok(stored as u64)
 }
 
 /// Rank item ids by cosine similarity to `query` among embeddings for
