@@ -135,7 +135,7 @@ impl SearchState {
             .and_then(|v| v.parse().ok())
             .unwrap_or(DEFAULT_MIN_SIMILARITY);
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .unwrap_or_default();
         Self {
