@@ -111,6 +111,21 @@ where
     scored
 }
 
+/// Semantic matches must score at least this fraction of the best match.
+/// Long queries score higher across the board than short ones, so a fixed
+/// minimum alone lets many loosely related items through for long queries.
+pub const RELATIVE_SIMILARITY: f32 = 0.6;
+
+/// Lowest similarity a semantic-only match may have: the larger of
+/// `min_similarity` and [`RELATIVE_SIMILARITY`] of the best match.
+pub fn similarity_floor(similarities: &[(i64, f32)], min_similarity: f32) -> f32 {
+    let best = similarities
+        .iter()
+        .map(|(_, score)| *score)
+        .fold(f32::NEG_INFINITY, f32::max);
+    min_similarity.max(best * RELATIVE_SIMILARITY)
+}
+
 /// Score added to items whose text matches the search keywords in hybrid search.
 pub const KEYWORD_BONUS: f32 = 0.1;
 
@@ -120,8 +135,8 @@ pub const KEYWORD_BONUS: f32 = 0.1;
 /// `keyword_ids` the items matching the keywords. Each item scores its
 /// similarity; keyword matches score `max(similarity, min_similarity) +
 /// KEYWORD_BONUS`, so they are always included but cannot outrank clearly
-/// stronger meaning matches. Items that neither match the keywords nor reach
-/// `min_similarity` are dropped. Ties are broken by the newest (largest) id.
+/// stronger meaning matches. Items that do not match the keywords must reach
+/// [`similarity_floor`]. Ties are broken by the newest (largest) id.
 pub fn hybrid_rank(
     similarities: &[(i64, f32)],
     keyword_ids: &[i64],
@@ -136,10 +151,11 @@ pub fn hybrid_rank(
         *entry = entry.max(similarity);
     }
     let keyword: HashSet<i64> = keyword_ids.iter().copied().collect();
+    let floor = similarity_floor(similarities, min_similarity);
 
     let mut scored: Vec<(i64, f32)> = best
         .iter()
-        .filter(|(id, similarity)| **similarity >= min_similarity && !keyword.contains(id))
+        .filter(|(id, similarity)| **similarity >= floor && !keyword.contains(id))
         .map(|(id, similarity)| (*id, *similarity))
         .collect();
     scored.extend(keyword.iter().map(|id| {
@@ -308,8 +324,31 @@ mod tests {
 
     #[test]
     fn hybrid_includes_keyword_matches_without_embeddings() {
-        let ranked = hybrid_rank(&[(1, 0.50), (2, 0.25)], &[9], MIN, 10);
-        assert_eq!(ranked, vec![1, 9, 2]);
+        let ranked = hybrid_rank(&[(1, 0.50), (2, 0.31)], &[9], MIN, 10);
+        assert_eq!(ranked, vec![1, 2, 9]);
+    }
+
+    #[test]
+    fn similarity_floor_is_relative_to_the_best_match() {
+        assert_eq!(similarity_floor(&[], MIN), MIN);
+        // Long queries score high overall: 60% of the best match.
+        assert!((similarity_floor(&[(1, 0.55), (2, 0.3)], MIN) - 0.33).abs() < 1e-6);
+        // Short queries score low overall: the absolute minimum wins.
+        assert_eq!(similarity_floor(&[(1, 0.25)], MIN), MIN);
+    }
+
+    #[test]
+    fn hybrid_drops_semantic_matches_far_below_the_best_one() {
+        // Benchmark: 40% of random articles score >= 0.2 for title-length
+        // queries, whose real matches score around 0.55.
+        let ranked = hybrid_rank(&[(1, 0.60), (2, 0.40), (3, 0.30)], &[], MIN, 10);
+        assert_eq!(ranked, vec![1, 2]);
+    }
+
+    #[test]
+    fn hybrid_keeps_keyword_matches_below_the_relative_floor() {
+        let ranked = hybrid_rank(&[(1, 0.60), (2, 0.25)], &[2], MIN, 10);
+        assert_eq!(ranked, vec![1, 2]);
     }
 
     #[test]
@@ -327,8 +366,9 @@ mod tests {
                 .map(|(id, s)| (id, f32::from(s) / 128.0))
                 .collect();
             let ranked = hybrid_rank(&scores, &keyword, MIN, usize::from(limit));
+            let floor = similarity_floor(&scores, MIN);
             let mut eligible: HashSet<i64> = keyword.iter().copied().collect();
-            eligible.extend(scores.iter().filter(|(_, s)| *s >= MIN).map(|(id, _)| *id));
+            eligible.extend(scores.iter().filter(|(_, s)| *s >= floor).map(|(id, _)| *id));
             let unique: HashSet<_> = ranked.iter().collect();
             unique.len() == ranked.len()
                 && ranked.iter().all(|id| eligible.contains(id))
