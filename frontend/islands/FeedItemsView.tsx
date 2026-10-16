@@ -1,10 +1,11 @@
 import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { fetchLatestItems } from "../api.ts";
 import { FeedItemCard } from "../components/FeedItemCard.tsx";
 import {
   DEFAULT_SEARCH_MODE,
   displayOrder,
+  isServerRenderedSearch,
   SEARCH_MODES,
   type SearchMode,
 } from "../newsFilters.ts";
@@ -17,6 +18,7 @@ interface FeedItemsViewProps {
   initialQuery?: string;
   initialFeedId?: number;
   initialMode?: SearchMode;
+  initialLoadFailed?: boolean;
   limit: number;
 }
 
@@ -28,6 +30,7 @@ export default function FeedItemsView(
     initialQuery = "",
     initialFeedId,
     initialMode = DEFAULT_SEARCH_MODE,
+    initialLoadFailed = false,
     limit,
   }: FeedItemsViewProps,
 ) {
@@ -50,12 +53,29 @@ export default function FeedItemsView(
     return () => clearInterval(id);
   }, []);
 
-  const normalizedQuery = query.value.trim().toLowerCase();
+  const normalizedQuery = query.value.trim();
   const selectedId = selectedFeedId.value === "all"
     ? null
     : Number(selectedFeedId.value);
 
+  const isFirstSearch = useRef(true);
+
   useEffect(() => {
+    const firstSearch = isFirstSearch.current;
+    isFirstSearch.current = false;
+    if (
+      firstSearch && !initialLoadFailed && isServerRenderedSearch(
+        {
+          query: normalizedQuery,
+          feedId: selectedId ?? undefined,
+          mode: mode.value,
+        },
+        { query: initialQuery, feedId: initialFeedId, mode: initialMode },
+      )
+    ) {
+      return;
+    }
+
     const controller = new AbortController();
     const timeoutId = setTimeout(async () => {
       isLoading.value = true;

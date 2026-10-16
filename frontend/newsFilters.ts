@@ -39,3 +39,19 @@ export function displayOrder(
 ): FeedItem[] {
   return isRankedSearch(mode, query) ? items : sortByNewest(items);
 }
+
+export interface NewsSearch {
+  query: string;
+  feedId?: number;
+  mode: SearchMode;
+}
+
+/** True when `current` is the search the server already rendered results for. */
+export function isServerRenderedSearch(
+  current: NewsSearch,
+  initial: NewsSearch,
+): boolean {
+  return current.query.trim() === initial.query.trim() &&
+    current.feedId === initial.feedId &&
+    current.mode === initial.mode;
+}
