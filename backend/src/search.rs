@@ -12,7 +12,7 @@ use sqlx::PgPool;
 
 use crate::feed::item_embedding::EmbeddingIndex;
 
-pub const DEFAULT_EMBED_MODEL: &str = "embeddinggemma";
+pub const DEFAULT_EMBED_MODEL: &str = "embeddinggemma-2";
 pub const DEFAULT_MIN_SIMILARITY: f32 = 0.2;
 /// Keep the embedding model loaded between searches; loading it takes ~2 s.
 pub const DEFAULT_EMBED_KEEP_ALIVE: &str = "1h";
