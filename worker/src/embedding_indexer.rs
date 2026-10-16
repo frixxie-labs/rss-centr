@@ -145,7 +145,7 @@ struct OllamaEmbedder {
 
 impl DocumentEmbedder for OllamaEmbedder {
     async fn embed(&self, model: &str, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
-        ollama::embed(&self.http, &self.ollama_url, model, inputs).await
+        ollama::embed(&self.http, &self.ollama_url, model, inputs, None).await
     }
 }
 

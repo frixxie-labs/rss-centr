@@ -10,6 +10,8 @@ struct EmbedRequest<'a> {
     model: &'a str,
     input: &'a [String],
     truncate: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep_alive: Option<&'a str>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -18,11 +20,15 @@ struct EmbedResponse {
 }
 
 /// Embed `inputs` with `model`, returning one unit-length vector per input.
+///
+/// `keep_alive` (for example `"1h"`) controls how long Ollama keeps the model
+/// loaded afterwards; `None` uses Ollama's default of five minutes.
 pub async fn embed(
     http: &reqwest::Client,
     ollama_url: &str,
     model: &str,
     inputs: &[String],
+    keep_alive: Option<&str>,
 ) -> Result<Vec<Vec<f32>>> {
     if inputs.is_empty() {
         return Ok(Vec::new());
@@ -34,6 +40,7 @@ pub async fn embed(
             model,
             input: inputs,
             truncate: true,
+            keep_alive,
         })
         .send()
         .await
@@ -154,9 +161,15 @@ mod tests {
     async fn embed_sends_model_and_inputs() {
         let (url, request) = serve_once("200 OK", r#"{"embeddings":[[1,0],[0,1]]}"#).await;
         let inputs = vec!["a".to_string(), "b".to_string()];
-        let vectors = embed(&reqwest::Client::new(), &url, "embeddinggemma", &inputs)
-            .await
-            .unwrap();
+        let vectors = embed(
+            &reqwest::Client::new(),
+            &url,
+            "embeddinggemma",
+            &inputs,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(vectors.len(), 2);
 
         let request = request.await.unwrap();
@@ -165,12 +178,35 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(body).unwrap();
         assert_eq!(json["model"], "embeddinggemma");
         assert_eq!(json["input"], serde_json::json!(["a", "b"]));
+        assert!(
+            json.get("keep_alive").is_none(),
+            "Ollama's default applies when unset"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_sends_keep_alive_when_set() {
+        let (url, request) = serve_once("200 OK", r#"{"embeddings":[[1,0]]}"#).await;
+        embed(
+            &reqwest::Client::new(),
+            &url,
+            "embeddinggemma",
+            &["a".to_string()],
+            Some("1h"),
+        )
+        .await
+        .unwrap();
+
+        let request = request.await.unwrap();
+        let body = &request[request.find("\r\n\r\n").unwrap() + 4..];
+        let json: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(json["keep_alive"], "1h");
     }
 
     #[tokio::test]
     async fn embed_reports_server_errors() {
         let (url, _request) = serve_once("500 Internal Server Error", r#"{"error":"boom"}"#).await;
-        let err = embed(&reqwest::Client::new(), &url, "m", &["a".to_string()])
+        let err = embed(&reqwest::Client::new(), &url, "m", &["a".to_string()], None)
             .await
             .unwrap_err();
         let message = format!("{err:#}");
@@ -180,9 +216,15 @@ mod tests {
 
     #[tokio::test]
     async fn embed_with_no_inputs_skips_the_request() {
-        let vectors = embed(&reqwest::Client::new(), "http://127.0.0.1:1", "m", &[])
-            .await
-            .unwrap();
+        let vectors = embed(
+            &reqwest::Client::new(),
+            "http://127.0.0.1:1",
+            "m",
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
         assert!(vectors.is_empty());
     }
 }
