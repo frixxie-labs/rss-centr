@@ -80,20 +80,7 @@ pub fn create_router(
         .route("/feeds/{feed_id}/ingest", post(feeds::queue_ingest_feed))
         .with_state(pool.clone());
 
-    let feed_update_queue = Router::new()
-        .route(
-            "/feed-update-queue/dequeue",
-            post(feed_update_queue::dequeue_feed_updates),
-        )
-        .route(
-            "/feed-update-queue/{feed_id}/complete",
-            post(feed_update_queue::complete_feed_update_handler),
-        )
-        .route(
-            "/feed-update-queue/{feed_id}/failed",
-            post(feed_update_queue::fail_feed_update_handler),
-        )
-        .with_state(pool.clone());
+    let feed_update_queue = feed_update_queue::router(pool.clone());
 
     let search_state = SearchState::from_env(pool.clone());
     let items = Router::new()
