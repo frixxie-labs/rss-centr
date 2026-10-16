@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH input AS (\n            SELECT DISTINCT ON (feed_item_id) *\n            FROM UNNEST($2::BIGINT[], $3::TEXT[], $4::TEXT[]) WITH ORDINALITY\n                AS t(feed_item_id, content_hash, embedding, ord)\n            ORDER BY feed_item_id, ord DESC\n        ),\n        released AS (\n            DELETE FROM feed_item_embedding_leases\n            WHERE feed_item_id IN (SELECT feed_item_id FROM input)\n        ),\n        stored AS (\n            INSERT INTO feed_item_embeddings (feed_item_id, model, content_hash, embedding, embedded_at)\n            SELECT f.id, $1, i.content_hash,\n                   ARRAY(\n                       SELECT v::REAL\n                       FROM jsonb_array_elements_text(i.embedding::JSONB) WITH ORDINALITY AS e(v, n)\n                       ORDER BY n\n                   ), NOW()\n            FROM input i\n            INNER JOIN feed_items f ON f.id = i.feed_item_id\n            ON CONFLICT (feed_item_id) DO UPDATE\n                SET model = excluded.model,\n                    content_hash = excluded.content_hash,\n                    embedding = excluded.embedding,\n                    embedded_at = excluded.embedded_at\n            RETURNING 1\n        )\n        SELECT COUNT(*) as \"count!\" FROM stored\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8Array",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "33a54b215a1775cdc64849608397e81853b55c9d331f36785ef17acc0ae6cb8a"
+}
