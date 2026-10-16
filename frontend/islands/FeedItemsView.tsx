@@ -2,7 +2,12 @@ import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { fetchLatestItems } from "../api.ts";
 import { FeedItemCard } from "../components/FeedItemCard.tsx";
-import { sortByNewest } from "../feedItemOrdering.ts";
+import {
+  DEFAULT_SEARCH_MODE,
+  displayOrder,
+  SEARCH_MODES,
+  type SearchMode,
+} from "../newsFilters.ts";
 import type { FeedItem } from "../types.ts";
 
 interface FeedItemsViewProps {
@@ -11,6 +16,7 @@ interface FeedItemsViewProps {
   initialNowIso: string;
   initialQuery?: string;
   initialFeedId?: number;
+  initialMode?: SearchMode;
   limit: number;
 }
 
@@ -21,6 +27,7 @@ export default function FeedItemsView(
     initialNowIso,
     initialQuery = "",
     initialFeedId,
+    initialMode = DEFAULT_SEARCH_MODE,
     limit,
   }: FeedItemsViewProps,
 ) {
@@ -28,7 +35,10 @@ export default function FeedItemsView(
   const selectedFeedId = useSignal<string>(
     initialFeedId === undefined ? "all" : String(initialFeedId),
   );
-  const items = useSignal(sortByNewest(initialItems));
+  const mode = useSignal<SearchMode>(initialMode);
+  const items = useSignal(
+    displayOrder(initialItems, initialMode, initialQuery),
+  );
   const isLoading = useSignal(false);
   const loadError = useSignal(false);
   const nowMs = useSignal(new Date(initialNowIso).getTime());
@@ -56,9 +66,10 @@ export default function FeedItemsView(
           limit,
           feedId: selectedId ?? undefined,
           query: normalizedQuery || undefined,
+          mode: mode.value,
           signal: controller.signal,
         });
-        items.value = sortByNewest(result);
+        items.value = displayOrder(result, mode.value, normalizedQuery);
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") {
           return;
@@ -75,7 +86,7 @@ export default function FeedItemsView(
       clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [limit, normalizedQuery, selectedId]);
+  }, [limit, normalizedQuery, selectedId, mode.value]);
 
   const feedOptions = Object.entries(feedNames)
     .map(([id, name]) => ({ id, name }))
@@ -90,7 +101,7 @@ export default function FeedItemsView(
             {isLoading.value ? "Loading..." : `${items.value.length} shown`}
           </span>
         </div>
-        <div class="grid gap-2 sm:grid-cols-[1fr_180px]">
+        <div class="grid gap-2 sm:grid-cols-[1fr_120px_180px]">
           <input
             type="search"
             value={query.value}
@@ -99,8 +110,25 @@ export default function FeedItemsView(
               query.value = target.value;
             }}
             class="min-w-0 rounded-md border border-sumi-ink4 bg-sumi-ink0 px-3 py-2 text-sm text-old-white outline-none transition focus:border-carp-yellow"
-            placeholder="Filter by title, summary, author, URL, or source"
+            placeholder={mode.value === "keyword"
+              ? "Filter by title, summary, author, URL, or source"
+              : "Search by topic or meaning"}
           />
+          <select
+            value={mode.value}
+            aria-label="Search mode"
+            onChange={(event) => {
+              const target = event.currentTarget as HTMLSelectElement;
+              mode.value = target.value as SearchMode;
+            }}
+            class="min-w-0 rounded-md border border-sumi-ink4 bg-sumi-ink0 px-3 py-2 text-sm text-old-white outline-none transition focus:border-carp-yellow"
+          >
+            {SEARCH_MODES.map((m) => (
+              <option key={m} value={m}>
+                {m[0].toUpperCase() + m.slice(1)}
+              </option>
+            ))}
+          </select>
           <select
             value={selectedFeedId.value}
             onChange={(event) => {

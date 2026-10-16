@@ -6,6 +6,7 @@ import type {
   FeedSubscription,
   FeedTitleIndexEntry,
 } from "./types.ts";
+import type { SearchMode } from "./newsFilters.ts";
 
 export async function fetchDailySummary(
   signal?: AbortSignal,
@@ -42,6 +43,7 @@ export interface LatestItemsOptions {
   limit?: number;
   feedId?: number;
   query?: string;
+  mode?: SearchMode;
   signal?: AbortSignal;
 }
 
@@ -54,9 +56,9 @@ async function throwRequestError(
   throw new Error(`${prefix}: ${res.status}${suffix}`);
 }
 
-export async function fetchLatestItems(
-  options: LatestItemsOptions = {},
-): Promise<FeedItem[]> {
+export function latestItemsSearchParams(
+  options: Omit<LatestItemsOptions, "signal">,
+): URLSearchParams {
   const params = new URLSearchParams();
   if (options.limit !== undefined) {
     params.set("limit", String(options.limit));
@@ -67,8 +69,17 @@ export async function fetchLatestItems(
   const query = options.query?.trim();
   if (query) {
     params.set("q", query);
+    if (options.mode) {
+      params.set("mode", options.mode);
+    }
   }
+  return params;
+}
 
+export async function fetchLatestItems(
+  options: LatestItemsOptions = {},
+): Promise<FeedItem[]> {
+  const params = latestItemsSearchParams(options);
   const suffix = params.size > 0 ? `?${params}` : "";
   const res = await fetch(`${apiUrl("items/latest")}${suffix}`, {
     signal: options.signal,

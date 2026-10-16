@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO feed_item_embeddings (feed_item_id, model, content_hash, embedding, embedded_at)\n            SELECT id, $2, $3, $4, NOW() FROM feed_items WHERE id = $1\n            ON CONFLICT (feed_item_id) DO UPDATE\n                SET model = excluded.model,\n                    content_hash = excluded.content_hash,\n                    embedding = excluded.embedding,\n                    embedded_at = excluded.embedded_at\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text",
+        "Float4Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "df4435a33dd54f5a49c118bfe8db0c21c1e852efe7a4f1617b78b3fe0364fa2b"
+}
