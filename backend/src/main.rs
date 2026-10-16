@@ -9,6 +9,7 @@ use tracing_subscriber::FmtSubscriber;
 use crate::{
     events::{NewFeedItemEvent, NewFeedItemListener},
     handlers::create_router,
+    search::SearchState,
 };
 
 pub mod events;
@@ -108,7 +109,12 @@ async fn main() -> Result<()> {
             .await
     });
 
-    let app = create_router(pool, metrics_handler, new_item_tx);
+    let search_state = SearchState::from_env(pool.clone());
+    let embedding_index = search_state.embeddings.clone();
+    let embedding_pool = pool.clone();
+    tokio::spawn(async move { embedding_index.run_loader(&embedding_pool).await });
+
+    let app = create_router(pool, search_state, metrics_handler, new_item_tx);
 
     let listener = TcpListener::bind(&opts.host).await?;
     tokio::select! {
