@@ -3,6 +3,7 @@ import {
   DEFAULT_SEARCH_MODE,
   displayOrder,
   isRankedSearch,
+  isServerRenderedSearch,
   parseSearchMode,
 } from "./newsFilters.ts";
 import type { FeedItem } from "./types.ts";
@@ -62,5 +63,34 @@ Deno.test("displayOrder - keeps server relevance order for ranked searches", () 
   assertEquals(
     displayOrder([older, newer], "hybrid", "").map((i) => i.id),
     [2, 1],
+  );
+});
+
+Deno.test("isServerRenderedSearch - matches the search the server already ran", () => {
+  const initial = {
+    query: "Electric cars",
+    feedId: undefined,
+    mode: "hybrid" as const,
+  };
+  assertEquals(isServerRenderedSearch(initial, initial), true);
+  assertEquals(
+    isServerRenderedSearch({ ...initial, query: "  Electric cars " }, initial),
+    true,
+  );
+});
+
+Deno.test("isServerRenderedSearch - any change needs a new fetch", () => {
+  const initial = { query: "rust", feedId: 3, mode: "hybrid" as const };
+  assertEquals(
+    isServerRenderedSearch({ ...initial, query: "rusty" }, initial),
+    false,
+  );
+  assertEquals(
+    isServerRenderedSearch({ ...initial, feedId: undefined }, initial),
+    false,
+  );
+  assertEquals(
+    isServerRenderedSearch({ ...initial, mode: "keyword" }, initial),
+    false,
   );
 });

@@ -105,6 +105,7 @@ export default define.page<typeof handler>(function NewsPage({ data }) {
           initialQuery={data.initialQuery}
           initialFeedId={data.initialSourceId}
           initialMode={data.initialMode}
+          initialLoadFailed={data.loadError}
           limit={ITEMS_LIMIT}
         />
       </main>
