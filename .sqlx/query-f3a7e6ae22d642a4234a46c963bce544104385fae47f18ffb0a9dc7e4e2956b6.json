@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT model, embedding as \"embedding!: Vec<f32>\" FROM feed_item_embeddings WHERE feed_item_id = $1",
+  "query": "SELECT model, embedding FROM feed_item_embeddings WHERE feed_item_id = $1",
   "describe": {
     "columns": [
       {
@@ -16,8 +16,8 @@
       },
       {
         "ordinal": 1,
-        "name": "embedding!: Vec<f32>",
-        "type_info": "Float4Array",
+        "name": "embedding",
+        "type_info": "Bytea",
         "origin": {
           "Table": {
             "table": "feed_item_embeddings",
@@ -36,5 +36,5 @@
       false
     ]
   },
-  "hash": "d7eecde8f6d038e06bbd2ae2a5e5035be447c2dc3e550b56a4b2dd3cf20855f9"
+  "hash": "f3a7e6ae22d642a4234a46c963bce544104385fae47f18ffb0a9dc7e4e2956b6"
 }

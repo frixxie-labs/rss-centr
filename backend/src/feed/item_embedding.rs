@@ -1,10 +1,13 @@
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use chrono::{DateTime, Utc};
 use rss_centr_core::semantic::{
     EmbeddingJob, ItemEmbedding, content_hash, dot, embedding_input, normalize, similarity_floor,
 };
 use sqlx::PgPool;
+use tokio::sync::{Mutex, RwLock};
 
 use super::feed_item::FeedItemWithDetail;
 
@@ -89,14 +92,14 @@ pub async fn store_item_embeddings(
         };
         ids.push(item.feed_item_id);
         hashes.push(item.content_hash.clone());
-        vectors.push(serde_json::to_string(&vector).context("failed to encode embedding")?);
+        vectors.push(encode_embedding(&vector));
     }
 
     let stored = sqlx::query_scalar!(
         r#"
         WITH input AS (
             SELECT DISTINCT ON (feed_item_id) *
-            FROM UNNEST($2::BIGINT[], $3::TEXT[], $4::TEXT[]) WITH ORDINALITY
+            FROM UNNEST($2::BIGINT[], $3::TEXT[], $4::BYTEA[]) WITH ORDINALITY
                 AS t(feed_item_id, content_hash, embedding, ord)
             ORDER BY feed_item_id, ord DESC
         ),
@@ -106,12 +109,7 @@ pub async fn store_item_embeddings(
         ),
         stored AS (
             INSERT INTO feed_item_embeddings (feed_item_id, model, content_hash, embedding, embedded_at)
-            SELECT f.id, $1, i.content_hash,
-                   ARRAY(
-                       SELECT v::REAL
-                       FROM jsonb_array_elements_text(i.embedding::JSONB) WITH ORDINALITY AS e(v, n)
-                       ORDER BY n
-                   ), NOW()
+            SELECT f.id, $1, i.content_hash, i.embedding, NOW()
             FROM input i
             INNER JOIN feed_items f ON f.id = i.feed_item_id
             ON CONFLICT (feed_item_id) DO UPDATE
@@ -134,17 +132,161 @@ pub async fn store_item_embeddings(
     Ok(stored as u64)
 }
 
-/// Rank item ids by cosine similarity to `query` among embeddings for
-/// `model`, dropping matches below [`similarity_floor`].
-pub async fn semantic_search_ids(
+/// Pack a vector as big-endian f32 bytes, the layout of Postgres `float4send`.
+pub fn encode_embedding(vector: &[f32]) -> Vec<u8> {
+    vector.iter().flat_map(|v| v.to_be_bytes()).collect()
+}
+
+/// Inverse of [`encode_embedding`]. Trailing partial values are ignored.
+pub fn decode_embedding(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_be_bytes(*chunk))
+        .collect()
+}
+
+struct StoredEmbedding {
+    id: i64,
+    feed_id: i64,
+    embedding: Vec<f32>,
+    embedded_at: DateTime<Utc>,
+}
+
+/// Read embeddings for `model`, optionally only those stored after `since`.
+async fn read_embeddings(
     pool: &PgPool,
     model: &str,
+    since: Option<DateTime<Utc>>,
+) -> Result<Vec<StoredEmbedding>> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT e.feed_item_id as "id!: i64",
+               f.feed_id as "feed_id!: i64",
+               e.embedding,
+               e.embedded_at
+        FROM feed_item_embeddings e
+        INNER JOIN feed_items f ON f.id = e.feed_item_id
+        WHERE e.model = $1
+          AND ($2::TIMESTAMPTZ IS NULL OR e.embedded_at > $2)
+        "#,
+        model,
+        since,
+    )
+    .fetch_all(pool)
+    .await
+    .with_context(|| format!("failed to read embeddings for model={model} since={since:?}"))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| StoredEmbedding {
+            id: row.id,
+            feed_id: row.feed_id,
+            embedding: decode_embedding(&row.embedding),
+            embedded_at: row.embedded_at,
+        })
+        .collect())
+}
+
+/// Embeddings stored this long before the newest one seen are fetched again
+/// on refresh, so rows committed late with an earlier `embedded_at` are not
+/// missed.
+const REFRESH_OVERLAP: Duration = Duration::from_secs(5 * 60);
+/// Reload everything this often to drop embeddings of deleted items.
+const FULL_RELOAD_INTERVAL: Duration = Duration::from_secs(30 * 60);
+
+#[derive(Default)]
+struct IndexState {
+    /// feed_item_id -> (feed_id, normalized embedding)
+    items: HashMap<i64, (i64, Vec<f32>)>,
+    newest: Option<DateTime<Utc>>,
+    loaded_at: Option<Instant>,
+}
+
+/// In-memory copy of the embeddings for one model. Each search pulls only
+/// embeddings stored since the previous one, so every backend replica stays
+/// current regardless of which replica stored them.
+pub struct EmbeddingIndex {
+    model: String,
+    state: RwLock<IndexState>,
+    refresh: Mutex<()>,
+}
+
+impl EmbeddingIndex {
+    pub fn new(model: impl Into<String>) -> Self {
+        Self {
+            model: model.into(),
+            state: RwLock::new(IndexState::default()),
+            refresh: Mutex::new(()),
+        }
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    async fn refresh(&self, pool: &PgPool) -> Result<()> {
+        let _guard = self.refresh.lock().await;
+        let (since, full) = {
+            let state = self.state.read().await;
+            let full = state
+                .loaded_at
+                .is_none_or(|at| at.elapsed() >= FULL_RELOAD_INTERVAL);
+            let since = state
+                .newest
+                .map(|t| t - chrono::Duration::from_std(REFRESH_OVERLAP).unwrap_or_default());
+            (if full { None } else { since }, full)
+        };
+
+        let rows = read_embeddings(pool, &self.model, since).await?;
+        let newest = rows.iter().map(|r| r.embedded_at).max();
+        let mut state = self.state.write().await;
+        if full {
+            state.items.clear();
+            state.loaded_at = Some(Instant::now());
+            state.newest = None;
+        }
+        for row in rows {
+            state.items.insert(row.id, (row.feed_id, row.embedding));
+        }
+        state.newest = state.newest.max(newest);
+        Ok(())
+    }
+
+    /// Cosine similarity of `query` to every indexed item, in no particular
+    /// order. Items with a different vector dimension are skipped.
+    pub async fn similarities(
+        &self,
+        pool: &PgPool,
+        query: &[f32],
+        feed_id: Option<i64>,
+    ) -> Result<Vec<(i64, f32)>> {
+        self.refresh(pool).await?;
+        let state = self.state.read().await;
+        Ok(state
+            .items
+            .iter()
+            .filter(|(_, (item_feed, vector))| {
+                feed_id.is_none_or(|f| f == *item_feed) && vector.len() == query.len()
+            })
+            .map(|(id, (_, vector))| (*id, dot(query, vector)))
+            .filter(|(_, score)| score.is_finite())
+            .collect())
+    }
+}
+
+/// Rank item ids by cosine similarity to `query` among indexed embeddings,
+/// dropping matches below [`similarity_floor`].
+pub async fn semantic_search_ids(
+    index: &EmbeddingIndex,
+    pool: &PgPool,
     query: &[f32],
     feed_id: Option<i64>,
     limit: usize,
     min_similarity: f32,
 ) -> Result<Vec<i64>> {
-    let mut scores = semantic_similarities(pool, model, query, feed_id).await?;
+    let mut scores = index.similarities(pool, query, feed_id).await?;
     let floor = similarity_floor(&scores, min_similarity);
     scores.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.0.cmp(&a.0)));
     Ok(scores
@@ -152,37 +294,6 @@ pub async fn semantic_search_ids(
         .filter(|(_, score)| *score >= floor)
         .take(limit)
         .map(|(id, _)| id)
-        .collect())
-}
-
-/// Cosine similarity of `query` to every item embedded with `model`, in no
-/// particular order. Items with a different vector dimension are skipped.
-pub async fn semantic_similarities(
-    pool: &PgPool,
-    model: &str,
-    query: &[f32],
-    feed_id: Option<i64>,
-) -> Result<Vec<(i64, f32)>> {
-    let rows = sqlx::query!(
-        r#"
-        SELECT e.feed_item_id as "id!: i64", e.embedding as "embedding!: Vec<f32>"
-        FROM feed_item_embeddings e
-        INNER JOIN feed_items f ON f.id = e.feed_item_id
-        WHERE e.model = $1
-          AND ($2::BIGINT IS NULL OR f.feed_id = $2)
-        "#,
-        model,
-        feed_id,
-    )
-    .fetch_all(pool)
-    .await
-    .with_context(|| format!("failed to read embeddings for model={model} feed_id={feed_id:?}"))?;
-
-    Ok(rows
-        .iter()
-        .filter(|row| row.embedding.len() == query.len())
-        .map(|row| (row.id, dot(query, &row.embedding)))
-        .filter(|(_, score)| score.is_finite())
         .collect())
 }
 
@@ -224,7 +335,6 @@ mod tests {
     use super::*;
     use crate::feed::feed_item::{insert_feed_item, insert_feed_item_detail};
     use crate::feed::feed_subscription::upsert_feed_by_url;
-    use chrono::Utc;
 
     const MODEL: &str = "test-model";
 
@@ -385,15 +495,16 @@ mod tests {
         assert_eq!(stored, 1);
 
         let row = sqlx::query!(
-            r#"SELECT model, embedding as "embedding!: Vec<f32>" FROM feed_item_embeddings WHERE feed_item_id = $1"#,
+            "SELECT model, embedding FROM feed_item_embeddings WHERE feed_item_id = $1",
             id
         )
         .fetch_one(&pool)
         .await
         .unwrap();
         assert_eq!(row.model, MODEL);
-        assert!((row.embedding[0] - 0.6).abs() < 1e-6);
-        assert!((row.embedding[1] - 0.8).abs() < 1e-6);
+        let embedding = decode_embedding(&row.embedding);
+        assert!((embedding[0] - 0.6).abs() < 1e-6);
+        assert!((embedding[1] - 0.8).abs() < 1e-6);
     }
 
     #[sqlx::test]
@@ -469,7 +580,8 @@ mod tests {
             .await
             .unwrap();
 
-        let ids = semantic_search_ids(&pool, MODEL, &[1.0, 0.0], None, 10, -1.0)
+        let index = EmbeddingIndex::new(MODEL);
+        let ids = semantic_search_ids(&index, &pool, &[1.0, 0.0], None, 10, -1.0)
             .await
             .unwrap();
         assert_eq!(
@@ -478,12 +590,12 @@ mod tests {
             "far scores 0, below 60% of the best match"
         );
 
-        let ids = semantic_search_ids(&pool, MODEL, &[1.0, 0.0], Some(feed_a.id), 1, -1.0)
+        let ids = semantic_search_ids(&index, &pool, &[1.0, 0.0], Some(feed_a.id), 1, -1.0)
             .await
             .unwrap();
         assert_eq!(ids, vec![near]);
 
-        let ids = semantic_search_ids(&pool, MODEL, &[1.0, 0.0], None, 10, 0.5)
+        let ids = semantic_search_ids(&index, &pool, &[1.0, 0.0], None, 10, 0.5)
             .await
             .unwrap();
         assert_eq!(ids, vec![other_feed, near], "unrelated items are dropped");
@@ -512,7 +624,8 @@ mod tests {
         .await
         .unwrap();
 
-        let mut scores = semantic_similarities(&pool, MODEL, &[1.0, 0.0], Some(feed_a.id))
+        let mut scores = EmbeddingIndex::new(MODEL)
+            .similarities(&pool, &[1.0, 0.0], Some(feed_a.id))
             .await
             .unwrap();
         scores.sort_by_key(|(id, _)| *id);
@@ -521,6 +634,48 @@ mod tests {
         assert!((scores[0].1 - 1.0).abs() < 1e-6);
         assert_eq!(scores[1].0, far);
         assert!(scores[1].1.abs() < 1e-6);
+    }
+
+    #[test]
+    fn embedding_bytes_round_trip_in_float4send_layout() {
+        let bytes = encode_embedding(&[1.0, -0.5]);
+        assert_eq!(bytes, vec![0x3f, 0x80, 0, 0, 0xbf, 0, 0, 0]);
+        assert_eq!(decode_embedding(&bytes), vec![1.0, -0.5]);
+    }
+
+    #[sqlx::test]
+    async fn index_picks_up_embeddings_stored_after_first_search(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/a.xml")
+            .await
+            .unwrap();
+        let first = item(&pool, feed.id, "first", "s").await;
+        let second = item(&pool, feed.id, "second", "s").await;
+        let index = EmbeddingIndex::new(MODEL);
+
+        store_item_embeddings(&pool, MODEL, &[embedding(first, &[1.0, 0.0])])
+            .await
+            .unwrap();
+        let scores = index.similarities(&pool, &[1.0, 0.0], None).await.unwrap();
+        assert_eq!(scores.len(), 1);
+
+        store_item_embeddings(
+            &pool,
+            MODEL,
+            &[
+                embedding(second, &[1.0, 0.0]),
+                embedding(first, &[0.0, 1.0]),
+            ],
+        )
+        .await
+        .unwrap();
+        let mut scores = index.similarities(&pool, &[1.0, 0.0], None).await.unwrap();
+        scores.sort_by_key(|(id, _)| *id);
+        assert_eq!(scores.len(), 2, "new embeddings are added once");
+        assert!(
+            scores[0].1.abs() < 1e-6,
+            "updated embeddings replace old ones"
+        );
+        assert!((scores[1].1 - 1.0).abs() < 1e-6);
     }
 
     #[sqlx::test]

@@ -10,9 +10,7 @@ use crate::feed::feed_item::{
     read_feed_item, read_feed_item_detail, read_feed_items_by_feed,
     read_latest_feed_items_with_detail,
 };
-use crate::feed::item_embedding::{
-    read_feed_items_with_detail_by_ids, semantic_search_ids, semantic_similarities,
-};
+use crate::feed::item_embedding::{read_feed_items_with_detail_by_ids, semantic_search_ids};
 use crate::search::SearchState;
 
 use super::error::HandlerError;
@@ -117,8 +115,8 @@ pub async fn fetch_latest_items(
 
     let ids = match (query.mode, query_vector) {
         (SearchMode::Semantic, Some(vector)) => semantic_search_ids(
+            &state.embeddings,
             &state.pool,
-            &state.model,
             &vector,
             query.feed_id,
             limit,
@@ -146,10 +144,11 @@ pub async fn fetch_latest_items(
             .collect();
             match vector {
                 Some(vector) => {
-                    let similarities =
-                        semantic_similarities(&state.pool, &state.model, &vector, query.feed_id)
-                            .await
-                            .map_err(db_error)?;
+                    let similarities = state
+                        .embeddings
+                        .similarities(&state.pool, &vector, query.feed_id)
+                        .await
+                        .map_err(db_error)?;
                     hybrid_rank(&similarities, &keyword_ids, state.min_similarity, limit)
                 }
                 None => keyword_ids.into_iter().take(limit).collect(),
@@ -256,6 +255,7 @@ mod tests {
             pool,
             embedder: Arc::new(embedder),
             model: MODEL.to_string(),
+            embeddings: Arc::new(crate::feed::item_embedding::EmbeddingIndex::new(MODEL)),
             min_similarity: 0.3,
         };
         Router::new()
