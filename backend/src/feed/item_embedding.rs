@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result, bail};
 use rss_centr_core::semantic::{
-    EmbeddingJob, ItemEmbedding, content_hash, dot, embedding_input, normalize,
+    EmbeddingJob, ItemEmbedding, content_hash, dot, embedding_input, normalize, similarity_floor,
 };
 use sqlx::PgPool;
 
@@ -137,7 +137,7 @@ pub async fn store_item_embeddings(
 }
 
 /// Rank item ids by cosine similarity to `query` among embeddings for
-/// `model`, dropping matches scoring below `min_similarity`.
+/// `model`, dropping matches below [`similarity_floor`].
 pub async fn semantic_search_ids(
     pool: &PgPool,
     model: &str,
@@ -147,10 +147,11 @@ pub async fn semantic_search_ids(
     min_similarity: f32,
 ) -> Result<Vec<i64>> {
     let mut scores = semantic_similarities(pool, model, query, feed_id).await?;
+    let floor = similarity_floor(&scores, min_similarity);
     scores.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.0.cmp(&a.0)));
     Ok(scores
         .into_iter()
-        .filter(|(_, score)| *score >= min_similarity)
+        .filter(|(_, score)| *score >= floor)
         .take(limit)
         .map(|(id, _)| id)
         .collect())
@@ -473,7 +474,11 @@ mod tests {
         let ids = semantic_search_ids(&pool, MODEL, &[1.0, 0.0], None, 10, -1.0)
             .await
             .unwrap();
-        assert_eq!(ids, vec![other_feed, near, far]);
+        assert_eq!(
+            ids,
+            vec![other_feed, near],
+            "far scores 0, below 60% of the best match"
+        );
 
         let ids = semantic_search_ids(&pool, MODEL, &[1.0, 0.0], Some(feed_a.id), 1, -1.0)
             .await
