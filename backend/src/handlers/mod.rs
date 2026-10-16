@@ -17,8 +17,10 @@ use tracing::{info, instrument};
 use utoipa::OpenApi;
 
 use crate::events::NewFeedItemEvent;
+use crate::search::SearchState;
 
 mod daily_summary;
+mod embeddings;
 mod error;
 mod feed_title_index;
 mod feed_update_queue;
@@ -93,12 +95,18 @@ pub fn create_router(
         )
         .with_state(pool.clone());
 
+    let search_state = SearchState::from_env(pool.clone());
     let items = Router::new()
         .route("/feeds/{feed_id}/items", get(items::fetch_items_by_feed))
         .route("/items/latest", get(items::fetch_latest_items))
         .route("/items/{item_id}", get(items::fetch_item_by_id))
         .route("/items/{item_id}/detail", get(items::fetch_item_detail))
-        .with_state(pool.clone());
+        .with_state(search_state.clone());
+
+    let embeddings = Router::new()
+        .route("/embeddings/claim", post(embeddings::claim_embeddings))
+        .route("/embeddings", put(embeddings::store_embeddings))
+        .with_state(search_state);
 
     let item_events = Router::new()
         .route("/items/stream", get(sse::stream_new_items))
@@ -136,6 +144,7 @@ pub fn create_router(
     let internal_routes = Router::new()
         .nest("/internal", feed_update_queue)
         .nest("/internal", summary_refresh)
+        .nest("/internal", embeddings)
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
@@ -189,6 +198,8 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
         items::fetch_item_detail,
         daily_summary::fetch_daily_summary,
         daily_summary::refresh_daily_summary,
+        embeddings::claim_embeddings,
+        embeddings::store_embeddings,
     ),
     components(
         schemas(
@@ -207,6 +218,12 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
             crate::feed::feed_title_index::FeedTitleIndexEntry,
             crate::feed::feed_title_index::FeedTitleIndexItem,
             daily_summary::DailySummary,
+            items::SearchMode,
+            rss_centr_core::semantic::ClaimEmbeddingsResponse,
+            rss_centr_core::semantic::EmbeddingJob,
+            rss_centr_core::semantic::StoreEmbeddingsRequest,
+            rss_centr_core::semantic::StoreEmbeddingsResult,
+            rss_centr_core::semantic::ItemEmbedding,
             ping::PingResponse,
             health::HealthResponse,
             health::HealthChecks,
@@ -217,6 +234,7 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
         (name = "feeds", description = "Feed subscription endpoints"),
         (name = "feed update queue", description = "Worker feed update queue endpoints"),
         (name = "items", description = "Feed item endpoints"),
+        (name = "embeddings", description = "Worker semantic search indexing endpoints"),
         (name = "system", description = "System health and metrics endpoints"),
     )
 )]

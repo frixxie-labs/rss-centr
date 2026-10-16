@@ -3,7 +3,7 @@ import { fetchFeeds, fetchLatestItems } from "../api.ts";
 import { Header } from "../components/Header.tsx";
 import FeedItemsView from "../islands/FeedItemsView.tsx";
 import { getLogger } from "../logger.ts";
-import { parseSourceId } from "../newsFilters.ts";
+import { parseSearchMode, parseSourceId } from "../newsFilters.ts";
 import type { FeedItem } from "../types.ts";
 import { define } from "../utils.ts";
 
@@ -15,6 +15,7 @@ export const handler = define.handlers({
     const url = new URL(ctx.req.url);
     const initialQuery = url.searchParams.get("q")?.trim() ?? "";
     const initialSourceId = parseSourceId(url);
+    const initialMode = parseSearchMode(url);
     let items: FeedItem[] = [];
     let feedNames: Record<number, string> = {};
     let loadError = false;
@@ -26,6 +27,7 @@ export const handler = define.handlers({
           limit: ITEMS_LIMIT,
           feedId: initialSourceId,
           query: initialQuery || undefined,
+          mode: initialMode,
         }),
         fetchFeeds(),
       ]);
@@ -46,6 +48,7 @@ export const handler = define.handlers({
         initialNowIso,
         initialQuery,
         initialSourceId,
+        initialMode,
       },
     };
   },
@@ -101,6 +104,7 @@ export default define.page<typeof handler>(function NewsPage({ data }) {
           initialNowIso={data.initialNowIso}
           initialQuery={data.initialQuery}
           initialFeedId={data.initialSourceId}
+          initialMode={data.initialMode}
           limit={ITEMS_LIMIT}
         />
       </main>

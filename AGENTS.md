@@ -90,6 +90,14 @@ cargo check --manifest-path worker/Cargo.toml
 
 The worker reads `BACKEND_URL` or `--backend-url` and consumes the backend feed update queue endpoints.
 
+### Semantic search
+
+`GET /api/items/latest?q=...&mode=keyword|semantic|hybrid` (API default `keyword`, UI default `hybrid`). Embeddings are stored as `REAL[]` in `feed_item_embeddings` and ranked in Rust (`core/src/semantic.rs`); no Postgres extension is needed.
+
+- Backend env: `OLLAMA_URL`, `OLLAMA_EMBED_MODEL` (default `embeddinggemma`), `SEMANTIC_MIN_SIMILARITY` (default `0.2`).
+- Worker env: `OLLAMA_URL` enables the indexer, which claims items via `POST /internal/embeddings/claim` and stores vectors via `PUT /internal/embeddings`. The backend decides the model.
+- Run `ollama pull embeddinggemma` on the Ollama host. Changing `OLLAMA_EMBED_MODEL` automatically re-indexes all items.
+
 ## Frontend Commands (Deno / Fresh 2)
 
 Run from `frontend/`:

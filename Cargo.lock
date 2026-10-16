@@ -1861,8 +1861,13 @@ dependencies = [
 name = "rss-centr-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "chrono",
+ "quickcheck",
+ "reqwest",
  "serde",
+ "serde_json",
+ "tokio",
  "utoipa",
 ]
 

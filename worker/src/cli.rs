@@ -42,6 +42,10 @@ pub(crate) struct Opts {
     #[arg(long, env = "BACKEND_URL", default_value = "http://localhost:8080")]
     pub(crate) backend_url: String,
 
+    /// Ollama base URL used to embed feed items for semantic search.
+    #[arg(long, env = "OLLAMA_URL")]
+    pub(crate) ollama_url: Option<String>,
+
     #[arg(long, default_value = "0.0.0.0:9090")]
     pub(crate) metrics_host: String,
 

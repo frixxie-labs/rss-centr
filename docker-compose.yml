@@ -26,6 +26,7 @@ services:
       DATABASE_URL: postgres://postgres:postgres@db:5432/rss_centr
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma4:e4b}
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-embeddinggemma}
     depends_on:
       db:
         condition: service_healthy
@@ -39,6 +40,7 @@ services:
       - "9090:9090"
     environment:
       BACKEND_URL: http://backend:8080
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
     depends_on:
       - backend
 
