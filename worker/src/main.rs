@@ -57,15 +57,11 @@ async fn main() -> Result<()> {
         .context("failed to build HTTP client")?;
     if !opts.once {
         tokio::spawn(summary_refresh::run(opts.backend_url.clone(), http.clone()));
-        if let Some(ollama_url) = opts.ollama_url.clone() {
-            tokio::spawn(embedding_indexer::run(
-                opts.backend_url.clone(),
-                ollama_url,
-                http.clone(),
-            ));
-        } else {
-            info!("OLLAMA_URL not set; semantic search indexing disabled");
-        }
+        tokio::spawn(embedding_indexer::run(
+            opts.backend_url.clone(),
+            opts.ollama_url.clone(),
+            http.clone(),
+        ));
     }
     let queue = QueueClient::new(opts.backend_url, http.clone());
     let idle_sleep = Duration::from_secs(opts.idle_sleep_seconds);
