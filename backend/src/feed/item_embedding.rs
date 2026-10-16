@@ -8,6 +8,7 @@ use rss_centr_core::semantic::{
 };
 use sqlx::PgPool;
 use tokio::sync::{Mutex, RwLock};
+use tracing::{info, warn};
 
 use super::feed_item::FeedItemWithDetail;
 
@@ -195,6 +196,7 @@ async fn read_embeddings(
 const REFRESH_OVERLAP: Duration = Duration::from_secs(5 * 60);
 /// Reload everything this often to drop embeddings of deleted items.
 const FULL_RELOAD_INTERVAL: Duration = Duration::from_secs(30 * 60);
+const LOAD_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 struct IndexState {
@@ -226,32 +228,78 @@ impl EmbeddingIndex {
         &self.model
     }
 
+    /// Pull embeddings stored since the last refresh. The first call loads
+    /// everything; concurrent callers wait for it instead of loading twice.
     async fn refresh(&self, pool: &PgPool) -> Result<()> {
         let _guard = self.refresh.lock().await;
-        let (since, full) = {
+        let (since, loaded) = {
             let state = self.state.read().await;
-            let full = state
-                .loaded_at
-                .is_none_or(|at| at.elapsed() >= FULL_RELOAD_INTERVAL);
             let since = state
                 .newest
                 .map(|t| t - chrono::Duration::from_std(REFRESH_OVERLAP).unwrap_or_default());
-            (if full { None } else { since }, full)
+            (since, state.loaded_at.is_some())
         };
+        if !loaded {
+            return self.load_all(pool).await;
+        }
 
         let rows = read_embeddings(pool, &self.model, since).await?;
         let newest = rows.iter().map(|r| r.embedded_at).max();
         let mut state = self.state.write().await;
-        if full {
-            state.items.clear();
-            state.loaded_at = Some(Instant::now());
-            state.newest = None;
-        }
         for row in rows {
             state.items.insert(row.id, (row.feed_id, row.embedding));
         }
         state.newest = state.newest.max(newest);
         Ok(())
+    }
+
+    /// Read every embedding and swap it in. Searches keep using the previous
+    /// copy while this runs; incremental refreshes overlap by
+    /// [`REFRESH_OVERLAP`], so rows stored meanwhile are picked up again.
+    async fn load_all(&self, pool: &PgPool) -> Result<()> {
+        let rows = read_embeddings(pool, &self.model, None).await?;
+        let newest = rows.iter().map(|r| r.embedded_at).max();
+        let items = rows
+            .into_iter()
+            .map(|row| (row.id, (row.feed_id, row.embedding)))
+            .collect();
+        let mut state = self.state.write().await;
+        state.items = items;
+        state.newest = newest;
+        state.loaded_at = Some(Instant::now());
+        Ok(())
+    }
+
+    /// Load the index right away, then reload it fully every
+    /// [`FULL_RELOAD_INTERVAL`] to drop embeddings of deleted items. Runs
+    /// until the task is dropped.
+    pub async fn run_loader(&self, pool: &PgPool) {
+        let mut first = true;
+        loop {
+            let started = Instant::now();
+            let result = if first {
+                self.refresh(pool).await
+            } else {
+                self.load_all(pool).await
+            };
+            match result {
+                Ok(()) => {
+                    first = false;
+                    let count = self.state.read().await.items.len();
+                    info!(
+                        model = %self.model,
+                        count,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "loaded embedding index"
+                    );
+                    tokio::time::sleep(FULL_RELOAD_INTERVAL).await;
+                }
+                Err(err) => {
+                    warn!(error = %format!("{err:#}"), "failed to load embedding index; retrying");
+                    tokio::time::sleep(LOAD_RETRY_INTERVAL).await;
+                }
+            }
+        }
     }
 
     /// Cosine similarity of `query` to every indexed item, in no particular
@@ -676,6 +724,39 @@ mod tests {
             "updated embeddings replace old ones"
         );
         assert!((scores[1].1 - 1.0).abs() < 1e-6);
+    }
+
+    #[sqlx::test]
+    async fn full_reload_drops_embeddings_of_deleted_items(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/a.xml")
+            .await
+            .unwrap();
+        let kept = item(&pool, feed.id, "kept", "s").await;
+        let deleted = item(&pool, feed.id, "deleted", "s").await;
+        store_item_embeddings(
+            &pool,
+            MODEL,
+            &[
+                embedding(kept, &[1.0, 0.0]),
+                embedding(deleted, &[1.0, 0.0]),
+            ],
+        )
+        .await
+        .unwrap();
+        let index = EmbeddingIndex::new(MODEL);
+        index.load_all(&pool).await.unwrap();
+
+        sqlx::query!("DELETE FROM feed_items WHERE id = $1", deleted)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let scores = index.similarities(&pool, &[1.0, 0.0], None).await.unwrap();
+        assert_eq!(scores.len(), 2, "incremental refresh keeps stale items");
+
+        index.load_all(&pool).await.unwrap();
+        let scores = index.similarities(&pool, &[1.0, 0.0], None).await.unwrap();
+        let ids: Vec<i64> = scores.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, vec![kept]);
     }
 
     #[sqlx::test]

@@ -60,6 +60,7 @@ pub async fn profile_endpoint(request: Request, next: Next) -> Response {
 
 pub fn create_router(
     pool: PgPool,
+    search_state: SearchState,
     metrics_handler: PrometheusHandle,
     new_item_tx: broadcast::Sender<NewFeedItemEvent>,
 ) -> Router {
@@ -82,7 +83,6 @@ pub fn create_router(
 
     let feed_update_queue = feed_update_queue::router(pool.clone());
 
-    let search_state = SearchState::from_env(pool.clone());
     let items = Router::new()
         .route("/feeds/{feed_id}/items", get(items::fetch_items_by_feed))
         .route("/items/latest", get(items::fetch_latest_items))
