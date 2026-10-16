@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT f.id as \"id!: i64\",\n               f.feed_id as \"feed_id!: i64\",\n               f.external_id,\n               f.title,\n               f.url,\n               f.inserted_at as \"inserted_at: _\",\n               d.summary,\n               d.content,\n               d.author,\n               d.published_at as \"published_at: _\"\n        FROM feed_items f\n        LEFT JOIN feed_item_details d ON d.feed_item_id = f.id\n        INNER JOIN feeds s ON s.id = f.feed_id\n        CROSS JOIN LATERAL (SELECT websearch_to_tsquery('simple', $3) AS query) search\n        WHERE ($2::BIGINT IS NULL OR f.feed_id = $2)\n          AND (\n              $3::TEXT IS NULL\n              OR to_tsvector('simple', f.title || ' ' || f.url) @@ search.query\n              OR to_tsvector(\n                  'simple',\n                  COALESCE(d.summary, '') || ' ' || COALESCE(d.content, '') || ' ' || COALESCE(d.author, '')\n              ) @@ search.query\n              OR to_tsvector('simple', COALESCE(s.title, '') || ' ' || s.url) @@ search.query\n          )\n        ORDER BY LEAST(COALESCE(d.published_at, f.inserted_at), f.inserted_at) DESC, f.id DESC\n        LIMIT $1\n        ",
+  "query": "\n        WITH search AS (SELECT websearch_to_tsquery('simple', $3) AS query),\n        matches AS (\n            SELECT id FROM feed_items, search WHERE search_vector @@ search.query\n            UNION\n            SELECT feed_item_id FROM feed_item_details, search WHERE search_vector @@ search.query\n            UNION\n            SELECT i.id\n            FROM feeds s\n            INNER JOIN feed_items i ON i.feed_id = s.id\n            CROSS JOIN search\n            WHERE s.search_vector @@ search.query\n        )\n        SELECT f.id as \"id!: i64\",\n               f.feed_id as \"feed_id!: i64\",\n               f.external_id,\n               f.title,\n               f.url,\n               f.inserted_at as \"inserted_at: _\",\n               d.summary as \"summary?\",\n               d.content as \"content?\",\n               d.author as \"author?\",\n               d.published_at as \"published_at?: _\"\n        FROM feed_items f\n        LEFT JOIN feed_item_details d ON d.feed_item_id = f.id\n        WHERE ($2::BIGINT IS NULL OR f.feed_id = $2)\n          AND ($3::TEXT IS NULL OR f.id IN (SELECT id FROM matches))\n        ORDER BY LEAST(COALESCE(d.published_at, f.inserted_at), f.inserted_at) DESC, f.id DESC\n        LIMIT $1\n        ",
   "describe": {
     "columns": [
       {
@@ -71,7 +71,7 @@
       },
       {
         "ordinal": 6,
-        "name": "summary",
+        "name": "summary?",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -82,7 +82,7 @@
       },
       {
         "ordinal": 7,
-        "name": "content",
+        "name": "content?",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -93,7 +93,7 @@
       },
       {
         "ordinal": 8,
-        "name": "author",
+        "name": "author?",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -104,7 +104,7 @@
       },
       {
         "ordinal": 9,
-        "name": "published_at: _",
+        "name": "published_at?: _",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -134,5 +134,5 @@
       false
     ]
   },
-  "hash": "169d0fb8a0dd64e18f697641938752ab6fa0a4d1fdaa9dd90228a73ef14e9972"
+  "hash": "7783b76094462eeeddb073769fe5ee79ced93d69cdf731fed9cfd2d1ea0abeae"
 }

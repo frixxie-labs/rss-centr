@@ -307,30 +307,32 @@ pub async fn read_latest_feed_items_with_detail(
     let rows = sqlx::query_as!(
         FeedItemWithDetail,
         r#"
+        WITH search AS (SELECT websearch_to_tsquery('simple', $3) AS query),
+        matches AS (
+            SELECT id FROM feed_items, search WHERE search_vector @@ search.query
+            UNION
+            SELECT feed_item_id FROM feed_item_details, search WHERE search_vector @@ search.query
+            UNION
+            SELECT i.id
+            FROM feeds s
+            INNER JOIN feed_items i ON i.feed_id = s.id
+            CROSS JOIN search
+            WHERE s.search_vector @@ search.query
+        )
         SELECT f.id as "id!: i64",
                f.feed_id as "feed_id!: i64",
                f.external_id,
                f.title,
                f.url,
                f.inserted_at as "inserted_at: _",
-               d.summary,
-               d.content,
-               d.author,
-               d.published_at as "published_at: _"
+               d.summary as "summary?",
+               d.content as "content?",
+               d.author as "author?",
+               d.published_at as "published_at?: _"
         FROM feed_items f
         LEFT JOIN feed_item_details d ON d.feed_item_id = f.id
-        INNER JOIN feeds s ON s.id = f.feed_id
-        CROSS JOIN LATERAL (SELECT websearch_to_tsquery('simple', $3) AS query) search
         WHERE ($2::BIGINT IS NULL OR f.feed_id = $2)
-          AND (
-              $3::TEXT IS NULL
-              OR to_tsvector('simple', f.title || ' ' || f.url) @@ search.query
-              OR to_tsvector(
-                  'simple',
-                  COALESCE(d.summary, '') || ' ' || COALESCE(d.content, '') || ' ' || COALESCE(d.author, '')
-              ) @@ search.query
-              OR to_tsvector('simple', COALESCE(s.title, '') || ' ' || s.url) @@ search.query
-          )
+          AND ($3::TEXT IS NULL OR f.id IN (SELECT id FROM matches))
         ORDER BY LEAST(COALESCE(d.published_at, f.inserted_at), f.inserted_at) DESC, f.id DESC
         LIMIT $1
         "#,
@@ -1324,5 +1326,128 @@ mod tests {
 
         let result = read_feed_item_detail(&pool, item.id).await;
         assert!(result.is_err());
+    }
+
+    #[sqlx::test]
+    async fn test_keyword_search_matches_every_searchable_field(pool: PgPool) {
+        sqlx::query!("DELETE FROM feed_items")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let feed = upsert_feed_by_url(&pool, "https://example.com/feed.xml")
+            .await
+            .unwrap();
+        let other = upsert_feed_by_url(&pool, "https://zebras.example.org/rss")
+            .await
+            .unwrap();
+        sqlx::query!(
+            "UPDATE feeds SET title = 'Giraffe Weekly' WHERE id = $1",
+            feed.id
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let now = Utc::now();
+        let add = async |feed_id: i64,
+                         key: &str,
+                         title: &str,
+                         url: &str,
+                         summary: &str,
+                         content: &str,
+                         author: &str| {
+            let item = insert_feed_item(&pool, feed_id, key, title, url)
+                .await
+                .unwrap();
+            insert_feed_item_detail(&pool, item.id, summary, content, author, now)
+                .await
+                .unwrap();
+            item.id
+        };
+        let by_title = add(other.id, "t", "Pelican sighting", "https://x/1", "", "", "").await;
+        let by_summary = add(
+            other.id,
+            "s",
+            "Untitled",
+            "https://x/3",
+            "<p>A walrus appears</p>",
+            "",
+            "",
+        )
+        .await;
+        let by_content = add(
+            other.id,
+            "c",
+            "Untitled",
+            "https://x/4",
+            "",
+            "Long text about otters",
+            "",
+        )
+        .await;
+        let by_author = add(
+            other.id,
+            "a",
+            "Untitled",
+            "https://x/5",
+            "",
+            "",
+            "Jane Narwhal",
+        )
+        .await;
+        let by_feed_title = add(feed.id, "f", "Untitled", "https://x/6", "", "", "").await;
+        let no_detail = insert_feed_item(&pool, other.id, "n", "Lonely heron", "https://x/7")
+            .await
+            .unwrap()
+            .id;
+
+        let search = async |q: &str| -> Vec<i64> {
+            read_latest_feed_items_with_detail(&pool, Some(50), None, Some(q))
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|i| i.id)
+                .collect()
+        };
+        assert_eq!(search("pelican").await, vec![by_title]);
+        assert_eq!(search("walrus").await, vec![by_summary]);
+        assert_eq!(search("otters").await, vec![by_content]);
+        assert_eq!(search("narwhal").await, vec![by_author]);
+        assert_eq!(search("giraffe").await, vec![by_feed_title]);
+        assert_eq!(search("heron").await, vec![no_detail]);
+        assert!(
+            search("pelican walrus").await.is_empty(),
+            "all words must match"
+        );
+        assert!(search("unicorn").await.is_empty());
+    }
+
+    #[sqlx::test]
+    async fn test_keyword_search_uses_precomputed_indexed_vectors(pool: PgPool) {
+        // Rebuilding tsvectors for every row on each search was the main cost
+        // of keyword and hybrid search; they must be stored and GIN indexed.
+        for table in ["feed_items", "feed_item_details", "feeds"] {
+            let indexed = sqlx::query_scalar!(
+                r#"
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_index i
+                    JOIN pg_class t ON t.oid = i.indrelid
+                    JOIN pg_class ix ON ix.oid = i.indexrelid
+                    JOIN pg_am am ON am.oid = ix.relam
+                    JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(i.indkey)
+                    WHERE t.relname = $1 AND a.attname = 'search_vector' AND am.amname = 'gin'
+                ) as "indexed!"
+                "#,
+                table
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(
+                indexed,
+                "{table}.search_vector should be a GIN-indexed column"
+            );
+        }
     }
 }
