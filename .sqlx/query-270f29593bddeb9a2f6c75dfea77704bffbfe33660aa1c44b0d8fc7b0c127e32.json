@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT EXISTS (\n                    SELECT 1\n                    FROM pg_index i\n                    JOIN pg_class t ON t.oid = i.indrelid\n                    JOIN pg_class ix ON ix.oid = i.indexrelid\n                    JOIN pg_am am ON am.oid = ix.relam\n                    JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(i.indkey)\n                    WHERE t.relname = $1 AND a.attname = 'search_vector' AND am.amname = 'gin'\n                ) as \"indexed!\"\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "indexed!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Name"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "270f29593bddeb9a2f6c75dfea77704bffbfe33660aa1c44b0d8fc7b0c127e32"
+}
