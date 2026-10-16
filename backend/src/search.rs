@@ -10,6 +10,8 @@ use axum::extract::FromRef;
 use rss_centr_core::{ollama, semantic::query_input};
 use sqlx::PgPool;
 
+use crate::feed::item_embedding::EmbeddingIndex;
+
 pub const DEFAULT_EMBED_MODEL: &str = "embeddinggemma";
 pub const DEFAULT_MIN_SIMILARITY: f32 = 0.2;
 /// Keep the embedding model loaded between searches; loading it takes ~2 s.
@@ -123,6 +125,7 @@ pub struct SearchState {
     pub pool: PgPool,
     pub embedder: Arc<dyn QueryEmbedder>,
     pub model: String,
+    pub embeddings: Arc<EmbeddingIndex>,
     pub min_similarity: f32,
 }
 
@@ -151,6 +154,7 @@ impl SearchState {
                 }),
                 QUERY_CACHE_CAPACITY,
             )),
+            embeddings: Arc::new(EmbeddingIndex::new(model.clone())),
             model,
             min_similarity,
         }
