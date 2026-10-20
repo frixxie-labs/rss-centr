@@ -303,6 +303,7 @@ pub async fn read_latest_feed_items_with_detail(
     limit: Option<i64>,
     feed_id: Option<i64>,
     query: Option<&str>,
+    offset: Option<i64>,
 ) -> Result<Vec<FeedItemWithDetail>> {
     let rows = sqlx::query_as!(
         FeedItemWithDetail,
@@ -335,16 +336,18 @@ pub async fn read_latest_feed_items_with_detail(
           AND ($3::TEXT IS NULL OR f.id IN (SELECT id FROM matches))
         ORDER BY LEAST(COALESCE(d.published_at, f.inserted_at), f.inserted_at) DESC, f.id DESC
         LIMIT $1
+        OFFSET COALESCE($4::BIGINT, 0)
         "#,
         limit,
         feed_id,
         query,
+        offset,
     )
     .fetch_all(pool)
     .await
     .with_context(|| {
         format!(
-            "failed to read latest feed items with detail with limit={limit:?} feed_id={feed_id:?} query={query:?}"
+            "failed to read latest feed items with detail with limit={limit:?} offset={offset:?} feed_id={feed_id:?} query={query:?}"
         )
     })?;
 
@@ -1047,17 +1050,54 @@ mod tests {
             .await
             .unwrap();
 
-        let by_feed = read_latest_feed_items_with_detail(&pool, Some(10), Some(feed1.id), None)
-            .await
-            .unwrap();
+        let by_feed =
+            read_latest_feed_items_with_detail(&pool, Some(10), Some(feed1.id), None, None)
+                .await
+                .unwrap();
         assert_eq!(by_feed.len(), 1);
         assert_eq!(by_feed[0].title, "Rust release");
 
-        let by_query = read_latest_feed_items_with_detail(&pool, Some(10), None, Some("index"))
-            .await
-            .unwrap();
+        let by_query =
+            read_latest_feed_items_with_detail(&pool, Some(10), None, Some("index"), None)
+                .await
+                .unwrap();
         assert_eq!(by_query.len(), 1);
         assert_eq!(by_query[0].title, "Postgres news");
+    }
+
+    #[sqlx::test]
+    async fn test_read_latest_feed_items_with_detail_pages_with_offset(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/paged.xml")
+            .await
+            .unwrap();
+        for n in 1..=5 {
+            insert_feed_item(
+                &pool,
+                feed.id,
+                &format!("ext-{n}"),
+                &format!("Item {n}"),
+                &format!("https://example.com/{n}"),
+            )
+            .await
+            .unwrap();
+        }
+
+        let all = read_latest_feed_items_with_detail(&pool, Some(10), None, None, None)
+            .await
+            .unwrap();
+        let first = read_latest_feed_items_with_detail(&pool, Some(2), None, None, Some(0))
+            .await
+            .unwrap();
+        let second = read_latest_feed_items_with_detail(&pool, Some(2), None, None, Some(2))
+            .await
+            .unwrap();
+        let last = read_latest_feed_items_with_detail(&pool, Some(2), None, None, Some(4))
+            .await
+            .unwrap();
+
+        let ids = |items: &[FeedItemWithDetail]| items.iter().map(|i| i.id).collect::<Vec<_>>();
+        assert_eq!([ids(&first), ids(&second), ids(&last)].concat(), ids(&all));
+        assert_eq!(last.len(), 1);
     }
 
     #[sqlx::test]
@@ -1115,7 +1155,7 @@ mod tests {
             .await
             .unwrap();
 
-        let items = read_latest_feed_items_with_detail(&pool, Some(10), None, None)
+        let items = read_latest_feed_items_with_detail(&pool, Some(10), None, None, None)
             .await
             .unwrap();
 
@@ -1402,7 +1442,7 @@ mod tests {
             .id;
 
         let search = async |q: &str| -> Vec<i64> {
-            read_latest_feed_items_with_detail(&pool, Some(50), None, Some(q))
+            read_latest_feed_items_with_detail(&pool, Some(50), None, Some(q), None)
                 .await
                 .unwrap()
                 .into_iter()

@@ -25,7 +25,7 @@ services:
     environment:
       DATABASE_URL: postgres://postgres:postgres@db:5432/rss_centr
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma4:e4b}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma4:12b-mlx}
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-embeddinggemma-2}
     depends_on:
       db:
@@ -45,7 +45,9 @@ services:
       - backend
 
   frontend:
-    build: ./frontend
+    build:
+      context: .
+      dockerfile: frontend-dioxus/Dockerfile
     ports:
       - "8000:8000"
     environment:

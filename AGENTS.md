@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repository is an RSS aggregator with a **Rust backend** (`backend/`), a shared **Rust core crate** (`core/`), a **Rust worker** (`worker/`), and a **Deno Fresh 2 frontend** (`frontend/`). There are no Cursor rules or Copilot instructions in this repo.
+This repository is an RSS aggregator with a **Rust backend** (`backend/`), a shared **Rust core crate** (`core/`), a **Rust worker** (`worker/`), and a **Dioxus SSR frontend** (`frontend-dioxus/`). The previous **Deno Fresh 2 frontend** (`frontend/`) is retained only for rollback during deployment acceptance. Docker Compose and CI use Dioxus. There are no Cursor rules or Copilot instructions in this repo.
 
 ## Version Control (jj)
 
@@ -99,7 +99,41 @@ The worker reads `BACKEND_URL` or `--backend-url` and consumes the backend feed 
 - Worker env: `OLLAMA_URL` (default `http://desktop:11434`) is used by the indexer, which claims items via `POST /internal/embeddings/claim` and stores vectors via `PUT /internal/embeddings`. The backend decides the model.
 - Run `ollama pull embeddinggemma-2` on the Ollama host. Changing `OLLAMA_EMBED_MODEL` automatically re-indexes all items.
 
-## Frontend Commands (Deno / Fresh 2)
+## Frontend Commands (Dioxus and legacy Fresh)
+
+### Primary frontend: Dioxus SSR
+
+Run from `frontend-dioxus/`. Use a Dioxus CLI 0.7.x matching the `dioxus` crate
+(`cargo binstall dioxus-cli@^0.7` or `cargo install dioxus-cli --version ^0.7 --locked`),
+not Deno's unrelated `dx` executable; put `$HOME/.cargo/bin` first on PATH.
+
+```bash
+rustup target add wasm32-unknown-unknown
+dx serve --web --port 8000
+dx build --web --release --profile wasm-release --package rss-centr-frontend --no-default-features --locked
+cargo test -p rss-centr-frontend --features server
+cargo check -p rss-centr-frontend --no-default-features --features web --target wasm32-unknown-unknown
+cargo clippy -p rss-centr-frontend --all-targets --all-features -- -D warnings
+```
+
+- All five pages retain SSR: load initial data using `use_server_future`, never
+  an effect-only initial fetch. Hydration reuses the serialized result.
+- Keep nondeterministic timestamps inside `use_server_cached`; format dates in
+  explicit UTC to keep server/browser output identical.
+- Browser-only SSE/local storage/timers live behind web + wasm32 cfg gates and
+  start after hydration. Clean up connections/listeners on scope cancellation.
+- Keep server-only dependencies optional and gated by `server`; do not import
+  the backend or core crate into WASM without auditing its dependency graph.
+- Preserve existing REST/SSE contracts; API calls use `BACKEND_URL` on the server
+  and same-origin `/api/*` in the browser. Do not expose internal worker routes.
+- Tailwind is run by `dx` itself (`tailwind_input`/`tailwind_output` in
+  `Dioxus.toml`), regenerating `assets/styles.css` on `dx serve`/`dx build`.
+  `styles.css` is committed so plain `cargo` builds work; commit it after
+  changing utility classes.
+- Tests are Rust only. Browser (SSR/hydration) tests were removed and are
+  pending a port to Rust.
+
+### Legacy Fresh frontend (rollback only)
 
 Run from `frontend/`:
 

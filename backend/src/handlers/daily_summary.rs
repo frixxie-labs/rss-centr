@@ -544,8 +544,36 @@ async fn save_summary<'a>(
 pub async fn refresh_daily_summary(
     State(state): State<SummaryState>,
 ) -> Result<StatusCode, HandlerError> {
-    let Some(token) = claim_summary_refresh(&state.pool).await? else {
-        return Ok(StatusCode::ACCEPTED);
+    start_refresh(state, false).await?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/items/summary/generate",
+    tag = "items",
+    responses(
+        (status = 202, description = "Summary generation started"),
+        (status = 409, description = "Summary generation already in progress"),
+        (status = 500, description = "Summary service unavailable"),
+    )
+)]
+#[instrument(skip(state))]
+pub async fn generate_daily_summary(
+    State(state): State<SummaryState>,
+) -> Result<StatusCode, HandlerError> {
+    if start_refresh(state, true).await? {
+        Ok(StatusCode::ACCEPTED)
+    } else {
+        Ok(StatusCode::CONFLICT)
+    }
+}
+
+/// Claims the refresh lease and spawns generation. `force` ignores the
+/// schedule but still respects an active lease. Returns whether it started.
+async fn start_refresh(state: SummaryState, force: bool) -> Result<bool, HandlerError> {
+    let Some(token) = claim_summary_refresh(&state.pool, force).await? else {
+        return Ok(false);
     };
     info!(batch_model = %state.models.batch, final_model = %state.models.final_summary, timeout_seconds = GENERATION_TIMEOUT.as_secs(), "daily news summary refresh started");
     tokio::spawn(
@@ -573,14 +601,14 @@ pub async fn refresh_daily_summary(
         }
         .in_current_span(),
     );
-    Ok(StatusCode::ACCEPTED)
+    Ok(true)
 }
 
-async fn claim_summary_refresh(pool: &PgPool) -> Result<Option<String>, HandlerError> {
+async fn claim_summary_refresh(pool: &PgPool, force: bool) -> Result<Option<String>, HandlerError> {
     sqlx::query_scalar(
         r#"WITH due AS (
                SELECT id FROM summary_refresh_queue
-               WHERE due_at <= NOW()
+               WHERE ($2 OR due_at <= NOW())
                  AND (lease_expires_at IS NULL OR lease_expires_at <= NOW())
                FOR UPDATE SKIP LOCKED
            )
@@ -591,6 +619,7 @@ async fn claim_summary_refresh(pool: &PgPool) -> Result<Option<String>, HandlerE
            RETURNING q.lease_token"#,
     )
     .bind(LEASE_SECONDS)
+    .bind(force)
     .fetch_optional(pool)
     .await
     .map_err(|err| {
@@ -1412,7 +1441,7 @@ mod tests {
         wait_for_refresh(&pool).await;
         // A staggered worker must not generate again immediately after completion.
         refresh_daily_summary(State(other_state)).await.unwrap();
-        assert!(claim_summary_refresh(&pool).await.unwrap().is_none());
+        assert!(claim_summary_refresh(&pool, false).await.unwrap().is_none());
         let stored = fetch_daily_summary(State(SummaryState::new(pool)))
             .await
             .unwrap()
@@ -1517,7 +1546,7 @@ mod tests {
                 .execute(&pool)
                 .await
                 .unwrap();
-            let token = claim_summary_refresh(&pool).await.unwrap().unwrap();
+            let token = claim_summary_refresh(&pool, false).await.unwrap().unwrap();
             let summary = generate_summary(&state, &token).await.unwrap();
             assert_eq!(summary.summary, "Final overview (Example).");
             assert_eq!(summary.feed_item_ids.len(), 26);
@@ -1554,7 +1583,12 @@ mod tests {
             );
             wait_for_refresh(&state.pool).await;
             assert!(latest_summary(&state.pool).await.unwrap().is_none());
-            assert!(claim_summary_refresh(&state.pool).await.unwrap().is_none());
+            assert!(
+                claim_summary_refresh(&state.pool, false)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
             sqlx::query("UPDATE summary_refresh_queue SET due_at = NOW()")
                 .execute(&state.pool)
                 .await
@@ -1564,23 +1598,36 @@ mod tests {
 
     #[sqlx::test]
     async fn concurrent_claims_have_one_winner_and_expired_leases_are_recoverable(pool: PgPool) {
-        let (first, second) =
-            tokio::join!(claim_summary_refresh(&pool), claim_summary_refresh(&pool));
+        let (first, second) = tokio::join!(
+            claim_summary_refresh(&pool, false),
+            claim_summary_refresh(&pool, false)
+        );
         let winners: Vec<_> = [first.unwrap(), second.unwrap()]
             .into_iter()
             .flatten()
             .collect();
         assert_eq!(winners.len(), 1);
-        assert!(claim_summary_refresh(&pool).await.unwrap().is_none());
+        assert!(claim_summary_refresh(&pool, false).await.unwrap().is_none());
         sqlx::query(
             "UPDATE summary_refresh_queue SET lease_expires_at = NOW() - INTERVAL '1 second'",
         )
         .execute(&pool)
         .await
         .unwrap();
-        let replacement = claim_summary_refresh(&pool).await.unwrap().unwrap();
+        let replacement = claim_summary_refresh(&pool, false).await.unwrap().unwrap();
         assert_ne!(replacement, winners[0]);
-        assert!(claim_summary_refresh(&pool).await.unwrap().is_none());
+        assert!(claim_summary_refresh(&pool, false).await.unwrap().is_none());
+    }
+
+    #[sqlx::test]
+    async fn forced_claim_ignores_schedule_but_respects_active_lease(pool: PgPool) {
+        sqlx::query("UPDATE summary_refresh_queue SET due_at = NOW() + INTERVAL '1 hour'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(claim_summary_refresh(&pool, false).await.unwrap().is_none());
+        assert!(claim_summary_refresh(&pool, true).await.unwrap().is_some());
+        assert!(claim_summary_refresh(&pool, true).await.unwrap().is_none());
     }
 
     #[sqlx::test]

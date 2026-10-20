@@ -4,9 +4,9 @@ target
 .jj
 frontend/_fresh
 frontend/node_modules
+frontend-dioxus/.dx
 dev.*
 tmp.json
 backend/tmp.json
 .env
 **/.env
-

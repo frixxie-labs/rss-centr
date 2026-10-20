@@ -1,3 +1,11 @@
 [workspace]
-members = ["backend", "core", "worker"]
+members = ["backend", "core", "worker", "frontend-dioxus"]
 resolver = "3"
+
+# Size-optimised profile for the Dioxus WASM bundle: `dx build --release --profile wasm-release`.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+# No `strip`: it removes the `__wasm_bindgen_unstable` section wasm-bindgen needs; wasm-opt shrinks the output instead.

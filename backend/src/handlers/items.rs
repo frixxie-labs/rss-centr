@@ -56,6 +56,7 @@ const KEYWORD_CANDIDATES: usize = 500;
 #[derive(Debug, Clone, Deserialize)]
 pub struct LatestItemsQuery {
     pub limit: Option<u32>,
+    pub offset: Option<u32>,
     pub feed_id: Option<i64>,
     pub q: Option<String>,
     #[serde(default)]
@@ -67,6 +68,7 @@ pub struct LatestItemsQuery {
     path = "/api/items/latest",
     params(
         ("limit" = Option<u32>, Query, description = "Maximum number of items to return"),
+        ("offset" = Option<u32>, Query, description = "Number of items to skip, for paging"),
         ("feed_id" = Option<i64>, Query, description = "Only return items from this feed"),
         ("q" = Option<String>, Query, description = "Search items by title, URL, summary, content, author, or feed"),
         ("mode" = Option<SearchMode>, Query, description = "Search mode: keyword (default, newest first), semantic (by meaning) or hybrid (both, ranked by relevance)")
@@ -98,13 +100,16 @@ pub async fn fetch_latest_items(
             query.limit.map(i64::from),
             query.feed_id,
             search_query,
+            query.offset.map(i64::from),
         )
         .await
         .map_err(db_error)?;
         return Ok(Json(items));
     };
 
-    let limit = query.limit.map_or(DEFAULT_SEARCH_LIMIT, |l| l as usize);
+    // Ranking is not incremental, so rank everything up to the end of the page and skip the rest.
+    let offset = query.offset.unwrap_or(0) as usize;
+    let limit = query.limit.map_or(DEFAULT_SEARCH_LIMIT, |l| l as usize) + offset;
     let query_vector = match state.embedder.embed_query(search_query).await {
         Ok(vector) => Some(vector),
         Err(e) => {
@@ -139,6 +144,7 @@ pub async fn fetch_latest_items(
                 Some(KEYWORD_CANDIDATES.max(limit) as i64),
                 query.feed_id,
                 Some(search_query),
+                None,
             )
             .await
             .map_err(db_error)?;
@@ -176,6 +182,7 @@ pub async fn fetch_latest_items(
         }
     };
 
+    let ids: Vec<i64> = ids.into_iter().skip(offset).collect();
     let items = read_feed_items_with_detail_by_ids(&state.pool, &ids)
         .await
         .map_err(db_error)?;

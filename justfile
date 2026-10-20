@@ -1,8 +1,13 @@
 
 lint:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
-    cd frontend && deno task check
+
+frontend:
+    cd frontend-dioxus && dx serve --web --port 8000
+
+test-frontend:
+    cargo test -p rss-centr-frontend --features server
+    cargo check -p rss-centr-frontend --no-default-features --features web --target wasm32-unknown-unknown
 
 upgrade:
     cargo upgrade --incompatible && cargo update
-    cd frontend && deno task update && deno update

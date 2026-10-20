@@ -2,7 +2,7 @@
 
 A self-hosted RSS/Atom web aggregator with live updates.
 
-Built with Rust (Axum + Tokio + sqlx), PostgreSQL, and Deno Fresh 2.
+Built with Rust (Axum + Tokio + sqlx + Dioxus) and PostgreSQL.
 
 ---
 
@@ -16,7 +16,7 @@ A lightweight, self-hostable RSS/Atom aggregator that:
 - Pushes live updates to the browser using Server-Sent Events (SSE)
 - Supports full-text search across items and feed metadata
 - Exposes Prometheus metrics and an OpenAPI spec
-- Uses Fresh 2 for SSR + interactive islands
+- Uses Dioxus for server-side rendering and browser hydration
 
 ### Architecture
 
@@ -33,7 +33,7 @@ Broadcast (tokio::broadcast)
         |
 Axum API + SSE
         |
-Fresh 2 Frontend
+Dioxus SSR Frontend
 ```
 
 **Backend**: Axum HTTP server, durable feed update queue endpoints, sqlx + PostgreSQL, SSE endpoint with reconnect support (`Last-Event-ID`).
@@ -42,7 +42,10 @@ Fresh 2 Frontend
 
 **Core**: Shared Rust DTO crate for the backend/worker feed update queue contract.
 
-**Frontend**: Fresh 2 SSR for initial page loads, Preact islands for interactivity, Tailwind CSS 4 for styling, proxy layer for `/api/*` including SSE streaming.
+**Frontend**: Dioxus SSR for initial page loads, WASM hydration for interactivity,
+Tailwind CSS 4, and an Axum proxy for `/api/*` including SSE streaming. The new app
+lives in `frontend-dioxus/`; the previous Fresh implementation in `frontend/` is
+retained for rollback during deployment acceptance.
 
 ---
 
@@ -78,6 +81,7 @@ Fresh 2 Frontend
 - Rust (stable, edition 2024)
 - PostgreSQL 17+
 - Deno 2.x+
+- Dioxus CLI 0.7.x and the `wasm32-unknown-unknown` Rust target
 - Docker Compose
 
 ### Quick Start
@@ -94,8 +98,11 @@ cargo run --manifest-path backend/Cargo.toml
 cargo run --manifest-path worker/Cargo.toml
 
 # Frontend (listens on http://localhost:8000, proxies /api/* to backend)
-cd frontend
-deno task dev
+cd frontend-dioxus
+cargo install dioxus-cli --version ^0.7 --locked
+export PATH="$HOME/.cargo/bin:$PATH"
+rustup target add wasm32-unknown-unknown
+dx serve --web --port 8000
 ```
 
 Migrations are applied automatically on backend startup.
@@ -194,13 +201,12 @@ just prepare  # sqlx database create + migrate + prepare
 
 ### Frontend Commands
 
-From `frontend/`:
+From `frontend-dioxus/` (see its [README](frontend-dioxus/README.md) for setup):
 
 ```bash
-deno task dev      # Vite dev server
-deno task build    # production build
-deno task start    # serve built app
-deno task check    # fmt --check + lint + type check
+dx serve --web --port 8000
+dx build --web --release --package rss-centr-frontend --no-default-features --locked
+cargo test -p rss-centr-frontend --features server
 ```
 
 ### Backend CLI Options

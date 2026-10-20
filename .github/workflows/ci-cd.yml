@@ -73,46 +73,47 @@ jobs:
     name: Build frontend
     runs-on: arc-frixxie-runner
     container:
-      image: denoland/deno:latest
+      image: rust:trixie
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Show Deno version
-        run: deno --version
-
-      - name: Install dependencies
-        working-directory: frontend
-        run: deno install
+      - name: Install Dioxus and WASM target
+        run: |
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          cargo binstall -y --locked dioxus-cli@^0.7
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup target add wasm32-unknown-unknown
 
       - name: Build frontend
-        working-directory: frontend
-        run: deno task build
+        working-directory: frontend-dioxus
+        run: dx build --web --release --profile wasm-release --package rss-centr-frontend --no-default-features --locked
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: frontend-production
+          path: target/dx/rss-centr-frontend/release/web/
 
   test-frontend:
     name: Test frontend
     needs: build-frontend
     runs-on: arc-frixxie-runner
     container:
-      image: denoland/deno:latest
+      image: rust:trixie
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Show Deno version
-        run: deno --version
-
-      - name: Install dependencies
-        working-directory: frontend
-        run: deno install
-
       - name: Check frontend
-        working-directory: frontend
-        run: deno task check
+        working-directory: frontend-dioxus
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy -p rss-centr-frontend --all-targets --all-features -- -D warnings
+          rustup target add wasm32-unknown-unknown
+          cargo check -p rss-centr-frontend --no-default-features --features web --target wasm32-unknown-unknown
 
       - name: Run tests
-        working-directory: frontend
-        run: deno test -A
+        run: cargo test -p rss-centr-frontend --features server --locked
 
   deploy-backend:
     name: Deploy backend image
@@ -173,8 +174,8 @@ jobs:
       - name: Build and push image
         uses: docker/build-push-action@v7
         with:
-          context: frontend
-          file: frontend/Dockerfile
+          context: .
+          file: frontend-dioxus/Dockerfile
           push: true
           tags: ${{ steps.image.outputs.name }}:${{ github.ref_name }}
 

@@ -102,6 +102,10 @@ pub fn create_router(
     let summary_state = daily_summary::SummaryState::new(pool.clone());
     let daily_summary = Router::new()
         .route("/items/summary", get(daily_summary::fetch_daily_summary))
+        .route(
+            "/items/summary/generate",
+            post(daily_summary::generate_daily_summary),
+        )
         .with_state(summary_state.clone());
 
     let summary_refresh = Router::new()
@@ -185,6 +189,7 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
         items::fetch_item_detail,
         daily_summary::fetch_daily_summary,
         daily_summary::refresh_daily_summary,
+        daily_summary::generate_daily_summary,
         embeddings::claim_embeddings,
         embeddings::store_embeddings,
     ),
