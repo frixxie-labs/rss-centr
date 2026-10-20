@@ -1,0 +1,66 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH candidates AS (\n            SELECT f.id\n            FROM feed_items f\n            LEFT JOIN feed_item_embeddings e ON e.feed_item_id = f.id AND e.model = $1\n            LEFT JOIN feed_item_embedding_leases l ON l.feed_item_id = f.id\n            WHERE e.feed_item_id IS NULL\n              AND (l.leased_until IS NULL OR l.leased_until < NOW())\n            ORDER BY f.id DESC\n            LIMIT $2\n            FOR NO KEY UPDATE OF f SKIP LOCKED\n        ),\n        leased AS (\n            INSERT INTO feed_item_embedding_leases (feed_item_id, leased_until)\n            SELECT id, NOW() + make_interval(secs => $3::FLOAT8) FROM candidates\n            ON CONFLICT (feed_item_id) DO UPDATE\n                SET leased_until = excluded.leased_until\n                WHERE feed_item_embedding_leases.leased_until < NOW()\n            RETURNING feed_item_id\n        )\n        SELECT f.id as \"id!: i64\", f.title, d.summary as \"summary?\", d.content as \"content?\"\n        FROM leased\n        INNER JOIN feed_items f ON f.id = leased.feed_item_id\n        LEFT JOIN feed_item_details d ON d.feed_item_id = f.id\n        ORDER BY f.id DESC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: i64",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "feed_items",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "feed_items",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "summary?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "feed_item_details",
+            "name": "summary"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "content?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "feed_item_details",
+            "name": "content"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1ba468a7aea473d4796e61401f2f270760ab2e139483562f1fa7d0f62c39e93f"
+}
