@@ -1,2 +1,4 @@
 // Alias for /status/health for monitors that probe /health.
-export { handler } from "./status/health.tsx";
+import { handler as statusHealthHandler } from "./status/health.tsx";
+
+export const handler = statusHealthHandler;
