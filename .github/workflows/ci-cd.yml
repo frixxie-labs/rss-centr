@@ -78,21 +78,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install Dioxus and WASM target
+      - name: Install cargo-leptos and WASM target
         run: |
           curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-          cargo binstall -y --locked dioxus-cli@^0.7
+          cargo binstall -y --locked cargo-leptos@^0.3
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           rustup target add wasm32-unknown-unknown
 
       - name: Build frontend
-        working-directory: frontend-dioxus
-        run: dx build --web --release --profile wasm-release --package rss-centr-frontend --no-default-features --locked
+        working-directory: frontend
+        run: cargo leptos build --release --cargo-locked
 
       - uses: actions/upload-artifact@v6
         with:
           name: frontend-production
-          path: target/dx/rss-centr-frontend/release/web/
+          path: |
+            target/release/rss-centr-frontend
+            target/site/
 
   test-frontend:
     name: Test frontend
@@ -105,15 +107,15 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Check frontend
-        working-directory: frontend-dioxus
+        working-directory: frontend
         run: |
           cargo fmt --all -- --check
-          cargo clippy -p rss-centr-frontend --all-targets --all-features -- -D warnings
+          cargo clippy -p rss-centr-frontend --all-targets -- -D warnings
           rustup target add wasm32-unknown-unknown
-          cargo check -p rss-centr-frontend --no-default-features --features web --target wasm32-unknown-unknown
+          cargo clippy -p rss-centr-frontend --all-targets --target wasm32-unknown-unknown -- -D warnings
 
       - name: Run tests
-        run: cargo test -p rss-centr-frontend --features server --locked
+        run: cargo test -p rss-centr-frontend --locked
 
   deploy-backend:
     name: Deploy backend image
@@ -175,7 +177,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: frontend-dioxus/Dockerfile
+          file: frontend/Dockerfile
           push: true
           tags: ${{ steps.image.outputs.name }}:${{ github.ref_name }}
 

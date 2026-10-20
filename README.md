@@ -2,7 +2,7 @@
 
 A self-hosted RSS/Atom web aggregator with live updates.
 
-Built with Rust (Axum + Tokio + sqlx + Dioxus) and PostgreSQL.
+Built with Rust (Axum + Tokio + sqlx + Leptos) and PostgreSQL.
 
 ---
 
@@ -16,7 +16,7 @@ A lightweight, self-hostable RSS/Atom aggregator that:
 - Pushes live updates to the browser using Server-Sent Events (SSE)
 - Supports full-text search across items and feed metadata
 - Exposes Prometheus metrics and an OpenAPI spec
-- Uses Dioxus for server-side rendering and browser hydration
+- Uses Leptos for server-side rendering with interactive islands
 
 ### Architecture
 
@@ -33,7 +33,7 @@ Broadcast (tokio::broadcast)
         |
 Axum API + SSE
         |
-Dioxus SSR Frontend
+Leptos SSR Frontend (islands)
 ```
 
 **Backend**: Axum HTTP server, durable feed update queue endpoints, sqlx + PostgreSQL, SSE endpoint with reconnect support (`Last-Event-ID`).
@@ -42,10 +42,9 @@ Dioxus SSR Frontend
 
 **Core**: Shared Rust DTO crate for the backend/worker feed update queue contract.
 
-**Frontend**: Dioxus SSR for initial page loads, WASM hydration for interactivity,
-Tailwind CSS 4, and an Axum proxy for `/api/*` including SSE streaming. The new app
-lives in `frontend-dioxus/`; the previous Fresh implementation in `frontend/` is
-retained for rollback during deployment acceptance.
+**Frontend**: Leptos SSR in islands mode: pages render on the server and only the
+interactive parts (WASM islands) hydrate. Tailwind CSS 4, and an Axum proxy for `/api/*`
+including SSE streaming. The app lives in `frontend/`.
 
 ---
 
@@ -80,8 +79,7 @@ retained for rollback during deployment acceptance.
 
 - Rust (stable, edition 2024)
 - PostgreSQL 17+
-- Deno 2.x+
-- Dioxus CLI 0.7.x and the `wasm32-unknown-unknown` Rust target
+- cargo-leptos 0.3.x and the `wasm32-unknown-unknown` Rust target
 - Docker Compose
 
 ### Quick Start
@@ -98,11 +96,10 @@ cargo run --manifest-path backend/Cargo.toml
 cargo run --manifest-path worker/Cargo.toml
 
 # Frontend (listens on http://localhost:8000, proxies /api/* to backend)
-cd frontend-dioxus
-cargo install dioxus-cli --version ^0.7 --locked
-export PATH="$HOME/.cargo/bin:$PATH"
+cd frontend
+cargo install cargo-leptos --locked
 rustup target add wasm32-unknown-unknown
-dx serve --web --port 8000
+BACKEND_URL=http://localhost:8080 cargo leptos watch
 ```
 
 Migrations are applied automatically on backend startup.
@@ -201,12 +198,12 @@ just prepare  # sqlx database create + migrate + prepare
 
 ### Frontend Commands
 
-From `frontend-dioxus/` (see its [README](frontend-dioxus/README.md) for setup):
+From `frontend/` (see its [README](frontend/README.md) for setup):
 
 ```bash
-dx serve --web --port 8000
-dx build --web --release --package rss-centr-frontend --no-default-features --locked
-cargo test -p rss-centr-frontend --features server
+cargo leptos watch
+cargo leptos build --release
+cargo test -p rss-centr-frontend --features ssr
 ```
 
 ### Backend CLI Options

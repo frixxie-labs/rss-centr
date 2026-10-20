@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repository is an RSS aggregator with a **Rust backend** (`backend/`), a shared **Rust core crate** (`core/`), a **Rust worker** (`worker/`), and a **Dioxus SSR frontend** (`frontend-dioxus/`). The previous **Deno Fresh 2 frontend** (`frontend/`) is retained only for rollback during deployment acceptance. Docker Compose and CI use Dioxus. There are no Cursor rules or Copilot instructions in this repo.
+This repository is an RSS aggregator with a **Rust backend** (`backend/`), a shared **Rust core crate** (`core/`), a **Rust worker** (`worker/`), and a **Leptos SSR frontend in islands mode** (`frontend/`). There are no Cursor rules or Copilot instructions in this repo.
 
 ## Version Control (jj)
 
@@ -99,65 +99,32 @@ The worker reads `BACKEND_URL` or `--backend-url` and consumes the backend feed 
 - Worker env: `OLLAMA_URL` (default `http://desktop:11434`) is used by the indexer, which claims items via `POST /internal/embeddings/claim` and stores vectors via `PUT /internal/embeddings`. The backend decides the model.
 - Run `ollama pull embeddinggemma-2` on the Ollama host. Changing `OLLAMA_EMBED_MODEL` automatically re-indexes all items.
 
-## Frontend Commands (Dioxus and legacy Fresh)
+## Frontend Commands (Leptos islands)
 
-### Primary frontend: Dioxus SSR
-
-Run from `frontend-dioxus/`. Use a Dioxus CLI 0.7.x matching the `dioxus` crate
-(`cargo binstall dioxus-cli@^0.7` or `cargo install dioxus-cli --version ^0.7 --locked`),
-not Deno's unrelated `dx` executable; put `$HOME/.cargo/bin` first on PATH.
+Run from `frontend/`. Requires `cargo-leptos` 0.3.x and the `wasm32-unknown-unknown` target.
 
 ```bash
-rustup target add wasm32-unknown-unknown
-dx serve --web --port 8000
-dx build --web --release --profile wasm-release --package rss-centr-frontend --no-default-features --locked
-cargo test -p rss-centr-frontend --features server
-cargo check -p rss-centr-frontend --no-default-features --features web --target wasm32-unknown-unknown
-cargo clippy -p rss-centr-frontend --all-targets --all-features -- -D warnings
+cargo leptos watch                     # dev server on :8000 (BACKEND_URL=http://localhost:8080)
+cargo leptos build --release           # ../target/release/rss-centr-frontend + ../target/site/
+cargo test -p rss-centr-frontend
+cargo clippy -p rss-centr-frontend --all-targets -- -D warnings
+cargo clippy -p rss-centr-frontend --all-targets --target wasm32-unknown-unknown -- -D warnings
 ```
 
-- All five pages retain SSR: load initial data using `use_server_future`, never
-  an effect-only initial fetch. Hydration reuses the serialized result.
-- Keep nondeterministic timestamps inside `use_server_cached`; format dates in
-  explicit UTC to keep server/browser output identical.
-- Browser-only SSE/local storage/timers live behind web + wasm32 cfg gates and
-  start after hydration. Clean up connections/listeners on scope cancellation.
-- Keep server-only dependencies optional and gated by `server`; do not import
-  the backend or core crate into WASM without auditing its dependency graph.
-- Preserve existing REST/SSE contracts; API calls use `BACKEND_URL` on the server
-  and same-origin `/api/*` in the browser. Do not expose internal worker routes.
-- Tailwind is run by `dx` itself (`tailwind_input`/`tailwind_output` in
-  `Dioxus.toml`), regenerating `assets/styles.css` on `dx serve`/`dx build`.
-  `styles.css` is committed so plain `cargo` builds work; commit it after
-  changing utility classes.
-- Tests are Rust only. Browser (SSR/hydration) tests were removed and are
-  pending a port to Rust.
-
-### Legacy Fresh frontend (rollback only)
-
-Run from `frontend/`:
-
-```bash
-deno task dev      # Vite dev server
-deno task build    # production build
-deno task start    # serve built app (deno serve -A _fresh/server.js)
-deno task check    # deno fmt --check && deno lint && deno check
-```
-
-### Running frontend tests
-
-```bash
-# All tests
-deno test frontend/
-
-# Single test file
-deno test frontend/components/FeedItemCard_test.ts
-
-# Filter by test name
-deno test frontend/ --filter "timeAgo"
-```
-
-The frontend proxies `/api/*` requests to `http://localhost:8080` (the backend). `BACKEND_URL` is defined in `frontend/utils.ts`.
+- Islands mode: route components in `src/pages/` and `src/app.rs` are server-only
+  (compiled for non-wasm targets only) and fetch data inside `<Suspense>` with `Suspend` (routes use
+  `SsrMode::Async`). Interactive UI lives in `#[island]` components in
+  `src/islands/`; island props must be serializable.
+- Server-rendered pages get the backend `Api` from context; islands use
+  `Api::default()` (same-origin `/api/*` in the browser).
+- Pass the server render time into islands and format dates in explicit UTC so
+  hydration matches.
+- Browser-only SSE/local storage/observers/timers live behind
+  `cfg(target_arch = "wasm32")`.
+- Use `try_update`/`try_set` in async tasks that may outlive an island.
+- Preserve existing REST/SSE contracts. Do not expose internal worker routes.
+- Tailwind is run by cargo-leptos from `style/tailwind.css`; no generated CSS is committed.
+- Tests are Rust only; `server.rs` tests render every page against a mock backend.
 
 ## Code Style -- Backend (Rust)
 
@@ -219,33 +186,8 @@ Prefer following existing patterns over introducing new ones.
 - Prefer deterministic tests.
 - `unwrap()` is acceptable inside tests.
 
-## Code Style -- Frontend (TypeScript / Deno Fresh)
-
-### Formatting & Linting
-
-- `deno fmt` for formatting (built-in, no config needed).
-- `deno lint` with `"fresh"` and `"recommended"` rule tags (configured in `deno.json`).
-- Run `deno task check` to verify both formatting and linting.
-
-### Conventions
-
-- Use TypeScript `interface` for shared types (see `types.ts`).
-- Use explicit `type` imports: `import type { FeedItem } from "../types.ts"`.
-- Import paths use the `@/` alias for project-root-relative imports (configured in `deno.json`).
-- Preact components in `components/` (server-rendered), interactive islands in `islands/`.
-- Islands use `useSignal` from `@preact/signals` for state management.
-- JSX uses precompiled mode with `preact` as the import source.
-- Tailwind CSS 4 for styling (via Vite plugin).
-
-### Testing
-
-- Test files are co-located with source: `FeedItemCard.tsx` / `FeedItemCard_test.ts`.
-- Use `Deno.test()` with `@std/assert` (`assertEquals`) and `@std/testing/mock`.
-- Export utility functions from components and test them separately.
-- Tests are pure logic tests -- no DOM rendering tests.
-
 ## Repo Hygiene
 
 - Do not commit secrets or `backend/.env` changes.
-- Do not commit build artifacts (`*/target/`, `_fresh/`).
+- Do not commit build artifacts (`*/target/`, `.leptos/`).
 - If you add Cursor/Copilot rules, update this file to mirror them.

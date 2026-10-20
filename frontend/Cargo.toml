@@ -1,0 +1,66 @@
+[package]
+name = "rss-centr-frontend"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+leptos = { version = "0.8.22", features = ["islands"] }
+leptos_meta = "0.8.7"
+leptos_router = "0.8.17"
+chrono = { version = "0.4.45", features = ["serde"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+url = "2.5.8"
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
+tracing = "0.1.44"
+futures-util = "0.3.34"
+
+# Server (SSR) build. Features here are added to the shared dependencies above.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+leptos = { version = "0.8.22", features = ["ssr"] }
+leptos_meta = { version = "0.8.7", features = ["ssr"] }
+leptos_router = { version = "0.8.17", features = ["ssr"] }
+leptos_axum = "0.8.10"
+axum = "0.8.9"
+reqwest = { version = "0.12.28", default-features = false, features = ["stream"] }
+tokio = { version = "1.54.0", features = ["full"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+tower-http = { version = "0.7.1", features = ["trace", "compression-br", "compression-gzip"] }
+
+# Browser (hydrate) build.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+leptos = { version = "0.8.22", features = ["hydrate"] }
+console_error_panic_hook = "0.1.7"
+web-sys = { version = "0.3.106", features = [
+    "Element",
+    "Event",
+    "EventSource",
+    "EventTarget",
+    "History",
+    "IntersectionObserver",
+    "IntersectionObserverEntry",
+    "IntersectionObserverInit",
+    "Location",
+    "MessageEvent",
+    "Storage",
+    "Window",
+] }
+wasm-bindgen = "0.2.129"
+js-sys = "0.3.106"
+gloo-timers = { version = "0.4.0", features = ["futures"] }
+futures-channel = "0.3.34"
+
+[dev-dependencies]
+tower = { version = "0.5.3", features = ["util"] }
+http-body-util = "0.1.5"
+async-stream = "0.3.6"
+
+# cargo-leptos settings; anything omitted uses its default.
+[package.metadata.leptos]
+tailwind-input-file = "style/tailwind.css"
+assets-dir = "public"
+site-addr = "127.0.0.1:8000"
+lib-profile-release = "wasm-release"

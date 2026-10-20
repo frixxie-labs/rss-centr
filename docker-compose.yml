@@ -47,7 +47,7 @@ services:
   frontend:
     build:
       context: .
-      dockerfile: frontend-dioxus/Dockerfile
+      dockerfile: frontend/Dockerfile
     ports:
       - "8000:8000"
     environment:

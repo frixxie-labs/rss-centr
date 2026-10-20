@@ -1,8 +1,8 @@
 [workspace]
-members = ["backend", "core", "worker", "frontend-dioxus"]
+members = ["backend", "core", "worker", "frontend"]
 resolver = "3"
 
-# Size-optimised profile for the Dioxus WASM bundle: `dx build --release --profile wasm-release`.
+# Size-optimised profile for the Leptos WASM bundle (`lib-profile-release` in frontend/Cargo.toml).
 [profile.wasm-release]
 inherits = "release"
 opt-level = "z"
