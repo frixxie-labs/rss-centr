@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use rss_centr_core::semantic::{
-    EmbeddingJob, ItemEmbedding, content_hash, dot, embedding_input, normalize, similarity_floor,
+    EmbeddingJob, ItemEmbedding, RecencyBoost, content_hash, dot, embedding_input, normalize,
+    similarity_floor,
 };
 use sqlx::PgPool;
 use tokio::sync::{Mutex, RwLock};
@@ -151,6 +152,7 @@ pub fn decode_embedding(bytes: &[u8]) -> Vec<f32> {
 struct StoredEmbedding {
     id: i64,
     feed_id: i64,
+    date: DateTime<Utc>,
     embedding: Vec<f32>,
     embedded_at: DateTime<Utc>,
 }
@@ -165,10 +167,12 @@ async fn read_embeddings(
         r#"
         SELECT e.feed_item_id as "id!: i64",
                f.feed_id as "feed_id!: i64",
-               e.embedding,
-               e.embedded_at
+               LEAST(d.published_at, f.inserted_at) as "date!: DateTime<Utc>",
+               e.embedding as "embedding!",
+               e.embedded_at as "embedded_at!"
         FROM feed_item_embeddings e
         INNER JOIN feed_items f ON f.id = e.feed_item_id
+        LEFT JOIN feed_item_details d ON d.feed_item_id = f.id
         WHERE e.model = $1
           AND ($2::TIMESTAMPTZ IS NULL OR e.embedded_at > $2)
         "#,
@@ -184,6 +188,7 @@ async fn read_embeddings(
         .map(|row| StoredEmbedding {
             id: row.id,
             feed_id: row.feed_id,
+            date: row.date,
             embedding: decode_embedding(&row.embedding),
             embedded_at: row.embedded_at,
         })
@@ -198,10 +203,28 @@ const REFRESH_OVERLAP: Duration = Duration::from_secs(5 * 60);
 const FULL_RELOAD_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const LOAD_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
+struct IndexedItem {
+    feed_id: i64,
+    /// Date used for recency ranking, see [`rss_centr_core::semantic::item_date`].
+    date: DateTime<Utc>,
+    /// Normalized embedding.
+    vector: Vec<f32>,
+}
+
+impl From<StoredEmbedding> for IndexedItem {
+    fn from(row: StoredEmbedding) -> Self {
+        Self {
+            feed_id: row.feed_id,
+            date: row.date,
+            vector: row.embedding,
+        }
+    }
+}
+
 #[derive(Default)]
 struct IndexState {
-    /// feed_item_id -> (feed_id, normalized embedding)
-    items: HashMap<i64, (i64, Vec<f32>)>,
+    /// feed_item_id -> indexed item
+    items: HashMap<i64, IndexedItem>,
     newest: Option<DateTime<Utc>>,
     loaded_at: Option<Instant>,
 }
@@ -247,7 +270,7 @@ impl EmbeddingIndex {
         let newest = rows.iter().map(|r| r.embedded_at).max();
         let mut state = self.state.write().await;
         for row in rows {
-            state.items.insert(row.id, (row.feed_id, row.embedding));
+            state.items.insert(row.id, row.into());
         }
         state.newest = state.newest.max(newest);
         Ok(())
@@ -259,10 +282,7 @@ impl EmbeddingIndex {
     async fn load_all(&self, pool: &PgPool) -> Result<()> {
         let rows = read_embeddings(pool, &self.model, None).await?;
         let newest = rows.iter().map(|r| r.embedded_at).max();
-        let items = rows
-            .into_iter()
-            .map(|row| (row.id, (row.feed_id, row.embedding)))
-            .collect();
+        let items = rows.into_iter().map(|row| (row.id, row.into())).collect();
         let mut state = self.state.write().await;
         state.items = items;
         state.newest = newest;
@@ -315,17 +335,27 @@ impl EmbeddingIndex {
         Ok(state
             .items
             .iter()
-            .filter(|(_, (item_feed, vector))| {
-                feed_id.is_none_or(|f| f == *item_feed) && vector.len() == query.len()
+            .filter(|(_, item)| {
+                feed_id.is_none_or(|f| f == item.feed_id) && item.vector.len() == query.len()
             })
-            .map(|(id, (_, vector))| (*id, dot(query, vector)))
+            .map(|(id, item)| (*id, dot(query, &item.vector)))
             .filter(|(_, score)| score.is_finite())
             .collect())
+    }
+
+    /// Recency ranking dates of the given indexed items. Unknown ids are skipped.
+    pub async fn dates(&self, ids: impl IntoIterator<Item = i64>) -> HashMap<i64, DateTime<Utc>> {
+        let state = self.state.read().await;
+        ids.into_iter()
+            .filter_map(|id| state.items.get(&id).map(|item| (id, item.date)))
+            .collect()
     }
 }
 
 /// Rank item ids by cosine similarity to `query` among indexed embeddings,
-/// dropping matches below [`similarity_floor`].
+/// dropping matches below [`similarity_floor`] and favouring recent items
+/// according to `recency`.
+#[allow(clippy::too_many_arguments)]
 pub async fn semantic_search_ids(
     index: &EmbeddingIndex,
     pool: &PgPool,
@@ -333,16 +363,23 @@ pub async fn semantic_search_ids(
     feed_id: Option<i64>,
     limit: usize,
     min_similarity: f32,
+    recency: &RecencyBoost,
+    now: DateTime<Utc>,
 ) -> Result<Vec<i64>> {
-    let mut scores = index.similarities(pool, query, feed_id).await?;
+    let scores = index.similarities(pool, query, feed_id).await?;
     let floor = similarity_floor(&scores, min_similarity);
-    scores.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.0.cmp(&a.0)));
-    Ok(scores
+    let mut scores: Vec<(i64, f32)> = scores
         .into_iter()
         .filter(|(_, score)| *score >= floor)
-        .take(limit)
-        .map(|(id, _)| id)
-        .collect())
+        .collect();
+    let dates = index.dates(scores.iter().map(|(id, _)| *id)).await;
+    for (id, score) in &mut scores {
+        if let Some(date) = dates.get(id) {
+            *score *= recency.factor(*date, now);
+        }
+    }
+    scores.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.0.cmp(&a.0)));
+    Ok(scores.into_iter().take(limit).map(|(id, _)| id).collect())
 }
 
 /// Read items with details, returned in the order of `ids`. Unknown ids are skipped.
@@ -629,24 +666,95 @@ mod tests {
             .unwrap();
 
         let index = EmbeddingIndex::new(MODEL);
-        let ids = semantic_search_ids(&index, &pool, &[1.0, 0.0], None, 10, -1.0)
-            .await
-            .unwrap();
+        let ids = semantic_search_ids(
+            &index,
+            &pool,
+            &[1.0, 0.0],
+            None,
+            10,
+            -1.0,
+            &RecencyBoost::NONE,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             ids,
             vec![other_feed, near],
             "far scores 0, below 60% of the best match"
         );
 
-        let ids = semantic_search_ids(&index, &pool, &[1.0, 0.0], Some(feed_a.id), 1, -1.0)
-            .await
-            .unwrap();
+        let ids = semantic_search_ids(
+            &index,
+            &pool,
+            &[1.0, 0.0],
+            Some(feed_a.id),
+            1,
+            -1.0,
+            &RecencyBoost::NONE,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
         assert_eq!(ids, vec![near]);
 
-        let ids = semantic_search_ids(&index, &pool, &[1.0, 0.0], None, 10, 0.5)
+        let ids = semantic_search_ids(
+            &index,
+            &pool,
+            &[1.0, 0.0],
+            None,
+            10,
+            0.5,
+            &RecencyBoost::NONE,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ids, vec![other_feed, near], "unrelated items are dropped");
+    }
+
+    #[sqlx::test]
+    async fn semantic_search_favours_recently_published_items(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/a.xml")
             .await
             .unwrap();
-        assert_eq!(ids, vec![other_feed, near], "unrelated items are dropped");
+        let old = item(&pool, feed.id, "old", "s").await;
+        let new = item(&pool, feed.id, "new", "s").await;
+        sqlx::query!(
+            "UPDATE feed_item_details SET published_at = NOW() - INTERVAL '365 days' WHERE feed_item_id = $1",
+            old
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        store_item_embeddings(
+            &pool,
+            MODEL,
+            &[embedding(old, &[1.0, 0.0]), embedding(new, &[0.95, 0.31])],
+        )
+        .await
+        .unwrap();
+
+        let index = EmbeddingIndex::new(MODEL);
+        let search = |recency: RecencyBoost| {
+            let (index, pool) = (&index, &pool);
+            async move {
+                semantic_search_ids(
+                    index,
+                    pool,
+                    &[1.0, 0.0],
+                    None,
+                    10,
+                    -1.0,
+                    &recency,
+                    Utc::now(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+        assert_eq!(search(RecencyBoost::NONE).await, vec![old, new]);
+        assert_eq!(search(RecencyBoost::default()).await, vec![new, old]);
     }
 
     #[sqlx::test]

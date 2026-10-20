@@ -1,5 +1,6 @@
 //! Pure building blocks for semantic search, shared by the backend and worker.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -126,6 +127,63 @@ pub fn similarity_floor(similarities: &[(i64, f32)], min_similarity: f32) -> f32
     min_similarity.max(best * RELATIVE_SIMILARITY)
 }
 
+/// How strongly ranked search favours recent items.
+///
+/// An item's relevance is multiplied by `(1 - weight) + weight * decay`, where
+/// `decay` halves every `half_life_hours`. A brand-new item keeps its full
+/// relevance while a very old one keeps `1 - weight` of it, so recency decides
+/// between similarly relevant items without lifting unrelated ones.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RecencyBoost {
+    pub weight: f32,
+    pub half_life_hours: f32,
+}
+
+impl RecencyBoost {
+    pub const DEFAULT_WEIGHT: f32 = 0.3;
+    pub const DEFAULT_HALF_LIFE_HOURS: f32 = 168.0;
+
+    /// Ranks by relevance alone.
+    pub const NONE: Self = Self {
+        weight: 0.0,
+        half_life_hours: Self::DEFAULT_HALF_LIFE_HOURS,
+    };
+
+    /// Multiplier for an item dated `date`, as of `now`.
+    pub fn factor(&self, date: DateTime<Utc>, now: DateTime<Utc>) -> f32 {
+        let weight = self.weight.clamp(0.0, 1.0);
+        if weight == 0.0 {
+            return 1.0;
+        }
+        let age_hours = (now - date).num_seconds() as f32 / 3600.0;
+        (1.0 - weight) + weight * recency_decay(age_hours, self.half_life_hours)
+    }
+}
+
+impl Default for RecencyBoost {
+    fn default() -> Self {
+        Self {
+            weight: Self::DEFAULT_WEIGHT,
+            half_life_hours: Self::DEFAULT_HALF_LIFE_HOURS,
+        }
+    }
+}
+
+/// Exponential decay that halves every `half_life_hours`. Future dates count
+/// as brand new; a non-positive half-life disables decay.
+pub fn recency_decay(age_hours: f32, half_life_hours: f32) -> f32 {
+    if half_life_hours <= 0.0 || !half_life_hours.is_finite() || !age_hours.is_finite() {
+        return 1.0;
+    }
+    0.5_f32.powf(age_hours.max(0.0) / half_life_hours)
+}
+
+/// The date used for recency ranking: the publish date, unless missing or
+/// later than when the item was first seen.
+pub fn item_date(published_at: Option<DateTime<Utc>>, inserted_at: DateTime<Utc>) -> DateTime<Utc> {
+    published_at.map_or(inserted_at, |p| p.min(inserted_at))
+}
+
 /// Score added to items whose text matches the search keywords in hybrid search.
 pub const KEYWORD_BONUS: f32 = 0.1;
 
@@ -136,12 +194,14 @@ pub const KEYWORD_BONUS: f32 = 0.1;
 /// similarity; keyword matches score `max(similarity, min_similarity) +
 /// KEYWORD_BONUS`, so they are always included but cannot outrank clearly
 /// stronger meaning matches. Items that do not match the keywords must reach
-/// [`similarity_floor`]. Ties are broken by the newest (largest) id.
+/// [`similarity_floor`]. Each score is then multiplied by `factor(id)`, e.g.
+/// [`RecencyBoost::factor`]. Ties are broken by the newest (largest) id.
 pub fn hybrid_rank(
     similarities: &[(i64, f32)],
     keyword_ids: &[i64],
     min_similarity: f32,
     limit: usize,
+    factor: impl Fn(i64) -> f32,
 ) -> Vec<i64> {
     use std::collections::{HashMap, HashSet};
 
@@ -162,6 +222,9 @@ pub fn hybrid_rank(
         let similarity = best.get(id).copied().unwrap_or(min_similarity);
         (*id, similarity.max(min_similarity) + KEYWORD_BONUS)
     }));
+    for (id, score) in &mut scored {
+        *score *= factor(*id);
+    }
     scored.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.0.cmp(&a.0)));
     scored.into_iter().take(limit).map(|(id, _)| id).collect()
 }
@@ -306,25 +369,25 @@ mod tests {
     fn hybrid_strong_meaning_match_outranks_weak_match_with_keywords() {
         // The "AMP with Carter Schultz" case: item 2 mentions the words but is
         // only loosely related; item 1 is clearly about the topic.
-        let ranked = hybrid_rank(&[(1, 0.45), (2, 0.22)], &[2], MIN, 10);
+        let ranked = hybrid_rank(&[(1, 0.45), (2, 0.22)], &[2], MIN, 10, |_| 1.0);
         assert_eq!(ranked, vec![1, 2]);
     }
 
     #[test]
     fn hybrid_keyword_match_breaks_near_ties() {
-        let ranked = hybrid_rank(&[(1, 0.40), (2, 0.35)], &[2], MIN, 10);
+        let ranked = hybrid_rank(&[(1, 0.40), (2, 0.35)], &[2], MIN, 10, |_| 1.0);
         assert_eq!(ranked, vec![2, 1]);
     }
 
     #[test]
     fn hybrid_keeps_keyword_matches_below_threshold_but_drops_unrelated_items() {
-        let ranked = hybrid_rank(&[(1, 0.10), (2, 0.05), (3, 0.35)], &[2], MIN, 10);
+        let ranked = hybrid_rank(&[(1, 0.10), (2, 0.05), (3, 0.35)], &[2], MIN, 10, |_| 1.0);
         assert_eq!(ranked, vec![3, 2]);
     }
 
     #[test]
     fn hybrid_includes_keyword_matches_without_embeddings() {
-        let ranked = hybrid_rank(&[(1, 0.50), (2, 0.31)], &[9], MIN, 10);
+        let ranked = hybrid_rank(&[(1, 0.50), (2, 0.31)], &[9], MIN, 10, |_| 1.0);
         assert_eq!(ranked, vec![1, 2, 9]);
     }
 
@@ -341,21 +404,111 @@ mod tests {
     fn hybrid_drops_semantic_matches_far_below_the_best_one() {
         // Benchmark: 40% of random articles score >= 0.2 for title-length
         // queries, whose real matches score around 0.55.
-        let ranked = hybrid_rank(&[(1, 0.60), (2, 0.40), (3, 0.30)], &[], MIN, 10);
+        let ranked = hybrid_rank(&[(1, 0.60), (2, 0.40), (3, 0.30)], &[], MIN, 10, |_| 1.0);
         assert_eq!(ranked, vec![1, 2]);
     }
 
     #[test]
     fn hybrid_keeps_keyword_matches_below_the_relative_floor() {
-        let ranked = hybrid_rank(&[(1, 0.60), (2, 0.25)], &[2], MIN, 10);
+        let ranked = hybrid_rank(&[(1, 0.60), (2, 0.25)], &[2], MIN, 10, |_| 1.0);
         assert_eq!(ranked, vec![1, 2]);
     }
 
     #[test]
     fn hybrid_respects_limit_and_breaks_ties_by_newest_id() {
-        let ranked = hybrid_rank(&[(1, 0.3), (5, 0.3), (3, 0.3)], &[], MIN, 2);
+        let ranked = hybrid_rank(&[(1, 0.3), (5, 0.3), (3, 0.3)], &[], MIN, 2, |_| 1.0);
         assert_eq!(ranked, vec![5, 3]);
-        assert!(hybrid_rank(&[], &[], MIN, 10).is_empty());
+        assert!(hybrid_rank(&[], &[], MIN, 10, |_| 1.0).is_empty());
+    }
+
+    fn hours_ago(hours: i64) -> DateTime<Utc> {
+        now() - chrono::Duration::hours(hours)
+    }
+
+    fn now() -> DateTime<Utc> {
+        DateTime::from_timestamp(1_800_000_000, 0).unwrap()
+    }
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-5
+    }
+
+    #[test]
+    fn recency_decay_halves_every_half_life() {
+        assert!(close(recency_decay(0.0, 168.0), 1.0));
+        assert!(close(recency_decay(168.0, 168.0), 0.5));
+        assert!(close(recency_decay(336.0, 168.0), 0.25));
+    }
+
+    #[test]
+    fn recency_decay_treats_future_dates_as_new_and_ignores_bad_half_life() {
+        assert!(close(recency_decay(-10.0, 168.0), 1.0));
+        assert!(close(recency_decay(500.0, 0.0), 1.0));
+        assert!(close(recency_decay(500.0, -1.0), 1.0));
+    }
+
+    #[test]
+    fn recency_factor_ranges_from_one_minus_weight_to_one() {
+        let boost = RecencyBoost {
+            weight: 0.3,
+            half_life_hours: 168.0,
+        };
+        assert!(close(boost.factor(now(), now()), 1.0));
+        assert!(close(boost.factor(hours_ago(168), now()), 0.85));
+        assert!(close(boost.factor(hours_ago(100_000), now()), 0.7));
+        assert!(close(
+            RecencyBoost::NONE.factor(hours_ago(100_000), now()),
+            1.0
+        ));
+    }
+
+    #[test]
+    fn item_date_prefers_publish_date_but_not_after_insertion() {
+        let inserted = hours_ago(1);
+        assert_eq!(item_date(None, inserted), inserted);
+        assert_eq!(item_date(Some(hours_ago(5)), inserted), hours_ago(5));
+        assert_eq!(item_date(Some(now()), inserted), inserted);
+    }
+
+    fn by_age(ages: &[(i64, i64)]) -> impl Fn(i64) -> f32 {
+        let ages: std::collections::HashMap<i64, i64> = ages.iter().copied().collect();
+        move |id| RecencyBoost::default().factor(hours_ago(ages[&id]), now())
+    }
+
+    #[test]
+    fn hybrid_recent_item_outranks_slightly_more_similar_old_one() {
+        let ranked = hybrid_rank(
+            &[(1, 0.50), (2, 0.47)],
+            &[],
+            MIN,
+            10,
+            by_age(&[(1, 24 * 365), (2, 2)]),
+        );
+        assert_eq!(ranked, vec![2, 1]);
+    }
+
+    #[test]
+    fn hybrid_much_more_relevant_old_item_beats_weak_recent_one() {
+        let ranked = hybrid_rank(
+            &[(1, 0.60), (2, 0.38)],
+            &[],
+            MIN,
+            10,
+            by_age(&[(1, 24 * 365), (2, 0)]),
+        );
+        assert_eq!(ranked, vec![1, 2]);
+    }
+
+    #[test]
+    fn hybrid_recency_does_not_rescue_items_below_the_floor() {
+        let ranked = hybrid_rank(
+            &[(1, 0.60), (2, 0.30)],
+            &[],
+            MIN,
+            10,
+            by_age(&[(1, 24 * 365), (2, 0)]),
+        );
+        assert_eq!(ranked, vec![1]);
     }
 
     quickcheck::quickcheck! {
@@ -365,7 +518,7 @@ mod tests {
                 .into_iter()
                 .map(|(id, s)| (id, f32::from(s) / 128.0))
                 .collect();
-            let ranked = hybrid_rank(&scores, &keyword, MIN, usize::from(limit));
+            let ranked = hybrid_rank(&scores, &keyword, MIN, usize::from(limit), |_| 1.0);
             let floor = similarity_floor(&scores, MIN);
             let mut eligible: HashSet<i64> = keyword.iter().copied().collect();
             eligible.extend(scores.iter().filter(|(_, s)| *s >= floor).map(|(id, _)| *id));

@@ -1,5 +1,5 @@
 use axum::{Json, extract::Path, extract::Query, extract::State, http::StatusCode};
-use rss_centr_core::semantic::hybrid_rank;
+use rss_centr_core::semantic::{hybrid_rank, item_date};
 use serde::Deserialize;
 use sqlx::PgPool;
 use tracing::{instrument, warn};
@@ -113,6 +113,7 @@ pub async fn fetch_latest_items(
         }
     };
 
+    let now = chrono::Utc::now();
     let ids = match (query.mode, query_vector) {
         (SearchMode::Semantic, Some(vector)) => semantic_search_ids(
             &state.embeddings,
@@ -121,6 +122,8 @@ pub async fn fetch_latest_items(
             query.feed_id,
             limit,
             state.min_similarity,
+            &state.recency,
+            now,
         )
         .await
         .map_err(db_error)?,
@@ -131,17 +134,15 @@ pub async fn fetch_latest_items(
             ));
         }
         (_, vector) => {
-            let keyword_ids: Vec<i64> = read_latest_feed_items_with_detail(
+            let keyword_items = read_latest_feed_items_with_detail(
                 &state.pool,
                 Some(KEYWORD_CANDIDATES.max(limit) as i64),
                 query.feed_id,
                 Some(search_query),
             )
             .await
-            .map_err(db_error)?
-            .into_iter()
-            .map(|item| item.id)
-            .collect();
+            .map_err(db_error)?;
+            let keyword_ids: Vec<i64> = keyword_items.iter().map(|item| item.id).collect();
             match vector {
                 Some(vector) => {
                     let similarities = state
@@ -149,7 +150,26 @@ pub async fn fetch_latest_items(
                         .similarities(&state.pool, &vector, query.feed_id)
                         .await
                         .map_err(db_error)?;
-                    hybrid_rank(&similarities, &keyword_ids, state.min_similarity, limit)
+                    let mut dates = state
+                        .embeddings
+                        .dates(similarities.iter().map(|(id, _)| *id))
+                        .await;
+                    dates.extend(
+                        keyword_items
+                            .iter()
+                            .map(|item| (item.id, item_date(item.published_at, item.inserted_at))),
+                    );
+                    hybrid_rank(
+                        &similarities,
+                        &keyword_ids,
+                        state.min_similarity,
+                        limit,
+                        |id| {
+                            dates
+                                .get(&id)
+                                .map_or(1.0, |d| state.recency.factor(*d, now))
+                        },
+                    )
                 }
                 None => keyword_ids.into_iter().take(limit).collect(),
             }
@@ -257,6 +277,7 @@ mod tests {
             model: MODEL.to_string(),
             embeddings: Arc::new(crate::feed::item_embedding::EmbeddingIndex::new(MODEL)),
             min_similarity: 0.3,
+            recency: rss_centr_core::semantic::RecencyBoost::NONE,
         };
         Router::new()
             .route("/items/latest", get(fetch_latest_items))

@@ -7,7 +7,10 @@ use std::{
 
 use anyhow::Result;
 use axum::extract::FromRef;
-use rss_centr_core::{ollama, semantic::query_input};
+use rss_centr_core::{
+    ollama,
+    semantic::{RecencyBoost, query_input},
+};
 use sqlx::PgPool;
 
 use crate::feed::item_embedding::EmbeddingIndex;
@@ -127,6 +130,7 @@ pub struct SearchState {
     pub model: String,
     pub embeddings: Arc<EmbeddingIndex>,
     pub min_similarity: f32,
+    pub recency: RecencyBoost,
 }
 
 impl SearchState {
@@ -137,6 +141,12 @@ impl SearchState {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(DEFAULT_MIN_SIMILARITY);
+        let env_f32 = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<f32>().ok());
+        let recency = RecencyBoost {
+            weight: env_f32("SEMANTIC_RECENCY_WEIGHT").unwrap_or(RecencyBoost::DEFAULT_WEIGHT),
+            half_life_hours: env_f32("SEMANTIC_RECENCY_HALF_LIFE_HOURS")
+                .unwrap_or(RecencyBoost::DEFAULT_HALF_LIFE_HOURS),
+        };
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
@@ -157,6 +167,7 @@ impl SearchState {
             embeddings: Arc::new(EmbeddingIndex::new(model.clone())),
             model,
             min_similarity,
+            recency,
         }
     }
 }

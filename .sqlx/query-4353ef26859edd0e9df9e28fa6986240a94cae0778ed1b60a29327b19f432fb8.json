@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT e.feed_item_id as \"id!: i64\",\n               f.feed_id as \"feed_id!: i64\",\n               e.embedding,\n               e.embedded_at\n        FROM feed_item_embeddings e\n        INNER JOIN feed_items f ON f.id = e.feed_item_id\n        WHERE e.model = $1\n          AND ($2::TIMESTAMPTZ IS NULL OR e.embedded_at > $2)\n        ",
+  "query": "\n        SELECT e.feed_item_id as \"id!: i64\",\n               f.feed_id as \"feed_id!: i64\",\n               LEAST(d.published_at, f.inserted_at) as \"date!: DateTime<Utc>\",\n               e.embedding as \"embedding!\",\n               e.embedded_at as \"embedded_at!\"\n        FROM feed_item_embeddings e\n        INNER JOIN feed_items f ON f.id = e.feed_item_id\n        LEFT JOIN feed_item_details d ON d.feed_item_id = f.id\n        WHERE e.model = $1\n          AND ($2::TIMESTAMPTZ IS NULL OR e.embedded_at > $2)\n        ",
   "describe": {
     "columns": [
       {
@@ -27,7 +27,13 @@
       },
       {
         "ordinal": 2,
-        "name": "embedding",
+        "name": "date!: DateTime<Utc>",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "embedding!",
         "type_info": "Bytea",
         "origin": {
           "Table": {
@@ -37,8 +43,8 @@
         }
       },
       {
-        "ordinal": 3,
-        "name": "embedded_at",
+        "ordinal": 4,
+        "name": "embedded_at!",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -55,11 +61,12 @@
       ]
     },
     "nullable": [
-      false,
-      false,
-      false,
-      false
+      true,
+      true,
+      null,
+      true,
+      true
     ]
   },
-  "hash": "ac479b448b3c7ca48c83046eaba6b0b2750645ae2d5d2d3759f7bc9e32507ff1"
+  "hash": "4353ef26859edd0e9df9e28fa6986240a94cae0778ed1b60a29327b19f432fb8"
 }

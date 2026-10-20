@@ -139,6 +139,7 @@ mod tests {
                     "test-model",
                 )),
                 min_similarity: 0.3,
+                recency: rss_centr_core::semantic::RecencyBoost::NONE,
             })
     }
 

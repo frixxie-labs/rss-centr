@@ -95,6 +95,7 @@ The worker reads `BACKEND_URL` or `--backend-url` and consumes the backend feed 
 `GET /api/items/latest?q=...&mode=keyword|semantic|hybrid` (API default `keyword`, UI default `hybrid`). Embeddings are stored as `REAL[]` in `feed_item_embeddings` and ranked in Rust (`core/src/semantic.rs`); no Postgres extension is needed.
 
 - Backend env: `OLLAMA_URL`, `OLLAMA_EMBED_MODEL` (default `embeddinggemma-2`), `SEMANTIC_MIN_SIMILARITY` (default `0.2`), `OLLAMA_EMBED_KEEP_ALIVE` (default `1h`; how long Ollama keeps the model loaded after a search, avoiding a ~2 s reload).
+- Recency ranking (semantic/hybrid): relevance is multiplied by `(1 - w) + w * 0.5^(age / half_life)`, with the age taken from `published_at` (capped at `inserted_at`). `SEMANTIC_RECENCY_WEIGHT` (default `0.3`, `0` disables) and `SEMANTIC_RECENCY_HALF_LIFE_HOURS` (default `168`). It is applied after the similarity floor, so it only reorders relevant items.
 - Worker env: `OLLAMA_URL` (default `http://desktop:11434`) is used by the indexer, which claims items via `POST /internal/embeddings/claim` and stores vectors via `PUT /internal/embeddings`. The backend decides the model.
 - Run `ollama pull embeddinggemma-2` on the Ollama host. Changing `OLLAMA_EMBED_MODEL` automatically re-indexes all items.
 

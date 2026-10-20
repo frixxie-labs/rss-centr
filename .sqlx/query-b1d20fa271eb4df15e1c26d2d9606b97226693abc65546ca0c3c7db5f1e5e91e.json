@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT f.id as \"id!: i64\",\n               f.feed_id as \"feed_id!: i64\",\n               f.external_id,\n               f.title,\n               f.url,\n               f.inserted_at as \"inserted_at: _\",\n               d.summary as \"summary?\",\n               d.content as \"content?\",\n               d.author as \"author?\",\n               d.published_at as \"published_at?: _\"\n        FROM feed_items f\n        LEFT JOIN feed_item_details d ON d.feed_item_id = f.id\n        WHERE f.id = ANY($1)\n        ",
+  "query": "\n        SELECT f.id as \"id!: i64\",\n               f.feed_id as \"feed_id!: i64\",\n               f.external_id as \"external_id!\",\n               f.title as \"title!\",\n               f.url as \"url!\",\n               f.inserted_at as \"inserted_at!: _\",\n               d.summary as \"summary?\",\n               d.content as \"content?\",\n               d.author as \"author?\",\n               d.published_at as \"published_at?: _\"\n        FROM feed_items f\n        LEFT JOIN feed_item_details d ON d.feed_item_id = f.id\n        WHERE f.id = ANY($1)\n        ",
   "describe": {
     "columns": [
       {
@@ -27,7 +27,7 @@
       },
       {
         "ordinal": 2,
-        "name": "external_id",
+        "name": "external_id!",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -38,7 +38,7 @@
       },
       {
         "ordinal": 3,
-        "name": "title",
+        "name": "title!",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -49,7 +49,7 @@
       },
       {
         "ordinal": 4,
-        "name": "url",
+        "name": "url!",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -60,7 +60,7 @@
       },
       {
         "ordinal": 5,
-        "name": "inserted_at: _",
+        "name": "inserted_at!: _",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -132,5 +132,5 @@
       true
     ]
   },
-  "hash": "100906a9a690a553b57bc6d7ad64ff60a365228493e167043e122d4d2670778f"
+  "hash": "b1d20fa271eb4df15e1c26d2d9606b97226693abc65546ca0c3c7db5f1e5e91e"
 }
