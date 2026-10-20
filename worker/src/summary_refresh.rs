@@ -1,8 +1,10 @@
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use tokio::time::{MissedTickBehavior, interval, sleep};
 use tracing::{info, warn};
+
+use crate::http_util::send;
 
 // PostgreSQL owns the hourly schedule; all workers poll for due work.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
@@ -27,7 +29,10 @@ pub(crate) async fn run(backend_url: String, http: reqwest::Client) {
                     break;
                 }
                 Err(err) => {
-                    warn!(error = %err, "daily news summary refresh failed; retrying");
+                    warn!(
+                        error = format!("{err:#}"),
+                        "daily news summary refresh failed; retrying"
+                    );
                     sleep(RETRY_INTERVAL).await;
                 }
             }
@@ -36,12 +41,10 @@ pub(crate) async fn run(backend_url: String, http: reqwest::Client) {
 }
 
 async fn refresh(http: &reqwest::Client, url: &str) -> Result<()> {
-    http.post(url)
-        .timeout(REQUEST_TIMEOUT)
-        .send()
-        .await
-        .context("failed to call summary refresh endpoint")?
-        .error_for_status()
-        .context("summary refresh endpoint returned an error")?;
+    send(
+        http.post(url).timeout(REQUEST_TIMEOUT),
+        "refresh daily news summary",
+    )
+    .await?;
     Ok(())
 }

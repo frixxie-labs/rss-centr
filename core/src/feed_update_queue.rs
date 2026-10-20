@@ -51,6 +51,12 @@ pub struct FailedFeedUpdateRequest {
     /// Do not retry before this time, if supplied by the publisher's Retry-After header.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_after: Option<DateTime<Utc>>,
+    /// HTTP status returned by the publisher, if the fetch got a response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    /// Human-readable description of why the fetch failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

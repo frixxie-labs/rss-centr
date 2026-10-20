@@ -9,6 +9,8 @@ use rss_centr_core::semantic::{
 use tokio::time::sleep;
 use tracing::{info, warn};
 
+use crate::http_util::send_json;
+
 /// Maximum number of documents sent to Ollama in one request.
 const EMBED_BATCH_SIZE: usize = 16;
 const CLAIM_LIMIT: i64 = 64;
@@ -75,24 +77,29 @@ pub(crate) async fn run_once(
     Ok(count)
 }
 
-pub(crate) async fn run(backend_url: String, ollama_url: String, http: reqwest::Client) {
+pub(crate) async fn run(
+    backend_url: String,
+    ollama_url: String,
+    http: reqwest::Client,
+    ollama_http: reqwest::Client,
+) {
     let queue = HttpEmbeddingQueue {
         base_url: backend_url.trim_end_matches('/').to_string(),
-        http: http.clone(),
+        http,
     };
     let embedder = OllamaEmbedder {
         ollama_url,
-        http: reqwest::Client::builder()
-            .timeout(Duration::from_secs(120))
-            .build()
-            .unwrap_or(http),
+        http: ollama_http,
     };
     loop {
         match run_once(&queue, &embedder, CLAIM_LIMIT, LEASE_SECONDS).await {
             Ok(0) => sleep(IDLE_SLEEP).await,
             Ok(count) => info!(count, "embedded feed items"),
             Err(err) => {
-                warn!(error = %format!("{err:#}"), "embedding batch failed; retrying");
+                warn!(
+                    error = format!("{err:#}"),
+                    "embedding batch failed; retrying"
+                );
                 sleep(RETRY_SLEEP).await;
             }
         }
@@ -110,31 +117,12 @@ impl EmbeddingQueue for HttpEmbeddingQueue {
             "{}/internal/embeddings/claim?limit={limit}&lease_seconds={lease_seconds}",
             self.base_url
         );
-        self.http
-            .post(url)
-            .send()
-            .await
-            .context("failed to call embeddings claim endpoint")?
-            .error_for_status()
-            .context("embeddings claim endpoint returned an error")?
-            .json()
-            .await
-            .context("failed to decode embeddings claim response")
+        send_json(self.http.post(url), "claim embedding jobs").await
     }
 
     async fn store(&self, request: StoreEmbeddingsRequest) -> Result<StoreEmbeddingsResult> {
         let url = format!("{}/internal/embeddings", self.base_url);
-        self.http
-            .put(url)
-            .json(&request)
-            .send()
-            .await
-            .context("failed to call embeddings store endpoint")?
-            .error_for_status()
-            .context("embeddings store endpoint returned an error")?
-            .json()
-            .await
-            .context("failed to decode embeddings store response")
+        send_json(self.http.put(url).json(&request), "store embeddings").await
     }
 }
 

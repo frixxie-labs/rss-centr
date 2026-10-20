@@ -10,7 +10,9 @@ use super::feed_item::{
     insert_feed_item_dedup, insert_feed_item_detail_dedup, read_feed_cadence_seconds,
 };
 use super::feed_subscription::FeedSuccessUpdate;
-use super::poll_interval::{backoff_poll_interval_seconds, resolved_poll_interval_seconds};
+use super::poll_interval::{
+    backoff_poll_interval_seconds, failure_poll_interval_seconds, resolved_poll_interval_seconds,
+};
 
 const LEASE_CONFLICT_MESSAGE: &str = "feed update lease conflict";
 const FEED_PAUSED_MESSAGE: &str = "feed is paused";
@@ -254,7 +256,8 @@ pub async fn fail_feed_update(
 
     ensure_current_lease(&mut tx, feed_id, &request.lease_token).await?;
     let current = read_feed_poll_interval(&mut tx, feed_id).await?;
-    let poll_interval_seconds = backoff_poll_interval_seconds(current.poll_interval_seconds);
+    let poll_interval_seconds =
+        failure_poll_interval_seconds(current.poll_interval_seconds, request.http_status);
     touch_feed_failure_in_tx(&mut tx, feed_id, checked_at, poll_interval_seconds).await?;
 
     let next_due_at = failure_next_due_at(checked_at, poll_interval_seconds, request.retry_after);
@@ -491,6 +494,8 @@ mod tests {
             FailedFeedUpdateRequest {
                 lease_token: leased.lease_token,
                 retry_after: Some(retry_after),
+                http_status: None,
+                error: None,
             },
         )
         .await
@@ -655,6 +660,8 @@ mod tests {
             FailedFeedUpdateRequest {
                 lease_token: leased.lease_token,
                 retry_after: None,
+                http_status: None,
+                error: None,
             },
         )
         .await
@@ -669,6 +676,40 @@ mod tests {
 
         let due_again = dequeue_due_feeds(&pool, 100, 300).await.unwrap();
         assert!(due_again.iter().all(|row| row.feed_id != feed.id));
+    }
+
+    #[sqlx::test]
+    async fn test_failed_feed_update_gone_feed_uses_slowest_interval(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/queue-gone.xml")
+            .await
+            .unwrap();
+        enqueue_feed_now(&pool, feed.id).await.unwrap();
+        let leased = dequeue_due_feeds(&pool, 100, 300)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.feed_id == feed.id)
+            .unwrap();
+
+        fail_feed_update(
+            &pool,
+            feed.id,
+            FailedFeedUpdateRequest {
+                lease_token: leased.lease_token,
+                retry_after: None,
+                http_status: Some(410),
+                error: Some("gone".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+
+        let updated = read_feed(&pool, feed.id).await.unwrap();
+        assert_eq!(updated.failure_count, 1);
+        assert_eq!(
+            updated.poll_interval_seconds,
+            failure_poll_interval_seconds(0, Some(410))
+        );
     }
 
     #[sqlx::test]

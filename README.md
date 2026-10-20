@@ -221,12 +221,12 @@ cargo test -p rss-centr-frontend --features server
 
 ```
 --backend-url <URL>                  Backend base URL [env: BACKEND_URL, default: http://localhost:8080]
---metrics-host <HOST>                 Prometheus metrics listen address [default: 0.0.0.0:9090]
---limit <N>                          Number of feeds to lease per dequeue [default: 25]
---lease-seconds <SECS>               Queue lease duration [default: 300]
---idle-sleep-seconds <SECS>          Sleep duration when no work is available [default: 30]
---once                               Run one dequeue/process iteration and exit
---log-level <LEVEL>                  Log level [default: info]
+--metrics-host <ADDR>                 Prometheus metrics listen address [env: METRICS_HOST] [default: 0.0.0.0:9090]
+--limit <N>                          Max feeds fetched concurrently [env: WORKER_LIMIT] [default: 5]
+--lease-seconds <SECS>               Queue lease duration [env: WORKER_LEASE_SECONDS] [default: 300]
+--idle-sleep-seconds <SECS>          Sleep duration when no work is available [env: WORKER_IDLE_SLEEP_SECONDS] [default: 30]
+--once                               Process one batch and exit (no embedding indexer or summary refresh)
+--log-level <LEVEL>                  Log level; RUST_LOG overrides it [default: info]
 ```
 
 ---

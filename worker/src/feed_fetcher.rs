@@ -1,4 +1,6 @@
-use anyhow::{Context, Result};
+use std::future::Future;
+
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use feed_rs::model::Feed;
 use reqwest::{StatusCode, header};
@@ -42,12 +44,58 @@ pub(crate) enum FetchOutcome {
     },
 }
 
+/// Largest feed body the worker will download.
+pub(crate) const MAX_FEED_BYTES: usize = 20 * 1024 * 1024;
+
+pub(crate) const USER_AGENT: &str = concat!(
+    "rss-centr-worker/",
+    env!("CARGO_PKG_VERSION"),
+    " (RSS aggregator)"
+);
+
+/// Client settings shared by every outgoing request of the worker.
+pub(crate) fn http_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .connect_timeout(std::time::Duration::from_secs(5))
+}
+
+/// Bot-protection headers that mark a challenge page instead of the feed.
+const BOT_CHALLENGE_HEADERS: [&str; 2] = ["x-vercel-mitigated", "cf-mitigated"];
+
+/// Fetches and parses feeds, abstracted so the runner can be tested.
+pub(crate) trait FeedSource: Send + Sync + 'static {
+    fn fetch(&self, feed: &DequeuedFeedUpdate)
+    -> impl Future<Output = Result<FetchOutcome>> + Send;
+}
+
+pub(crate) struct HttpFeedSource {
+    http: reqwest::Client,
+    max_bytes: usize,
+}
+
+impl HttpFeedSource {
+    pub(crate) fn new(http: reqwest::Client) -> Self {
+        Self {
+            http,
+            max_bytes: MAX_FEED_BYTES,
+        }
+    }
+}
+
+impl FeedSource for HttpFeedSource {
+    async fn fetch(&self, feed: &DequeuedFeedUpdate) -> Result<FetchOutcome> {
+        fetch_feed(&self.http, feed, self.max_bytes).await
+    }
+}
+
 pub(crate) async fn fetch_feed(
     http: &reqwest::Client,
     feed: &DequeuedFeedUpdate,
+    max_bytes: usize,
 ) -> Result<FetchOutcome> {
     let started_at = Instant::now();
-    let outcome = fetch_feed_inner(http, feed).await;
+    let outcome = fetch_feed_inner(http, feed, max_bytes).await;
     let elapsed = started_at.elapsed();
 
     match &outcome {
@@ -68,6 +116,7 @@ pub(crate) async fn fetch_feed(
 async fn fetch_feed_inner(
     http: &reqwest::Client,
     feed: &DequeuedFeedUpdate,
+    max_bytes: usize,
 ) -> Result<FetchOutcome> {
     let mut request = http.get(feed.url.as_str());
     if let Some(etag) = feed.etag.as_deref() {
@@ -85,15 +134,15 @@ async fn fetch_feed_inner(
     let etag = header_value_to_string(response.headers().get(header::ETAG));
     let last_modified = header_value_to_string(response.headers().get(header::LAST_MODIFIED));
 
-    let blocked_by_bot_protection = response
-        .headers()
-        .get("x-vercel-mitigated")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.eq_ignore_ascii_case("challenge"));
-    if blocked_by_bot_protection
-        || response.status().is_client_error()
-        || response.status().is_server_error()
-    {
+    if response.status() == StatusCode::NOT_MODIFIED {
+        return Ok(FetchOutcome::NotModified {
+            etag,
+            last_modified,
+        });
+    }
+
+    let blocked_by_bot_protection = is_bot_challenge(response.headers());
+    if blocked_by_bot_protection || !response.status().is_success() {
         let failure = FeedFetchFailure {
             status: response.status(),
             blocked_by_bot_protection,
@@ -105,18 +154,7 @@ async fn fetch_feed_inner(
         return Err(failure.into());
     }
 
-    if response.status() == StatusCode::NOT_MODIFIED {
-        return Ok(FetchOutcome::NotModified {
-            etag,
-            last_modified,
-        });
-    }
-
-    let response = response
-        .error_for_status()
-        .with_context(|| format!("non-success status fetching feed from {}", feed.url))?;
-    let bytes = response
-        .bytes()
+    let bytes = read_body_limited(response, max_bytes)
         .await
         .with_context(|| format!("failed to read response body from {}", feed.url))?;
     let feed = crate::feed_parser::parse_feed(&bytes)
@@ -127,6 +165,31 @@ async fn fetch_feed_inner(
         etag,
         last_modified,
     })
+}
+
+fn is_bot_challenge(headers: &header::HeaderMap) -> bool {
+    BOT_CHALLENGE_HEADERS.iter().any(|name| {
+        headers
+            .get(*name)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.eq_ignore_ascii_case("challenge"))
+    })
+}
+
+async fn read_body_limited(mut response: reqwest::Response, max_bytes: usize) -> Result<Vec<u8>> {
+    if let Some(length) = response.content_length()
+        && length > max_bytes as u64
+    {
+        bail!("feed body of {length} bytes exceeds the {max_bytes} byte limit");
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len() + chunk.len() > max_bytes {
+            bail!("feed body exceeds the {max_bytes} byte limit");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 fn header_value_to_string(value: Option<&header::HeaderValue>) -> Option<String> {
@@ -171,11 +234,11 @@ mod tests {
 
     async fn assert_live_feed(url: &str) {
         let feed = feed_update(url);
-        let http = reqwest::Client::builder()
+        let http = http_client_builder()
             .timeout(std::time::Duration::from_secs(20))
             .build()
             .unwrap();
-        let outcome = fetch_feed(&http, &feed)
+        let outcome = fetch_feed(&http, &feed, MAX_FEED_BYTES)
             .await
             .unwrap_or_else(|error| panic!("{error:#}"));
         match outcome {
@@ -196,15 +259,47 @@ mod tests {
         assert_live_feed("https://www.kongehuset.no/for-pressen/rss").await;
     }
 
+    struct LocalResponse<'a> {
+        status: &'a str,
+        headers: &'a str,
+        body: &'a str,
+        content_length: bool,
+        max_bytes: usize,
+    }
+
+    impl<'a> LocalResponse<'a> {
+        fn new(status: &'a str, headers: &'a str, body: &'a str) -> Self {
+            Self {
+                status,
+                headers,
+                body,
+                content_length: true,
+                max_bytes: MAX_FEED_BYTES,
+            }
+        }
+    }
+
     async fn fetch_local_response(status: &str, headers: &str, body: &str) -> Result<FetchOutcome> {
+        fetch_local(LocalResponse::new(status, headers, body))
+            .await
+            .0
+    }
+
+    /// Serves one canned response; returns the outcome and the raw request.
+    async fn fetch_local(local: LocalResponse<'_>) -> (Result<FetchOutcome>, String) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
+        let length = if local.content_length {
+            format!("Content-Length: {}\r\n", local.body.len())
+        } else {
+            String::new()
+        };
         let response = format!(
-            "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
+            "HTTP/1.1 {}\r\n{}{length}Connection: close\r\n\r\n{}",
+            local.status, local.headers, local.body
         );
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
@@ -215,18 +310,78 @@ mod tests {
                 assert!(read > 0, "connection closed before request headers");
                 request.extend_from_slice(&buffer[..read]);
             }
-            socket.write_all(response.as_bytes()).await.unwrap();
+            // The client may hang up early (e.g. body too large).
+            let _ = socket.write_all(response.as_bytes()).await;
+            String::from_utf8(request).unwrap()
         });
-        let http = reqwest::Client::builder()
+        let http = http_client_builder()
             .no_proxy()
             .timeout(std::time::Duration::from_secs(5))
             .build()
             .unwrap();
         let feed = feed_update(&format!("http://{address}/for-pressen/rss"));
 
-        let outcome = fetch_feed(&http, &feed).await;
-        server.await.unwrap();
-        outcome
+        let outcome = fetch_feed(&http, &feed, local.max_bytes).await;
+        (outcome, server.await.unwrap())
+    }
+
+    const MINIMAL_RSS: &str = r#"<rss version="2.0"><channel><title>t</title><item><title>a</title><guid>1</guid></item></channel></rss>"#;
+
+    #[tokio::test]
+    async fn test_fetch_sends_user_agent() {
+        let (outcome, request) = fetch_local(LocalResponse::new("200 OK", "", MINIMAL_RSS)).await;
+        assert!(outcome.is_ok());
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains(&format!("user-agent: {}", USER_AGENT.to_ascii_lowercase())),
+            "{request}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fetch_rejects_body_over_limit() {
+        for content_length in [true, false] {
+            let (outcome, _) = fetch_local(LocalResponse {
+                content_length,
+                max_bytes: 16,
+                ..LocalResponse::new("200 OK", "", MINIMAL_RSS)
+            })
+            .await;
+            let error = match outcome {
+                Err(error) => format!("{error:#}"),
+                Ok(_) => panic!("expected oversized body to fail"),
+            };
+            assert!(error.contains("16 byte limit"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fetch_detects_cloudflare_challenge() {
+        let error = match fetch_local_response(
+            "403 Forbidden",
+            "cf-mitigated: challenge\r\n",
+            "<html>Just a moment...</html>",
+        )
+        .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("expected the challenge to fail"),
+        };
+        let failure = error.downcast_ref::<FeedFetchFailure>().unwrap();
+        assert!(failure.blocked_by_bot_protection);
+        assert_eq!(failure.status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_rejects_unfollowed_redirect_status() {
+        let error = match fetch_local_response("300 Multiple Choices", "", MINIMAL_RSS).await {
+            Err(error) => error,
+            Ok(_) => panic!("expected a 300 response to fail"),
+        };
+        let failure = error.downcast_ref::<FeedFetchFailure>().unwrap();
+        assert_eq!(failure.status, StatusCode::MULTIPLE_CHOICES);
+        assert!(!failure.blocked_by_bot_protection);
     }
 
     #[tokio::test]

@@ -1,41 +1,7 @@
+use std::net::SocketAddr;
+
 use clap::Parser;
 use tracing::Level;
-
-#[derive(Debug, Clone)]
-pub(crate) enum LogLevel {
-    Trace,
-    Debug,
-    Info,
-    Warn,
-    Error,
-}
-
-impl std::str::FromStr for LogLevel {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "trace" => Ok(LogLevel::Trace),
-            "debug" => Ok(LogLevel::Debug),
-            "info" => Ok(LogLevel::Info),
-            "warn" => Ok(LogLevel::Warn),
-            "error" => Ok(LogLevel::Error),
-            _ => Err("unknown log level".to_string()),
-        }
-    }
-}
-
-impl From<LogLevel> for Level {
-    fn from(log_level: LogLevel) -> Self {
-        match log_level {
-            LogLevel::Trace => Level::TRACE,
-            LogLevel::Debug => Level::DEBUG,
-            LogLevel::Info => Level::INFO,
-            LogLevel::Warn => Level::WARN,
-            LogLevel::Error => Level::ERROR,
-        }
-    }
-}
 
 #[derive(Debug, Parser)]
 pub(crate) struct Opts {
@@ -46,21 +12,64 @@ pub(crate) struct Opts {
     #[arg(long, env = "OLLAMA_URL", default_value = "http://desktop:11434")]
     pub(crate) ollama_url: String,
 
-    #[arg(long, default_value = "0.0.0.0:9090")]
-    pub(crate) metrics_host: String,
+    /// Prometheus metrics listen address.
+    #[arg(long, env = "METRICS_HOST", default_value = "0.0.0.0:9090")]
+    pub(crate) metrics_host: SocketAddr,
 
-    #[arg(long, default_value = "5")]
-    pub(crate) limit: i64,
+    /// Maximum number of feeds fetched concurrently.
+    #[arg(
+        long,
+        env = "WORKER_LIMIT",
+        default_value = "5",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    pub(crate) limit: u32,
 
-    #[arg(long, default_value = "300")]
-    pub(crate) lease_seconds: i64,
+    /// How long a dequeued feed stays leased to this worker.
+    #[arg(
+        long,
+        env = "WORKER_LEASE_SECONDS",
+        default_value = "300",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    pub(crate) lease_seconds: u32,
 
-    #[arg(long, default_value = "30")]
+    /// Seconds to wait before polling again when the queue is empty.
+    #[arg(long, env = "WORKER_IDLE_SLEEP_SECONDS", default_value = "30")]
     pub(crate) idle_sleep_seconds: u64,
 
+    /// Process one batch of feeds and exit. The embedding indexer and
+    /// summary refresh do not run in this mode.
     #[arg(long)]
     pub(crate) once: bool,
 
+    /// Log level (trace, debug, info, warn, error). `RUST_LOG` overrides it.
     #[arg(short, long, default_value = "info")]
-    pub(crate) log_level: LogLevel,
+    pub(crate) log_level: Level,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_defaults() {
+        let opts = Opts::try_parse_from(["worker"]).unwrap();
+        assert_eq!(opts.limit, 5);
+        assert_eq!(opts.lease_seconds, 300);
+        assert_eq!(opts.metrics_host, "0.0.0.0:9090".parse().unwrap());
+        assert_eq!(opts.log_level, Level::INFO);
+    }
+
+    #[test]
+    fn test_rejects_zero_limit_and_lease() {
+        assert!(Opts::try_parse_from(["worker", "--limit", "0"]).is_err());
+        assert!(Opts::try_parse_from(["worker", "--lease-seconds", "0"]).is_err());
+    }
+
+    #[test]
+    fn test_rejects_invalid_metrics_host_and_log_level() {
+        assert!(Opts::try_parse_from(["worker", "--metrics-host", "nope"]).is_err());
+        assert!(Opts::try_parse_from(["worker", "--log-level", "loud"]).is_err());
+    }
 }

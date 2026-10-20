@@ -28,9 +28,40 @@ pub(crate) fn backoff_poll_interval_seconds(current_interval_seconds: i64) -> i6
         .clamp(MIN_POLL_INTERVAL_SECONDS, MAX_POLL_INTERVAL_SECONDS)
 }
 
+/// Poll interval after a failed fetch. Feeds the publisher reports as gone
+/// (HTTP 404/410) jump straight to the slowest interval instead of doubling,
+/// since they are unlikely to come back soon.
+pub(crate) fn failure_poll_interval_seconds(
+    current_interval_seconds: i64,
+    http_status: Option<u16>,
+) -> i64 {
+    match http_status {
+        Some(404 | 410) => MAX_POLL_INTERVAL_SECONDS,
+        _ => backoff_poll_interval_seconds(current_interval_seconds),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_failure_poll_interval_seconds_maxes_out_gone_feeds() {
+        assert_eq!(
+            failure_poll_interval_seconds(60, Some(404)),
+            MAX_POLL_INTERVAL_SECONDS
+        );
+        assert_eq!(
+            failure_poll_interval_seconds(60, Some(410)),
+            MAX_POLL_INTERVAL_SECONDS
+        );
+    }
+
+    #[test]
+    fn test_failure_poll_interval_seconds_doubles_other_failures() {
+        assert_eq!(failure_poll_interval_seconds(120, Some(503)), 240);
+        assert_eq!(failure_poll_interval_seconds(120, None), 240);
+    }
 
     quickcheck::quickcheck! {
         fn prop_resolved_poll_interval_seconds_clamps_db_value(interval_seconds: i64) -> bool {
