@@ -127,19 +127,48 @@ where
     scored
 }
 
-/// Semantic matches must score at least this fraction of the best match.
-/// Long queries score higher across the board than short ones, so a fixed
-/// minimum alone lets many loosely related items through for long queries.
-pub const RELATIVE_SIMILARITY: f32 = 0.6;
+/// Semantic-only matches must reach at least this [`RelevanceScale`] relevance.
+pub const MIN_RELEVANCE: f32 = 0.5;
 
-/// Lowest similarity a semantic-only match may have: the larger of
-/// `min_similarity` and [`RELATIVE_SIMILARITY`] of the best match.
-pub fn similarity_floor(similarities: &[(i64, f32)], min_similarity: f32) -> f32 {
-    let best = similarities
-        .iter()
-        .map(|(_, score)| *score)
-        .fold(f32::NEG_INFINITY, f32::max);
-    min_similarity.max(best * RELATIVE_SIMILARITY)
+/// Places a query's similarities on a common scale: the best match has
+/// relevance 1 and an average item 0.
+///
+/// Embedding models give unrelated texts a substantial similarity
+/// (`embeddinggemma`: about 0.55-0.65, against 0.75-0.8 for strong matches),
+/// and the level shifts with query length. Raw similarities therefore say
+/// little on their own; only how far an item stands out from the rest does.
+struct RelevanceScale {
+    mean: f32,
+    spread: f32,
+}
+
+impl RelevanceScale {
+    fn new(similarities: impl IntoIterator<Item = f32>) -> Self {
+        let (mut count, mut sum, mut best) = (0usize, 0.0f64, f32::NEG_INFINITY);
+        for similarity in similarities {
+            count += 1;
+            sum += f64::from(similarity);
+            best = best.max(similarity);
+        }
+        let mean = if count == 0 {
+            0.0
+        } else {
+            (sum / count as f64) as f32
+        };
+        Self {
+            mean,
+            spread: best - mean,
+        }
+    }
+
+    /// `similarity` as a fraction of the way from the mean to the best match,
+    /// clamped to `0..=1`. All items are fully relevant when they score alike.
+    fn relevance(&self, similarity: f32) -> f32 {
+        if self.spread.is_nan() || self.spread <= f32::EPSILON {
+            return 1.0;
+        }
+        ((similarity - self.mean) / self.spread).clamp(0.0, 1.0)
+    }
 }
 
 /// How strongly ranked search favours recent items.
@@ -199,17 +228,19 @@ pub fn item_date(published_at: Option<DateTime<Utc>>, inserted_at: DateTime<Utc>
     published_at.map_or(inserted_at, |p| p.min(inserted_at))
 }
 
-/// Score added to items whose text matches the search keywords in hybrid search.
-pub const KEYWORD_BONUS: f32 = 0.1;
+/// Relevance added to items whose text matches the search keywords in hybrid
+/// search, on the [`RelevanceScale`] where the best match scores 1.
+pub const KEYWORD_BONUS: f32 = 0.2;
 
-/// Rank items for hybrid search by meaning, nudged by keyword matches.
+/// Rank items for search by meaning, nudged by keyword matches and recency.
 ///
 /// `similarities` holds the similarity of every embedded candidate and
-/// `keyword_ids` the items matching the keywords. Each item scores its
-/// similarity; keyword matches score `max(similarity, min_similarity) +
-/// KEYWORD_BONUS`, so they are always included but cannot outrank clearly
-/// stronger meaning matches. Items that do not match the keywords must reach
-/// [`similarity_floor`]. Each score is then multiplied by `factor(id)`, e.g.
+/// `keyword_ids` the items matching the keywords (empty for semantic-only
+/// search). Similarities are converted to relevance, see [`RelevanceScale`].
+/// Keyword matches score their relevance plus [`KEYWORD_BONUS`], so they are
+/// always included but cannot outrank clearly stronger meaning matches. Other
+/// items must reach [`MIN_RELEVANCE`] and a similarity of `min_similarity`.
+/// Each score is then multiplied by `factor(id)`, e.g.
 /// [`RecencyBoost::factor`]. Ties are broken by the newest (largest) id.
 pub fn hybrid_rank(
     similarities: &[(i64, f32)],
@@ -226,16 +257,17 @@ pub fn hybrid_rank(
         *entry = entry.max(similarity);
     }
     let keyword: HashSet<i64> = keyword_ids.iter().copied().collect();
-    let floor = similarity_floor(similarities, min_similarity);
+    let scale = RelevanceScale::new(best.values().copied());
 
     let mut scored: Vec<(i64, f32)> = best
         .iter()
-        .filter(|(id, similarity)| **similarity >= floor && !keyword.contains(id))
-        .map(|(id, similarity)| (*id, *similarity))
+        .filter(|(id, similarity)| **similarity >= min_similarity && !keyword.contains(id))
+        .map(|(id, similarity)| (*id, scale.relevance(*similarity)))
+        .filter(|(_, relevance)| *relevance >= MIN_RELEVANCE)
         .collect();
     scored.extend(keyword.iter().map(|id| {
-        let similarity = best.get(id).copied().unwrap_or(min_similarity);
-        (*id, similarity.max(min_similarity) + KEYWORD_BONUS)
+        let relevance = best.get(id).map_or(0.0, |s| scale.relevance(*s));
+        (*id, relevance + KEYWORD_BONUS)
     }));
     for (id, score) in &mut scored {
         *score *= factor(*id);
@@ -467,53 +499,73 @@ mod tests {
 
     const MIN: f32 = 0.2;
 
+    /// `items` among 20 unrelated items scoring 0.55-0.60, the typical
+    /// spread of `embeddinggemma` similarities.
+    fn with_background(items: &[(i64, f32)]) -> Vec<(i64, f32)> {
+        let mut scores: Vec<(i64, f32)> = (0..20)
+            .map(|i| (100 + i, 0.55 + i as f32 * 0.0025))
+            .collect();
+        scores.extend_from_slice(items);
+        scores
+    }
+
+    #[test]
+    fn relevance_runs_from_the_mean_to_the_best_similarity() {
+        let scale = RelevanceScale::new([1.0, 0.5, 0.0]);
+        assert!(close(scale.relevance(1.0), 1.0));
+        assert!(close(scale.relevance(0.75), 0.5));
+        assert!(close(scale.relevance(0.5), 0.0));
+        assert!(
+            close(scale.relevance(0.0), 0.0),
+            "below the mean clamps to 0"
+        );
+    }
+
+    #[test]
+    fn relevance_is_full_when_all_similarities_are_equal() {
+        assert!(close(RelevanceScale::new([0.3]).relevance(0.3), 1.0));
+        assert!(close(RelevanceScale::new([0.3, 0.3]).relevance(0.3), 1.0));
+    }
+
+    #[test]
+    fn hybrid_drops_matches_close_to_the_typical_similarity() {
+        let scores = with_background(&[(1, 0.80), (2, 0.75), (3, 0.65)]);
+        let ranked = hybrid_rank(&scores, &[], MIN, 10, |_| 1.0);
+        assert_eq!(ranked, vec![1, 2]);
+    }
+
+    #[test]
+    fn hybrid_applies_the_absolute_minimum_similarity() {
+        let ranked = hybrid_rank(&[(1, 0.15), (2, 0.05), (3, 0.04)], &[3], MIN, 10, |_| 1.0);
+        assert_eq!(ranked, vec![3], "only the keyword match is kept");
+    }
+
     #[test]
     fn hybrid_strong_meaning_match_outranks_weak_match_with_keywords() {
         // The "AMP with Carter Schultz" case: item 2 mentions the words but is
         // only loosely related; item 1 is clearly about the topic.
-        let ranked = hybrid_rank(&[(1, 0.45), (2, 0.22)], &[2], MIN, 10, |_| 1.0);
-        assert_eq!(ranked, vec![1, 2]);
+        let scores = with_background(&[(1, 0.80), (2, 0.62)]);
+        let ranked = hybrid_rank(&scores, &[2], MIN, 10, |_| 1.0);
+        assert_eq!(
+            ranked,
+            vec![1, 2],
+            "weak keyword matches are kept, but last"
+        );
     }
 
     #[test]
     fn hybrid_keyword_match_breaks_near_ties() {
-        let ranked = hybrid_rank(&[(1, 0.40), (2, 0.35)], &[2], MIN, 10, |_| 1.0);
+        let scores = with_background(&[(1, 0.80), (2, 0.78)]);
+        let ranked = hybrid_rank(&scores, &[2], MIN, 10, |_| 1.0);
         assert_eq!(ranked, vec![2, 1]);
     }
 
     #[test]
-    fn hybrid_keeps_keyword_matches_below_threshold_but_drops_unrelated_items() {
-        let ranked = hybrid_rank(&[(1, 0.10), (2, 0.05), (3, 0.35)], &[2], MIN, 10, |_| 1.0);
-        assert_eq!(ranked, vec![3, 2]);
-    }
-
-    #[test]
     fn hybrid_includes_keyword_matches_without_embeddings() {
-        let ranked = hybrid_rank(&[(1, 0.50), (2, 0.31)], &[9], MIN, 10, |_| 1.0);
-        assert_eq!(ranked, vec![1, 2, 9]);
-    }
-
-    #[test]
-    fn similarity_floor_is_relative_to_the_best_match() {
-        assert_eq!(similarity_floor(&[], MIN), MIN);
-        // Long queries score high overall: 60% of the best match.
-        assert!((similarity_floor(&[(1, 0.55), (2, 0.3)], MIN) - 0.33).abs() < 1e-6);
-        // Short queries score low overall: the absolute minimum wins.
-        assert_eq!(similarity_floor(&[(1, 0.25)], MIN), MIN);
-    }
-
-    #[test]
-    fn hybrid_drops_semantic_matches_far_below_the_best_one() {
-        // Benchmark: 40% of random articles score >= 0.2 for title-length
-        // queries, whose real matches score around 0.55.
-        let ranked = hybrid_rank(&[(1, 0.60), (2, 0.40), (3, 0.30)], &[], MIN, 10, |_| 1.0);
-        assert_eq!(ranked, vec![1, 2]);
-    }
-
-    #[test]
-    fn hybrid_keeps_keyword_matches_below_the_relative_floor() {
-        let ranked = hybrid_rank(&[(1, 0.60), (2, 0.25)], &[2], MIN, 10, |_| 1.0);
-        assert_eq!(ranked, vec![1, 2]);
+        let scores = with_background(&[(1, 0.80)]);
+        let ranked = hybrid_rank(&scores, &[9], MIN, 10, |_| 1.0);
+        assert_eq!(ranked, vec![1, 9]);
+        assert_eq!(hybrid_rank(&[], &[9], MIN, 10, |_| 1.0), vec![9]);
     }
 
     #[test]
@@ -572,62 +624,60 @@ mod tests {
         assert_eq!(item_date(Some(now()), inserted), inserted);
     }
 
+    /// Recency factor for items of the given ages in hours; other items are new.
     fn by_age(ages: &[(i64, i64)]) -> impl Fn(i64) -> f32 {
         let ages: std::collections::HashMap<i64, i64> = ages.iter().copied().collect();
-        move |id| RecencyBoost::default().factor(hours_ago(ages[&id]), now())
+        move |id| {
+            let age = ages.get(&id).copied().unwrap_or(0);
+            RecencyBoost::default().factor(hours_ago(age), now())
+        }
     }
 
     #[test]
     fn hybrid_recent_item_outranks_slightly_more_similar_old_one() {
-        let ranked = hybrid_rank(
-            &[(1, 0.50), (2, 0.47)],
-            &[],
-            MIN,
-            10,
-            by_age(&[(1, 24 * 365), (2, 2)]),
-        );
+        let scores = with_background(&[(1, 0.80), (2, 0.78)]);
+        let ranked = hybrid_rank(&scores, &[], MIN, 10, by_age(&[(1, 24 * 365), (2, 2)]));
         assert_eq!(ranked, vec![2, 1]);
     }
 
     #[test]
     fn hybrid_much_more_relevant_old_item_beats_weak_recent_one() {
-        let ranked = hybrid_rank(
-            &[(1, 0.60), (2, 0.38)],
-            &[],
-            MIN,
-            10,
-            by_age(&[(1, 24 * 365), (2, 0)]),
-        );
+        // "getting fired from my job": a year-old podcast episode about being
+        // fired must beat today's loosely related news.
+        let scores = with_background(&[(1, 0.79), (2, 0.70)]);
+        let ranked = hybrid_rank(&scores, &[], MIN, 10, by_age(&[(1, 24 * 365), (2, 0)]));
         assert_eq!(ranked, vec![1, 2]);
     }
 
     #[test]
     fn hybrid_recency_does_not_rescue_items_below_the_floor() {
-        let ranked = hybrid_rank(
-            &[(1, 0.60), (2, 0.30)],
-            &[],
-            MIN,
-            10,
-            by_age(&[(1, 24 * 365), (2, 0)]),
-        );
+        let scores = with_background(&[(1, 0.80), (2, 0.65)]);
+        let ranked = hybrid_rank(&scores, &[], MIN, 10, by_age(&[(1, 24 * 365), (2, 0)]));
         assert_eq!(ranked, vec![1]);
     }
 
     quickcheck::quickcheck! {
-        fn prop_hybrid_output_is_unique_and_complete(scores: Vec<(i64, i8)>, keyword: Vec<i64>, limit: u8) -> bool {
+        fn prop_hybrid_output_is_unique_bounded_and_keeps_keyword_matches(scores: Vec<(i64, i8)>, keyword: Vec<i64>, limit: u8) -> bool {
             use std::collections::HashSet;
             let scores: Vec<(i64, f32)> = scores
                 .into_iter()
                 .map(|(id, s)| (id, f32::from(s) / 128.0))
                 .collect();
-            let ranked = hybrid_rank(&scores, &keyword, MIN, usize::from(limit), |_| 1.0);
-            let floor = similarity_floor(&scores, MIN);
-            let mut eligible: HashSet<i64> = keyword.iter().copied().collect();
-            eligible.extend(scores.iter().filter(|(_, s)| *s >= floor).map(|(id, _)| *id));
-            let unique: HashSet<_> = ranked.iter().collect();
+            let limit = usize::from(limit);
+            let ranked = hybrid_rank(&scores, &keyword, MIN, limit, |_| 1.0);
+            let candidates: HashSet<i64> = scores.iter().map(|(id, _)| *id).chain(keyword.iter().copied()).collect();
+            let keyword: HashSet<i64> = keyword.into_iter().collect();
+            let unique: HashSet<i64> = ranked.iter().copied().collect();
             unique.len() == ranked.len()
-                && ranked.iter().all(|id| eligible.contains(id))
-                && ranked.len() == eligible.len().min(usize::from(limit))
+                && ranked.len() <= limit
+                && unique.is_subset(&candidates)
+                && (candidates.len() > limit || keyword.is_subset(&unique))
+        }
+
+        fn prop_relevance_is_between_zero_and_one(scores: Vec<i8>) -> bool {
+            let scores: Vec<f32> = scores.into_iter().map(|s| f32::from(s) / 128.0).collect();
+            let scale = RelevanceScale::new(scores.iter().copied());
+            scores.iter().all(|s| (0.0..=1.0 + 1e-6).contains(&scale.relevance(*s)))
         }
 
 

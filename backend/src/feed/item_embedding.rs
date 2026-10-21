@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use rss_centr_core::semantic::{
-    EmbeddingJob, ItemEmbedding, RecencyBoost, content_hash, dot, embedding_input, normalize,
-    similarity_floor,
+    EmbeddingJob, ItemEmbedding, RecencyBoost, content_hash, dot, embedding_input, hybrid_rank,
+    normalize,
 };
 use sqlx::PgPool;
 use tokio::sync::{Mutex, RwLock};
@@ -352,8 +352,8 @@ impl EmbeddingIndex {
     }
 }
 
-/// Rank item ids by cosine similarity to `query` among indexed embeddings,
-/// dropping matches below [`similarity_floor`] and favouring recent items
+/// Rank item ids by relevance to `query` among indexed embeddings, as
+/// [`hybrid_rank`] does without keyword matches, favouring recent items
 /// according to `recency`.
 #[allow(clippy::too_many_arguments)]
 pub async fn semantic_search_ids(
@@ -367,19 +367,12 @@ pub async fn semantic_search_ids(
     now: DateTime<Utc>,
 ) -> Result<Vec<i64>> {
     let scores = index.similarities(pool, query, feed_id).await?;
-    let floor = similarity_floor(&scores, min_similarity);
-    let mut scores: Vec<(i64, f32)> = scores
-        .into_iter()
-        .filter(|(_, score)| *score >= floor)
-        .collect();
     let dates = index.dates(scores.iter().map(|(id, _)| *id)).await;
-    for (id, score) in &mut scores {
-        if let Some(date) = dates.get(id) {
-            *score *= recency.factor(*date, now);
-        }
-    }
-    scores.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.0.cmp(&a.0)));
-    Ok(scores.into_iter().take(limit).map(|(id, _)| id).collect())
+    Ok(hybrid_rank(&scores, &[], min_similarity, limit, |id| {
+        dates
+            .get(&id)
+            .map_or(1.0, |date| recency.factor(*date, now))
+    }))
 }
 
 /// Read items with details, returned in the order of `ids`. Unknown ids are skipped.
@@ -681,7 +674,7 @@ mod tests {
         assert_eq!(
             ids,
             vec![other_feed, near],
-            "far scores 0, below 60% of the best match"
+            "far is no more similar than average"
         );
 
         let ids = semantic_search_ids(
@@ -720,6 +713,11 @@ mod tests {
             .unwrap();
         let old = item(&pool, feed.id, "old", "s").await;
         let new = item(&pool, feed.id, "new", "s").await;
+        let mut embeddings = vec![embedding(old, &[1.0, 0.0]), embedding(new, &[0.95, 0.31])];
+        for key in ["x1", "x2", "x3", "x4"] {
+            let unrelated = item(&pool, feed.id, key, "s").await;
+            embeddings.push(embedding(unrelated, &[0.0, 1.0]));
+        }
         sqlx::query!(
             "UPDATE feed_item_details SET published_at = NOW() - INTERVAL '365 days' WHERE feed_item_id = $1",
             old
@@ -727,13 +725,9 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        store_item_embeddings(
-            &pool,
-            MODEL,
-            &[embedding(old, &[1.0, 0.0]), embedding(new, &[0.95, 0.31])],
-        )
-        .await
-        .unwrap();
+        store_item_embeddings(&pool, MODEL, &embeddings)
+            .await
+            .unwrap();
 
         let index = EmbeddingIndex::new(MODEL);
         let search = |recency: RecencyBoost| {
