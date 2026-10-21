@@ -10,8 +10,8 @@ use crate::feed::feed_item::{
     read_feed_item, read_feed_item_detail, read_feed_items_by_feed,
     read_latest_feed_items_with_detail,
 };
-use crate::feed::item_embedding::{read_feed_items_with_detail_by_ids, semantic_search_ids};
-use crate::search::SearchState;
+use crate::feed::item_embedding::read_feed_items_with_detail_by_ids;
+use crate::search::{SearchCounts, SearchStage, SearchState, SearchTimings};
 
 use super::error::HandlerError;
 
@@ -46,6 +46,16 @@ pub enum SearchMode {
     Keyword,
     Semantic,
     Hybrid,
+}
+
+impl SearchMode {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Keyword => "keyword",
+            Self::Semantic => "semantic",
+            Self::Hybrid => "hybrid",
+        }
+    }
 }
 
 /// Default page size for ranked (semantic/hybrid) searches.
@@ -110,56 +120,64 @@ pub async fn fetch_latest_items(
     // Ranking is not incremental, so rank everything up to the end of the page and skip the rest.
     let offset = query.offset.unwrap_or(0) as usize;
     let limit = query.limit.map_or(DEFAULT_SEARCH_LIMIT, |l| l as usize) + offset;
-    let query_vector = match state.embedder.embed_query(search_query).await {
+    let mut timings = SearchTimings::new(query.mode.name());
+    let mut counts = SearchCounts::default();
+    let query_vector = match timings
+        .time(SearchStage::Embed, state.embedder.embed_query(search_query))
+        .await
+    {
         Ok(vector) => Some(vector),
         Err(e) => {
             warn!("failed to embed search query: {e:#}");
             None
         }
     };
+    if query.mode == SearchMode::Semantic && query_vector.is_none() {
+        return Err(HandlerError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Semantic search is unavailable".to_string(),
+        ));
+    }
 
-    let now = chrono::Utc::now();
-    let ids = match (query.mode, query_vector) {
-        (SearchMode::Semantic, Some(vector)) => semantic_search_ids(
-            &state.embeddings,
-            &state.pool,
-            &vector,
-            query.feed_id,
-            limit,
-            state.min_similarity,
-            &state.recency,
-            now,
-        )
-        .await
-        .map_err(db_error)?,
-        (SearchMode::Semantic, None) => {
-            return Err(HandlerError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Semantic search is unavailable".to_string(),
-            ));
-        }
-        (_, vector) => {
-            let keyword_items = read_latest_feed_items_with_detail(
-                &state.pool,
-                Some(KEYWORD_CANDIDATES.max(limit) as i64),
-                query.feed_id,
-                Some(search_query),
-                None,
+    let keyword_items = if query.mode == SearchMode::Hybrid {
+        timings
+            .time(
+                SearchStage::Keyword,
+                read_latest_feed_items_with_detail(
+                    &state.pool,
+                    Some(KEYWORD_CANDIDATES.max(limit) as i64),
+                    query.feed_id,
+                    Some(search_query),
+                    None,
+                ),
             )
             .await
-            .map_err(db_error)?;
-            let keyword_ids: Vec<i64> = keyword_items.iter().map(|item| item.id).collect();
-            match vector {
-                Some(vector) => {
-                    let similarities = state
-                        .embeddings
-                        .similarities(&state.pool, &vector, query.feed_id)
-                        .await
-                        .map_err(db_error)?;
-                    let mut dates = state
-                        .embeddings
-                        .dates(similarities.iter().map(|(id, _)| *id))
-                        .await;
+            .map_err(db_error)?
+    } else {
+        Vec::new()
+    };
+    let keyword_ids: Vec<i64> = keyword_items.iter().map(|item| item.id).collect();
+    counts.keyword_matches = keyword_ids.len();
+
+    let now = chrono::Utc::now();
+    let ids = match query_vector {
+        Some(vector) => {
+            let index = &state.embeddings;
+            timings
+                .time(SearchStage::Refresh, index.refresh(&state.pool))
+                .await
+                .map_err(db_error)?;
+            let similarities = timings
+                .time(
+                    SearchStage::Scan,
+                    index.similarities(&vector, query.feed_id),
+                )
+                .await;
+            counts.indexed = index.item_count().await;
+            counts.scored = similarities.len();
+            timings
+                .time(SearchStage::Rank, async {
+                    let mut dates = index.dates(similarities.iter().map(|(id, _)| *id)).await;
                     dates.extend(
                         keyword_items
                             .iter()
@@ -176,16 +194,22 @@ pub async fn fetch_latest_items(
                                 .map_or(1.0, |d| state.recency.factor(*d, now))
                         },
                     )
-                }
-                None => keyword_ids.into_iter().take(limit).collect(),
-            }
+                })
+                .await
         }
+        None => keyword_ids.into_iter().take(limit).collect(),
     };
 
     let ids: Vec<i64> = ids.into_iter().skip(offset).collect();
-    let items = read_feed_items_with_detail_by_ids(&state.pool, &ids)
+    let items = timings
+        .time(
+            SearchStage::Load,
+            read_feed_items_with_detail_by_ids(&state.pool, &ids),
+        )
         .await
         .map_err(db_error)?;
+    counts.results = items.len();
+    timings.finish(counts);
     Ok(Json(items))
 }
 

@@ -4,8 +4,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use rss_centr_core::semantic::{
-    EmbeddingJob, ItemEmbedding, QuantizedVector, RecencyBoost, content_hash, embedding_input,
-    hybrid_rank, normalize,
+    EmbeddingJob, ItemEmbedding, QuantizedVector, content_hash, embedding_input, normalize,
 };
 use sqlx::PgPool;
 use tokio::sync::{Mutex, RwLock};
@@ -289,9 +288,10 @@ impl EmbeddingIndex {
         &self.model
     }
 
-    /// Pull embeddings stored since the last refresh. The first call loads
-    /// everything; concurrent callers wait for it instead of loading twice.
-    async fn refresh(&self, pool: &PgPool) -> Result<()> {
+    /// Pull embeddings stored since the last refresh; call before searching.
+    /// The first call loads everything; concurrent callers wait for it
+    /// instead of loading twice.
+    pub async fn refresh(&self, pool: &PgPool) -> Result<()> {
         let _guard = self.refresh.lock().await;
         let (since, loaded) = {
             let state = self.state.read().await;
@@ -346,7 +346,7 @@ impl EmbeddingIndex {
             match result {
                 Ok(()) => {
                     first = false;
-                    let count = self.state.read().await.items.len();
+                    let count = self.item_count().await;
                     info!(
                         model = %self.model,
                         count,
@@ -365,26 +365,26 @@ impl EmbeddingIndex {
 
     /// Cosine similarity of `query` to every indexed item, in no particular
     /// order, computed on quantized vectors (see [`QuantizedVector`]). Items
-    /// with a different vector dimension are skipped.
-    pub async fn similarities(
-        &self,
-        pool: &PgPool,
-        query: &[f32],
-        feed_id: Option<i64>,
-    ) -> Result<Vec<(i64, f32)>> {
-        self.refresh(pool).await?;
+    /// with a different vector dimension are skipped. Does not
+    /// [`refresh`](Self::refresh) the index.
+    pub async fn similarities(&self, query: &[f32], feed_id: Option<i64>) -> Vec<(i64, f32)> {
         let Some(query) = QuantizedVector::new(query) else {
-            return Ok(Vec::new());
+            return Vec::new();
         };
         let state = self.state.read().await;
-        Ok(state
+        state
             .items
             .iter()
             .filter(|item| {
                 feed_id.is_none_or(|f| f == item.feed_id) && item.vector.len() == query.len()
             })
             .map(|item| (item.id, query.dot(&item.vector)))
-            .collect())
+            .collect()
+    }
+
+    /// Number of embeddings in the index.
+    pub async fn item_count(&self) -> usize {
+        self.state.read().await.items.len()
     }
 
     /// Recency ranking dates of the given indexed items. Unknown ids are skipped.
@@ -394,29 +394,6 @@ impl EmbeddingIndex {
             .filter_map(|id| state.items.get(id).map(|item| (id, item.date)))
             .collect()
     }
-}
-
-/// Rank item ids by relevance to `query` among indexed embeddings, as
-/// [`hybrid_rank`] does without keyword matches, favouring recent items
-/// according to `recency`.
-#[allow(clippy::too_many_arguments)]
-pub async fn semantic_search_ids(
-    index: &EmbeddingIndex,
-    pool: &PgPool,
-    query: &[f32],
-    feed_id: Option<i64>,
-    limit: usize,
-    min_similarity: f32,
-    recency: &RecencyBoost,
-    now: DateTime<Utc>,
-) -> Result<Vec<i64>> {
-    let scores = index.similarities(pool, query, feed_id).await?;
-    let dates = index.dates(scores.iter().map(|(id, _)| *id)).await;
-    Ok(hybrid_rank(&scores, &[], min_similarity, limit, |id| {
-        dates
-            .get(&id)
-            .map_or(1.0, |date| recency.factor(*date, now))
-    }))
 }
 
 /// Read items with details, returned in the order of `ids`. Unknown ids are skipped.
@@ -673,95 +650,46 @@ mod tests {
         assert_eq!(count, Some(0));
     }
 
-    #[sqlx::test]
-    async fn semantic_search_ranks_by_similarity_and_filters(pool: PgPool) {
-        let feed_a = upsert_feed_by_url(&pool, "https://example.com/a.xml")
-            .await
-            .unwrap();
-        let feed_b = upsert_feed_by_url(&pool, "https://example.com/b.xml")
-            .await
-            .unwrap();
-        let near = item(&pool, feed_a.id, "near", "s").await;
-        let far = item(&pool, feed_a.id, "far", "s").await;
-        let other_feed = item(&pool, feed_b.id, "other", "s").await;
-        let other_model = item(&pool, feed_a.id, "other-model", "s").await;
-        let _unembedded = item(&pool, feed_a.id, "none", "s").await;
+    /// Refresh `index` and score `query`, as a search does.
+    async fn search(
+        index: &EmbeddingIndex,
+        pool: &PgPool,
+        query: &[f32],
+        feed_id: Option<i64>,
+    ) -> Vec<(i64, f32)> {
+        index.refresh(pool).await.unwrap();
+        index.similarities(query, feed_id).await
+    }
 
-        store_item_embeddings(
-            &pool,
-            MODEL,
-            &[
-                embedding(near, &[0.9, 0.1]),
-                embedding(far, &[0.0, 1.0]),
-                embedding(other_feed, &[1.0, 0.0]),
-            ],
-        )
-        .await
-        .unwrap();
+    #[sqlx::test]
+    async fn index_holds_only_embeddings_of_its_model(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/a.xml")
+            .await
+            .unwrap();
+        let embedded = item(&pool, feed.id, "embedded", "s").await;
+        let other_model = item(&pool, feed.id, "other-model", "s").await;
+        let _unembedded = item(&pool, feed.id, "none", "s").await;
+        store_item_embeddings(&pool, MODEL, &[embedding(embedded, &[1.0, 0.0])])
+            .await
+            .unwrap();
         store_item_embeddings(&pool, "other", &[embedding(other_model, &[1.0, 0.0])])
             .await
             .unwrap();
 
         let index = EmbeddingIndex::new(MODEL);
-        let ids = semantic_search_ids(
-            &index,
-            &pool,
-            &[1.0, 0.0],
-            None,
-            10,
-            -1.0,
-            &RecencyBoost::NONE,
-            Utc::now(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            ids,
-            vec![other_feed, near],
-            "far is no more similar than average"
-        );
-
-        let ids = semantic_search_ids(
-            &index,
-            &pool,
-            &[1.0, 0.0],
-            Some(feed_a.id),
-            1,
-            -1.0,
-            &RecencyBoost::NONE,
-            Utc::now(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(ids, vec![near]);
-
-        let ids = semantic_search_ids(
-            &index,
-            &pool,
-            &[1.0, 0.0],
-            None,
-            10,
-            0.5,
-            &RecencyBoost::NONE,
-            Utc::now(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(ids, vec![other_feed, near], "unrelated items are dropped");
+        let scores = search(&index, &pool, &[1.0, 0.0], None).await;
+        let ids: Vec<i64> = scores.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, vec![embedded]);
+        assert_eq!(index.item_count().await, 1);
     }
 
     #[sqlx::test]
-    async fn semantic_search_favours_recently_published_items(pool: PgPool) {
+    async fn index_dates_prefer_the_publish_date(pool: PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/a.xml")
             .await
             .unwrap();
         let old = item(&pool, feed.id, "old", "s").await;
         let new = item(&pool, feed.id, "new", "s").await;
-        let mut embeddings = vec![embedding(old, &[1.0, 0.0]), embedding(new, &[0.95, 0.31])];
-        for key in ["x1", "x2", "x3", "x4"] {
-            let unrelated = item(&pool, feed.id, key, "s").await;
-            embeddings.push(embedding(unrelated, &[0.0, 1.0]));
-        }
         sqlx::query!(
             "UPDATE feed_item_details SET published_at = NOW() - INTERVAL '365 days' WHERE feed_item_id = $1",
             old
@@ -769,30 +697,21 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        store_item_embeddings(&pool, MODEL, &embeddings)
-            .await
-            .unwrap();
+        store_item_embeddings(
+            &pool,
+            MODEL,
+            &[embedding(old, &[1.0, 0.0]), embedding(new, &[1.0, 0.0])],
+        )
+        .await
+        .unwrap();
 
         let index = EmbeddingIndex::new(MODEL);
-        let search = |recency: RecencyBoost| {
-            let (index, pool) = (&index, &pool);
-            async move {
-                semantic_search_ids(
-                    index,
-                    pool,
-                    &[1.0, 0.0],
-                    None,
-                    10,
-                    -1.0,
-                    &recency,
-                    Utc::now(),
-                )
-                .await
-                .unwrap()
-            }
-        };
-        assert_eq!(search(RecencyBoost::NONE).await, vec![old, new]);
-        assert_eq!(search(RecencyBoost::default()).await, vec![new, old]);
+        index.refresh(&pool).await.unwrap();
+        let dates = index.dates([old, new, i64::MAX]).await;
+        let age_days = |id: i64| (Utc::now() - dates[&id]).num_days();
+        assert_eq!(dates.len(), 2, "unknown ids are skipped");
+        assert_eq!(age_days(old), 365);
+        assert_eq!(age_days(new), 0);
     }
 
     #[sqlx::test]
@@ -818,10 +737,13 @@ mod tests {
         .await
         .unwrap();
 
-        let mut scores = EmbeddingIndex::new(MODEL)
-            .similarities(&pool, &[1.0, 0.0], Some(feed_a.id))
-            .await
-            .unwrap();
+        let mut scores = search(
+            &EmbeddingIndex::new(MODEL),
+            &pool,
+            &[1.0, 0.0],
+            Some(feed_a.id),
+        )
+        .await;
         scores.sort_by_key(|(id, _)| *id);
         assert_eq!(scores.len(), 2, "low scores are kept, other feeds are not");
         assert_eq!(scores[0].0, near);
@@ -849,7 +771,7 @@ mod tests {
         store_item_embeddings(&pool, MODEL, &[embedding(first, &[1.0, 0.0])])
             .await
             .unwrap();
-        let scores = index.similarities(&pool, &[1.0, 0.0], None).await.unwrap();
+        let scores = search(&index, &pool, &[1.0, 0.0], None).await;
         assert_eq!(scores.len(), 1);
 
         store_item_embeddings(
@@ -862,7 +784,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let mut scores = index.similarities(&pool, &[1.0, 0.0], None).await.unwrap();
+        let mut scores = search(&index, &pool, &[1.0, 0.0], None).await;
         scores.sort_by_key(|(id, _)| *id);
         assert_eq!(scores.len(), 2, "new embeddings are added once");
         assert!(
@@ -896,11 +818,11 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        let scores = index.similarities(&pool, &[1.0, 0.0], None).await.unwrap();
+        let scores = search(&index, &pool, &[1.0, 0.0], None).await;
         assert_eq!(scores.len(), 2, "incremental refresh keeps stale items");
 
         index.load_all(&pool).await.unwrap();
-        let scores = index.similarities(&pool, &[1.0, 0.0], None).await.unwrap();
+        let scores = search(&index, &pool, &[1.0, 0.0], None).await;
         let ids: Vec<i64> = scores.iter().map(|(id, _)| *id).collect();
         assert_eq!(ids, vec![kept]);
     }
