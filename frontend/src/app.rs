@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use leptos_meta::{MetaTags, Stylesheet, Title, provide_meta_context};
+use leptos_meta::{HashedStylesheet, MetaTags, Title, provide_meta_context};
 use leptos_router::{
     SsrMode,
     components::{Route, Router, Routes},
@@ -18,6 +18,7 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <meta name="viewport" content="width=device-width, initial-scale=1" />
                 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
                 <AutoReload options=options.clone() />
+                <HashedStylesheet options=options.clone() id="leptos" />
                 <HydrationScripts options islands=true />
                 <MetaTags />
             </head>
@@ -32,7 +33,6 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 pub fn App() -> impl IntoView {
     provide_meta_context();
     view! {
-        <Stylesheet id="leptos" href="/pkg/rss-centr-frontend.css" />
         <Title text="RSS Centr" />
         <Router>
             <Layout>
@@ -68,12 +68,17 @@ fn Layout(children: Children) -> impl IntoView {
                     {nav
                         .into_iter()
                         .map(|(href, label)| {
-                            let class = if current == href {
-                                "rounded-md bg-sumi-ink3 px-2 py-1 text-sm text-fuji-white"
-                            } else {
-                                "rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white"
-                            };
-                            view! { <a class=class href=href>{label}</a> }
+                            // The active style keys off `aria-current`, so it always matches what
+                            // assistive technology announces.
+                            view! {
+                                <a
+                                    class="rounded-md px-2 py-1 text-sm text-fuji-gray transition hover:bg-sumi-ink3 hover:text-fuji-white aria-[current=page]:bg-sumi-ink3 aria-[current=page]:text-fuji-white"
+                                    href=href
+                                    aria-current=(current == href).then_some("page")
+                                >
+                                    {label}
+                                </a>
+                            }
                         })
                         .collect_view()}
                 </nav>

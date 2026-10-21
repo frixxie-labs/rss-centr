@@ -9,13 +9,48 @@ use web_sys::{
 
 use crate::logic::CURSOR_KEY;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamEventKind {
+    Open,
+    Error,
+    FeedItem,
+    ReplayDone,
+    Lagged,
+    KeepAlive,
+    Message,
+}
+
+impl StreamEventKind {
+    const ALL: [Self; 7] = [
+        Self::Open,
+        Self::Error,
+        Self::FeedItem,
+        Self::ReplayDone,
+        Self::Lagged,
+        Self::KeepAlive,
+        Self::Message,
+    ];
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Error => "error",
+            Self::FeedItem => "feed_item",
+            Self::ReplayDone => "replay_done",
+            Self::Lagged => "lagged",
+            Self::KeepAlive => "keep_alive",
+            Self::Message => "message",
+        }
+    }
+}
+
 pub struct StreamEvent {
-    pub kind: String,
+    pub kind: StreamEventKind,
     pub data: String,
     pub id: String,
 }
 
-type Listener = (String, Closure<dyn FnMut(Event)>);
+type Listener = (StreamEventKind, Closure<dyn FnMut(Event)>);
 
 pub struct Stream {
     source: EventSource,
@@ -41,31 +76,23 @@ impl Stream {
             listeners: Vec::new(),
             receiver,
         };
-        for kind in [
-            "open",
-            "error",
-            "feed_item",
-            "replay_done",
-            "lagged",
-            "keep_alive",
-            "message",
-        ] {
+        for kind in StreamEventKind::ALL {
             let sender = sender.clone();
-            let callback = Closure::wrap(Box::new(move |event: Event| {
+            let callback = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
                 let message = event.dyn_ref::<MessageEvent>();
                 let _ = sender.unbounded_send(StreamEvent {
-                    kind: kind.into(),
+                    kind,
                     data: message
                         .and_then(|m| m.data().as_string())
                         .unwrap_or_default(),
                     id: message.map(|m| m.last_event_id()).unwrap_or_default(),
                 });
-            }) as Box<dyn FnMut(Event)>);
+            });
             stream
                 .source
-                .add_event_listener_with_callback(kind, callback.as_ref().unchecked_ref())
+                .add_event_listener_with_callback(kind.as_str(), callback.as_ref().unchecked_ref())
                 .map_err(|_| "Could not register live update listener.".to_owned())?;
-            stream.listeners.push((kind.into(), callback));
+            stream.listeners.push((kind, callback));
         }
         Ok(stream)
     }
@@ -75,31 +102,30 @@ impl Drop for Stream {
     fn drop(&mut self) {
         self.source.close();
         for (kind, listener) in &self.listeners {
-            let _ = self
-                .source
-                .remove_event_listener_with_callback(kind, listener.as_ref().unchecked_ref());
+            let _ = self.source.remove_event_listener_with_callback(
+                kind.as_str(),
+                listener.as_ref().unchecked_ref(),
+            );
         }
     }
 }
 
-/// Reports whether an element is near the viewport each time that changes. Dropping it disconnects the observer.
+/// Calls `on_change` whenever an element moves near or away from the viewport.
+/// Dropping it disconnects the observer.
 pub struct Visible {
     observer: IntersectionObserver,
     _callback: Closure<dyn FnMut(js_sys::Array)>,
-    pub receiver: UnboundedReceiver<bool>,
 }
 
 impl Visible {
-    pub fn observe(element: &Element) -> Option<Self> {
-        let (sender, receiver) = unbounded();
-        let callback = Closure::wrap(Box::new(move |entries: js_sys::Array| {
-            let intersecting = entries.iter().any(|entry| {
+    pub fn observe(element: &Element, mut on_change: impl FnMut(bool) + 'static) -> Option<Self> {
+        let callback = Closure::<dyn FnMut(js_sys::Array)>::new(move |entries: js_sys::Array| {
+            on_change(entries.iter().any(|entry| {
                 entry
                     .unchecked_into::<IntersectionObserverEntry>()
                     .is_intersecting()
-            });
-            let _ = sender.unbounded_send(intersecting);
-        }) as Box<dyn FnMut(js_sys::Array)>);
+            }));
+        });
         let options = IntersectionObserverInit::new();
         options.set_root_margin("600px 0px");
         let observer =
@@ -109,7 +135,6 @@ impl Visible {
         Some(Self {
             observer,
             _callback: callback,
-            receiver,
         })
     }
 }

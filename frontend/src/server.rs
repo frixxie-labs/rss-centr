@@ -8,6 +8,7 @@ use axum::{
     body::Body,
     extract::{OriginalUri, Request, State},
     http::{HeaderMap, StatusCode, header},
+    middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
     routing::{any, get},
 };
@@ -49,14 +50,22 @@ pub fn router(options: LeptosOptions, proxy: Proxy) -> Router {
     // Server-rendered pages call the backend directly; browsers go through the `/api` proxy.
     let api = Api::new(proxy.client.clone(), proxy.backend.clone());
     let routes = generate_route_list(App);
-    Router::new()
+    let hashed_assets = options.hash_files;
+    let router = Router::new()
         .leptos_routes_with_context(&options, routes, move || provide_context(api.clone()), {
             let options = options.clone();
             move || shell(options.clone())
         })
         .fallback(leptos_axum::file_and_error_handler(shell))
         .with_state(options)
-        .merge(service_routes(proxy))
+        .merge(service_routes(proxy));
+    // File names under /pkg change with their content when hashing is on.
+    let router = if hashed_assets {
+        router.layer(middleware::from_fn(cache_hashed_assets))
+    } else {
+        router
+    };
+    router
         // The default predicate skips text/event-stream, so SSE stays unbuffered.
         .layer(CompressionLayer::new())
         .layer(
@@ -65,6 +74,20 @@ pub fn router(options: LeptosOptions, proxy: Proxy) -> Router {
                 .on_response(DefaultOnResponse::new().level(Level::INFO))
                 .on_failure(DefaultOnFailure::new().level(Level::ERROR)),
         )
+}
+
+const IMMUTABLE_CACHE: &str = "public, max-age=31536000, immutable";
+
+async fn cache_hashed_assets(request: Request, next: Next) -> Response {
+    let hashed = request.uri().path().starts_with("/pkg/");
+    let mut response = next.run(request).await;
+    if hashed && response.status().is_success() {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            header::HeaderValue::from_static(IMMUTABLE_CACHE),
+        );
+    }
+    response
 }
 
 pub fn service_routes(proxy: Proxy) -> Router {
@@ -464,6 +487,101 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(html.contains("Page not found."));
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn news_search_box_is_filled_in_server_html() {
+        let (backend, task) = content_backend().await;
+        let app = router(test_options(), test_proxy(backend));
+        let (_, html) = page(&app, "/news?q=rust+%26+web&mode=keyword").await;
+        assert!(html.contains(r#"value="rust &amp; web""#), "{html}");
+        assert!(html.contains(r#"<option value="keyword" selected"#));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn active_nav_link_is_marked_current() {
+        let (backend, task) = content_backend().await;
+        let app = router(test_options(), test_proxy(backend));
+        let (_, html) = page(&app, "/sources").await;
+        assert!(
+            html.contains(r#"href="/sources" aria-current="page""#),
+            "{html}"
+        );
+        assert_eq!(html.matches("aria-current").count(), 1);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn failed_loads_show_errors_instead_of_empty_states() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backend = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let app = router(test_options(), test_proxy(backend));
+        for (path, error, empty) in [
+            ("/timeline", "Could not load timeline.", "No news yet."),
+            ("/news", "Could not load matching news.", "No news matches"),
+            ("/sources", "Backend request failed", "No sources yet."),
+            (
+                "/topics",
+                "Backend request failed",
+                "No topic data available",
+            ),
+        ] {
+            let (status, html) = page(&app, path).await;
+            assert_eq!(status, StatusCode::OK, "{path}");
+            assert!(html.contains(error), "{path} error");
+            assert!(!html.contains(empty), "{path} empty state");
+        }
+    }
+
+    #[tokio::test]
+    async fn hashed_assets_are_cached_immutably_only_when_hashing() {
+        let site = std::env::temp_dir().join(format!("rss-centr-site-{}", std::process::id()));
+        std::fs::create_dir_all(site.join("pkg")).unwrap();
+        std::fs::write(site.join("pkg/app.0123abcd.css"), "body{}").unwrap();
+        std::fs::write(site.join("favicon.svg"), "<svg/>").unwrap();
+        for hash_files in [true, false] {
+            let options = LeptosOptions::builder()
+                .output_name("rss-centr-frontend")
+                .site_root(site.to_string_lossy().as_ref())
+                .hash_files(hash_files)
+                .build();
+            let app = router(options, test_proxy("http://127.0.0.1:9".into()));
+            for (path, immutable) in [
+                ("/pkg/app.0123abcd.css", hash_files),
+                ("/favicon.svg", false),
+            ] {
+                let response = app
+                    .clone()
+                    .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK, "{path}");
+                assert_eq!(
+                    response.headers().get(header::CACHE_CONTROL).is_some(),
+                    immutable,
+                    "{path} hash_files={hash_files}"
+                );
+                if immutable {
+                    assert_eq!(response.headers()[header::CACHE_CONTROL], IMMUTABLE_CACHE);
+                }
+            }
+        }
+        std::fs::remove_dir_all(site).unwrap();
+    }
+
+    fn test_options() -> LeptosOptions {
+        LeptosOptions::builder()
+            .output_name("rss-centr-frontend")
+            .build()
+    }
+
+    fn test_proxy(backend: String) -> Proxy {
+        Proxy {
+            client: reqwest::Client::new(),
+            backend,
+        }
     }
 
     #[test]

@@ -14,8 +14,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /app/target/release/rss-centr-frontend ./server
+# Asset hashes are read from next to the executable.
+COPY --from=builder /app/target/release/hash.txt ./hash.txt
 COPY --from=builder /app/target/site ./site
-ENV IP=0.0.0.0 PORT=8000 LEPTOS_SITE_ROOT=site LEPTOS_ENV=PROD LEPTOS_OUTPUT_NAME=rss-centr-frontend
+ENV IP=0.0.0.0 PORT=8000 LEPTOS_SITE_ROOT=site LEPTOS_ENV=PROD LEPTOS_OUTPUT_NAME=rss-centr-frontend LEPTOS_HASH_FILES=true
 USER 65532:65532
 EXPOSE 8000
 CMD ["./server"]

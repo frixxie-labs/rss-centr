@@ -64,3 +64,5 @@ tailwind-input-file = "style/tailwind.css"
 assets-dir = "public"
 site-addr = "127.0.0.1:8000"
 lib-profile-release = "wasm-release"
+# Content hashes in /pkg file names let the server cache them as immutable.
+hash-files = true

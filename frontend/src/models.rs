@@ -86,3 +86,22 @@ pub struct ReplayDone {
     pub limited: bool,
     pub last_event_id: Option<i64>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn topic_wire_spelling_and_missing_item_details_deserialize() {
+        let topic: Topic = serde_json::from_str(r#"{"word":"rust","total_occurences":2,"document_frequency":1,"tf_idf":0.5,"items":[{"feed_src_id":1,"occurences":2}]}"#).unwrap();
+        assert_eq!(topic.total_occurrences, 2);
+        assert_eq!(topic.items[0].occurrences, 2);
+        let event: FeedItem = serde_json::from_str(r#"{"id":1,"feed_id":2,"external_id":"a","title":"x","url":"https://example.com","inserted_at":"2025-01-01T00:00:00Z"}"#).unwrap();
+        assert!(event.summary.is_none());
+        assert!(serde_json::from_str::<ReplayDone>("not json").is_err());
+        assert_eq!(
+            serde_json::from_str::<ReplayDone>("{}").unwrap(),
+            ReplayDone::default()
+        );
+    }
+}

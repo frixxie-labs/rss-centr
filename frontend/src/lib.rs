@@ -1,5 +1,6 @@
 pub mod api;
 mod components;
+mod hooks;
 mod islands;
 pub mod logic;
 pub mod models;
@@ -13,9 +14,6 @@ pub mod server;
 
 #[cfg(target_arch = "wasm32")]
 mod browser;
-
-#[cfg(test)]
-mod tests;
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen]

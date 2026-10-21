@@ -69,10 +69,9 @@ pub fn Timeline() -> impl IntoView {
                 let filters = NewsFilters::default();
                 let (items, feeds) = futures_util::join!(api.items(&filters, 0), api.feeds());
                 view! {
-                    {items.is_err().then(|| view! { <ErrorNotice message="Could not load timeline." /> })}
                     <TimelineView
-                        initial=items.unwrap_or_default()
-                        feeds=feeds.unwrap_or_default()
+                        initial=items
+                        feeds=feed_names(&feeds.unwrap_or_default())
                         now=render_time()
                     />
                 }
@@ -99,7 +98,7 @@ pub fn News() -> impl IntoView {
                     <NewsView
                         initial=filters
                         initial_items=items
-                        feeds=feeds.unwrap_or_default()
+                        feeds=feed_names(&feeds.unwrap_or_default())
                         now=render_time()
                     />
                 }
@@ -129,7 +128,7 @@ pub fn Topics() -> impl IntoView {
                 let (topics, feeds): (Result<Vec<Topic>, String>, _) = futures_util::join!(
                     api.topics(), api.feeds()
                 );
-                view! { <TopicsView initial=topics feeds=feeds.unwrap_or_default() /> }
+                view! { <TopicsView initial=topics feeds=feed_names(&feeds.unwrap_or_default()) /> }
             })}
         </Suspense>
     }

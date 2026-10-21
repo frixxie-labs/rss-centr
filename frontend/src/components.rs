@@ -29,8 +29,8 @@ pub fn ItemCard(
 ) -> impl IntoView {
     let text = truncate(&preview(&item), PREVIEW_CHARS);
     let host = hostname(&item.url);
-    let author = item.author.clone().filter(|a| !a.is_empty());
-    let published = item.published_at.clone().map(|date| {
+    let author = item.author.filter(|a| !a.is_empty());
+    let published = item.published_at.map(|date| {
         let title = absolute_date(Some(&date));
         let label = date.clone();
         view! {
@@ -40,23 +40,20 @@ pub fn ItemCard(
             </time>
         }
     });
-    let inserted = item.inserted_at.clone();
+    let inserted = item.inserted_at;
     let inserted_label = inserted.clone();
     view! {
         <a
-            href=item.url.clone()
+            href=item.url
             target="_blank"
             rel="noopener noreferrer"
-            class=move || {
-                if is_new.get() {
-                    "block min-w-0 px-4 py-3 border-b border-sumi-ink3 hover:bg-sumi-ink2 transition-colors bg-wave-blue1/50 border-l-2 border-l-carp-yellow"
-                } else {
-                    "block min-w-0 px-4 py-3 border-b border-sumi-ink3 hover:bg-sumi-ink2 transition-colors"
-                }
-            }
+            class="block min-w-0 px-4 py-3 border-b border-sumi-ink3 hover:bg-sumi-ink2 transition-colors"
+            class=("bg-wave-blue1/50", move || is_new.get())
+            class=("border-l-2", move || is_new.get())
+            class=("border-l-carp-yellow", move || is_new.get())
         >
             <h3 class="break-words text-sm font-medium text-fuji-white leading-snug">
-                {item.title.clone()}
+                {item.title}
             </h3>
             {(!text.is_empty())
                 .then(|| {
@@ -101,25 +98,12 @@ pub fn LoadMore(
     #[cfg(target_arch = "wasm32")]
     {
         let in_view = RwSignal::new(false);
-        Effect::new(move |started: Option<bool>| {
-            if started == Some(true) {
-                return true;
-            }
-            let Some(element) = node.get() else {
-                return false;
-            };
-            leptos::task::spawn_local(async move {
-                use futures_util::StreamExt;
-                let Some(mut visible) = crate::browser::Visible::observe(&element) else {
-                    return;
-                };
-                while let Some(intersecting) = visible.receiver.next().await {
-                    if in_view.try_set(intersecting).is_some() {
-                        break;
-                    }
-                }
-            });
-            true
+        // Owned by this component, so the observer disconnects when it is disposed.
+        let observer = StoredValue::new_local(None::<crate::browser::Visible>);
+        node.on_load(move |element| {
+            observer.set_value(crate::browser::Visible::observe(&element, move |visible| {
+                in_view.set(visible)
+            }));
         });
         // Re-runs after each page, so a sentinel that never leaves the viewport keeps loading.
         Effect::new(move |_| {
@@ -137,34 +121,4 @@ pub fn LoadMore(
             </Show>
         </div>
     }
-}
-
-pub fn feed_name(feeds: &[Feed], id: i64) -> String {
-    feeds
-        .iter()
-        .find(|f| f.id == id)
-        .map(|f| f.name().to_owned())
-        .unwrap_or_default()
-}
-
-/// Starts at the server's render time so hydration matches, then ticks every minute.
-pub fn use_clock(initial: i64) -> Signal<i64> {
-    let now = RwSignal::new(initial);
-    #[cfg(target_arch = "wasm32")]
-    leptos::task::spawn_local(async move {
-        loop {
-            gloo_timers::future::TimeoutFuture::new(60_000).await;
-            if now.try_set(chrono::Utc::now().timestamp_millis()).is_some() {
-                break;
-            }
-        }
-    });
-    now.into()
-}
-
-pub fn sleep_ms(_ms: u32) -> impl std::future::Future<Output = ()> {
-    #[cfg(target_arch = "wasm32")]
-    return gloo_timers::future::TimeoutFuture::new(_ms);
-    #[cfg(not(target_arch = "wasm32"))]
-    std::future::ready(())
 }

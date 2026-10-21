@@ -4,29 +4,68 @@ use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use url::form_urlencoded;
 
-use crate::models::{FeedItem, ReplayDone};
+use crate::models::{Feed, FeedItem, ReplayDone};
 
 pub const PAGE_SIZE: usize = 50;
 pub const CURSOR_KEY: &str = "rss:last-event-id";
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct NewsFilters {
-    pub query: String,
-    pub feed_id: Option<i64>,
-    pub mode: String,
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchMode {
+    #[default]
+    Hybrid,
+    Semantic,
+    Keyword,
 }
 
-impl Default for NewsFilters {
-    fn default() -> Self {
-        Self {
-            query: String::new(),
-            feed_id: None,
-            mode: "hybrid".into(),
+impl SearchMode {
+    pub const ALL: [Self; 3] = [Self::Hybrid, Self::Semantic, Self::Keyword];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Hybrid => "hybrid",
+            Self::Semantic => "semantic",
+            Self::Keyword => "keyword",
         }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Hybrid => "Hybrid",
+            Self::Semantic => "Semantic",
+            Self::Keyword => "Keyword",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.as_str() == value)
     }
 }
 
+/// How a list of items is ordered on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Order {
+    Newest,
+    /// Keeps the backend's relevance order.
+    Ranked,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct NewsFilters {
+    pub query: String,
+    pub feed_id: Option<i64>,
+    pub mode: SearchMode,
+}
+
 impl NewsFilters {
+    pub fn order(&self) -> Order {
+        if self.mode != SearchMode::Keyword && !self.query.trim().is_empty() {
+            Order::Ranked
+        } else {
+            Order::Newest
+        }
+    }
+
     pub fn parse(query: &str) -> Self {
         let params: BTreeMap<_, _> =
             form_urlencoded::parse(query.trim_start_matches('?').as_bytes())
@@ -44,9 +83,8 @@ impl NewsFilters {
                 .filter(|id| *id > 0),
             mode: params
                 .get("mode")
-                .filter(|m| matches!(m.as_str(), "hybrid" | "semantic" | "keyword"))
-                .cloned()
-                .unwrap_or_else(|| "hybrid".into()),
+                .and_then(|m| SearchMode::parse(m))
+                .unwrap_or_default(),
         }
     }
 
@@ -61,7 +99,7 @@ impl NewsFilters {
         }
         if !self.query.trim().is_empty() {
             params.append_pair("q", self.query.trim());
-            params.append_pair("mode", &self.mode);
+            params.append_pair("mode", self.mode.as_str());
         }
         params.finish()
     }
@@ -75,8 +113,8 @@ impl NewsFilters {
         if let Some(id) = self.feed_id {
             params.append_pair("source_id", &id.to_string());
         }
-        if self.mode != "hybrid" {
-            params.append_pair("mode", &self.mode);
+        if self.mode != SearchMode::default() {
+            params.append_pair("mode", self.mode.as_str());
         }
         let query = params.finish();
         if query.is_empty() {
@@ -115,11 +153,10 @@ pub fn sort_newest(mut items: Vec<FeedItem>) -> Vec<FeedItem> {
     items
 }
 
-pub fn display_order(items: Vec<FeedItem>, mode: &str, query: &str) -> Vec<FeedItem> {
-    if mode != "keyword" && !query.trim().is_empty() {
-        items
-    } else {
-        sort_newest(items)
+pub fn display_order(items: Vec<FeedItem>, order: Order) -> Vec<FeedItem> {
+    match order {
+        Order::Ranked => items,
+        Order::Newest => sort_newest(items),
     }
 }
 
@@ -130,20 +167,30 @@ pub fn merge_items(items: &mut Vec<FeedItem>, incoming: impl IntoIterator<Item =
 }
 
 /// Adds the next page to `items` and returns whether more pages may follow.
-pub fn append_page(
-    items: &mut Vec<FeedItem>,
-    page: Vec<FeedItem>,
-    mode: &str,
-    query: &str,
-) -> bool {
+pub fn append_page(items: &mut Vec<FeedItem>, page: Vec<FeedItem>, order: Order) -> bool {
     let has_more = page.len() >= PAGE_SIZE;
-    if mode != "keyword" && !query.trim().is_empty() {
-        let seen: std::collections::HashSet<i64> = items.iter().map(|i| i.id).collect();
-        items.extend(page.into_iter().filter(|i| !seen.contains(&i.id)));
-    } else {
-        merge_items(items, page);
+    match order {
+        Order::Ranked => {
+            let seen: std::collections::HashSet<i64> = items.iter().map(|i| i.id).collect();
+            items.extend(page.into_iter().filter(|i| !seen.contains(&i.id)));
+        }
+        Order::Newest => merge_items(items, page),
     }
     has_more
+}
+
+/// Display names by feed id; islands get this instead of the full feed list.
+pub type FeedNames = BTreeMap<i64, String>;
+
+pub fn feed_names(feeds: &[Feed]) -> FeedNames {
+    feeds
+        .iter()
+        .map(|feed| (feed.id, feed.name().to_owned()))
+        .collect()
+}
+
+pub fn feed_name(names: &FeedNames, id: i64) -> String {
+    names.get(&id).cloned().unwrap_or_default()
 }
 
 pub fn resume_cursor(items: &[FeedItem], stored: Option<String>) -> Option<String> {
@@ -179,13 +226,16 @@ impl TimelineState {
         state
     }
 
-    pub fn receive(&mut self, item: FeedItem, event_id: String) {
+    /// Returns whether the visible items changed; replayed items are buffered until the replay ends.
+    pub fn receive(&mut self, item: FeedItem, event_id: String) -> bool {
         if self.replaying {
             self.buffer.push(item);
             self.replay_cursor = Some(event_id);
+            false
         } else {
             merge_items(&mut self.items, [item]);
             self.cursor = Some(event_id);
+            true
         }
     }
 
@@ -298,5 +348,225 @@ pub fn poll_interval(seconds: i64) -> String {
         (_, m, s) if m > 0 && s > 0 => format!("{m}m {s}s"),
         (_, m, _) if m > 0 => format!("{m}m"),
         (_, _, s) => format!("{s}s"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(id: i64) -> FeedItem {
+        FeedItem {
+            id,
+            inserted_at: "2025-01-01T00:00:00Z".into(),
+            ..Default::default()
+        }
+    }
+
+    fn ids(items: &[FeedItem]) -> Vec<i64> {
+        items.iter().map(|i| i.id).collect()
+    }
+
+    #[test]
+    fn publication_is_capped_at_insertion_and_ties_use_id() {
+        let mut future = item(1);
+        future.published_at = Some("2030-01-01T00:00:00Z".into());
+        assert_eq!(effective_date(&future), effective_date(&item(2)));
+        let mut older = item(3);
+        older.published_at = Some("2024-01-01T00:00:00Z".into());
+        assert_eq!(ids(&sort_newest(vec![future, older, item(2)])), [2, 1, 3]);
+    }
+
+    #[test]
+    fn only_ranked_searches_keep_backend_order() {
+        let order = |query: &str| NewsFilters::parse(query).order();
+        assert_eq!(order("q=rust"), Order::Ranked);
+        assert_eq!(order("q=rust&mode=semantic"), Order::Ranked);
+        assert_eq!(order("q=rust&mode=keyword"), Order::Newest);
+        assert_eq!(order("q=+&mode=semantic"), Order::Newest);
+        assert_eq!(
+            ids(&display_order(vec![item(1), item(2)], Order::Ranked)),
+            [1, 2]
+        );
+        assert_eq!(
+            ids(&display_order(vec![item(1), item(2)], Order::Newest)),
+            [2, 1]
+        );
+    }
+
+    #[test]
+    fn search_modes_round_trip_through_urls_and_json() {
+        for mode in SearchMode::ALL {
+            assert_eq!(SearchMode::parse(mode.as_str()), Some(mode));
+            assert_eq!(
+                serde_json::to_string(&mode).unwrap(),
+                format!("\"{}\"", mode.as_str())
+            );
+        }
+        assert_eq!(SearchMode::parse("invalid"), None);
+        assert_eq!(SearchMode::default(), SearchMode::Hybrid);
+    }
+
+    #[test]
+    fn filters_keep_legacy_source_alias_and_default_to_hybrid() {
+        let filters = NewsFilters::parse("q=+rust+&feed_id=3&mode=invalid");
+        assert_eq!(filters.query, "rust");
+        assert_eq!(filters.feed_id, Some(3));
+        assert_eq!(filters.mode, SearchMode::Hybrid);
+        assert_eq!(NewsFilters::parse("source_id=-1&feed_id=3").feed_id, None);
+        assert_eq!(NewsFilters::parse("source_id=2&feed_id=3").feed_id, Some(2));
+        assert_eq!(NewsFilters::parse("source_id=1.5").feed_id, None);
+    }
+
+    #[test]
+    fn api_params_omit_mode_without_query_and_use_feed_id() {
+        assert_eq!(NewsFilters::default().api_query(0), "limit=50");
+        assert_eq!(NewsFilters::default().api_query(100), "limit=50&offset=100");
+        let filters = NewsFilters::parse("q=rust+%26+web&source_id=42&mode=semantic");
+        assert_eq!(
+            filters.api_query(0),
+            "limit=50&feed_id=42&q=rust+%26+web&mode=semantic"
+        );
+        assert_eq!(
+            topic_url("rust & web", 42),
+            "/news?q=rust+%26+web&source_id=42"
+        );
+    }
+
+    #[test]
+    fn page_urls_round_trip_and_omit_defaults() {
+        assert_eq!(NewsFilters::default().page_url(), "/news");
+        let filters = NewsFilters::parse("q=rust+%26+web&source_id=42&mode=semantic");
+        assert_eq!(
+            filters.page_url(),
+            "/news?q=rust+%26+web&source_id=42&mode=semantic"
+        );
+        let url = filters.page_url();
+        assert_eq!(NewsFilters::parse(url.trim_start_matches("/news")), filters);
+        let hybrid = NewsFilters::parse("q=rust");
+        assert_eq!(hybrid.page_url(), "/news?q=rust");
+    }
+
+    #[test]
+    fn replay_batches_deduplicate_and_replace_details() {
+        let mut state = TimelineState::new((1..=501).map(item).collect());
+        assert_eq!(state.items.len(), 501);
+        assert_eq!(state.items[0].id, 501);
+        let mut updated = item(501);
+        updated.title = "Updated".into();
+        assert!(!state.receive(updated, "501".into()), "replay is buffered");
+        assert!(!state.receive(item(502), "502".into()));
+        assert_eq!(state.items[0].id, 501);
+        assert!(state.finish_replay(ReplayDone {
+            replayed: 2,
+            limited: true,
+            last_event_id: Some(502)
+        }));
+        assert_eq!(state.items.len(), 502);
+        assert_eq!(state.items[0].id, 502);
+        assert_eq!(state.items[1].title, "Updated");
+        assert_eq!(state.cursor.as_deref(), Some("502"));
+        assert!(state.limited);
+        state.replaying = true;
+        state.receive(item(503), "503".into());
+        assert!(state.finish_replay(ReplayDone::default()));
+        assert_eq!(state.cursor.as_deref(), Some("503"));
+    }
+
+    #[test]
+    fn live_items_change_the_visible_list_immediately() {
+        let mut state = TimelineState::new(vec![item(1)]);
+        state.finish_replay(ReplayDone::default());
+        assert!(state.receive(item(2), "2".into()));
+        assert_eq!(ids(&state.items), [2, 1]);
+        assert_eq!(state.cursor.as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn resume_prefers_initial_items_over_stored_cursor() {
+        assert_eq!(
+            resume_cursor(&[item(2), item(5)], Some("999".into())),
+            Some("5".into())
+        );
+        assert_eq!(resume_cursor(&[], Some("999".into())), Some("999".into()));
+        assert_eq!(resume_cursor(&[], None), None);
+    }
+
+    #[test]
+    fn previews_are_plain_text_and_truncate_unicode_safely() {
+        let mut value = item(1);
+        value.summary = Some("<p>Hello</p>  <b>world</b>".into());
+        assert_eq!(preview(&value), "Hello world");
+        value.summary = Some("<br>".into());
+        value.content = Some("fallback".into());
+        assert_eq!(preview(&value), "fallback");
+        assert_eq!(truncate("🦀rust", 3), "🦀r…");
+        assert_eq!(hostname("https://www.example.com/path"), "example.com");
+        assert_eq!(hostname("bad url"), "");
+    }
+
+    #[test]
+    fn relative_dates_and_poll_intervals() {
+        let now = timestamp("2025-01-01T01:00:00Z");
+        assert_eq!(time_ago("2025-01-01T00:59:30Z", now), "just now");
+        assert_eq!(time_ago("2025-01-01T00:00:00Z", now), "1h ago");
+        assert_eq!(poll_interval(30), "30s");
+        assert_eq!(poll_interval(90), "1m 30s");
+        assert_eq!(poll_interval(3660), "1h 1m");
+    }
+
+    #[test]
+    fn slim_items_keep_only_the_rendered_preview() {
+        let mut value = item(1);
+        value.summary = Some(String::new());
+        value.content = Some(format!("<p>{}</p>", "word ".repeat(200)));
+        let card_preview = truncate(&preview(&value), PREVIEW_CHARS);
+        let slim = slim_item(value);
+        assert_eq!(slim.content, None);
+        assert_eq!(slim.summary.as_deref(), Some(card_preview.as_str()));
+        assert_eq!(truncate(&preview(&slim), PREVIEW_CHARS), card_preview);
+    }
+
+    #[test]
+    fn pages_append_without_duplicates_and_detect_the_end() {
+        let mut newest = vec![item(3), item(2)];
+        assert!(!append_page(
+            &mut newest,
+            vec![item(2), item(1)],
+            Order::Newest
+        ));
+        assert_eq!(ids(&newest), [3, 2, 1]);
+
+        // Ranked results keep backend order: the next page goes after, not re-sorted.
+        let mut ranked = vec![item(1), item(3)];
+        append_page(&mut ranked, vec![item(3), item(5), item(2)], Order::Ranked);
+        assert_eq!(ids(&ranked), [1, 3, 5, 2]);
+
+        let full = (1..=PAGE_SIZE as i64).map(item).collect::<Vec<_>>();
+        assert!(append_page(&mut vec![], full, Order::Newest));
+        assert!(!append_page(&mut vec![], vec![item(1)], Order::Newest));
+    }
+
+    #[test]
+    fn feed_names_survive_island_serialization() {
+        let feeds = [
+            Feed {
+                id: 1,
+                url: "https://a.example/feed".into(),
+                title: Some("A".into()),
+                ..Default::default()
+            },
+            Feed {
+                id: 2,
+                url: "https://b.example/feed".into(),
+                ..Default::default()
+            },
+        ];
+        let names = feed_names(&feeds);
+        let names: FeedNames =
+            serde_json::from_str(&serde_json::to_string(&names).unwrap()).unwrap();
+        assert_eq!(feed_name(&names, 1), "A");
+        assert_eq!(feed_name(&names, 2), "https://b.example/feed");
+        assert_eq!(feed_name(&names, 3), "");
     }
 }

@@ -2,10 +2,17 @@ use std::collections::BTreeSet;
 
 use leptos::{prelude::*, task::spawn_local};
 
-use crate::{api::Api, components::*, logic::*, models::*};
+use crate::{api::Api, components::*, hooks::*, logic::*, models::*};
 
 #[island]
-pub fn TimelineView(initial: Vec<FeedItem>, feeds: Vec<Feed>, now: i64) -> impl IntoView {
+pub fn TimelineView(
+    initial: Result<Vec<FeedItem>, String>,
+    feeds: FeedNames,
+    now: i64,
+) -> impl IntoView {
+    // Stays false until a list request succeeds, so a failed load is not shown as "no news".
+    let loaded = RwSignal::new(initial.is_ok());
+    let initial = initial.unwrap_or_default();
     let has_more = RwSignal::new(initial.len() >= PAGE_SIZE);
     let loading_more = RwSignal::new(false);
     let state = RwSignal::new(TimelineState::new(initial));
@@ -16,13 +23,15 @@ pub fn TimelineView(initial: Vec<FeedItem>, feeds: Vec<Feed>, now: i64) -> impl 
     let now = use_clock(now);
     let feeds = StoredValue::new(feeds);
 
+    // Cancelled when the island is disposed, which drops the stream and closes the connection.
     #[cfg(target_arch = "wasm32")]
-    spawn_local(async move {
-        use crate::browser::{Stream, save_cursor, stored_cursor};
+    leptos::task::spawn_local_scoped_with_cancellation(async move {
+        use crate::browser::{Stream, StreamEventKind as Kind, save_cursor, stored_cursor};
         use futures_util::StreamExt;
 
+        // The cursor and replay buffer are not rendered, so they change without notifying.
         let cursor = state.with_untracked(|s| resume_cursor(&s.items, stored_cursor()));
-        state.update(|s| s.cursor = cursor.clone());
+        state.update_untracked(|s| s.cursor = cursor.clone());
         save_cursor(cursor.as_deref());
         let mut stream = match Stream::connect(cursor.as_deref()) {
             Ok(stream) => stream,
@@ -32,30 +41,29 @@ pub fn TimelineView(initial: Vec<FeedItem>, feeds: Vec<Feed>, now: i64) -> impl 
             }
         };
         while let Some(event) = stream.receiver.next().await {
-            // Stop (and drop the stream, closing the connection) once the island is disposed.
-            if state.is_disposed() {
-                break;
-            }
-            match event.kind.as_str() {
-                "open" => connected.set(true),
-                "error" => {
+            match event.kind {
+                Kind::Open => connected.set(true),
+                Kind::Error => {
                     connected.set(false);
                     state.update(|s| s.replaying = true);
                 }
-                "feed_item" => {
+                Kind::FeedItem => {
                     let Ok(item) = serde_json::from_str::<FeedItem>(&event.data) else {
                         notice.set(Some("An invalid live update was ignored.".into()));
                         continue;
                     };
                     let id = item.id;
-                    let replaying = state.with_untracked(|s| s.replaying);
                     let event_id = if event.id.is_empty() {
                         id.to_string()
                     } else {
                         event.id
                     };
-                    state.update(|s| s.receive(item, event_id));
-                    if !replaying {
+                    let mut live = false;
+                    state.maybe_update(|s| {
+                        live = s.receive(item, event_id);
+                        live
+                    });
+                    if live {
                         state.with_untracked(|s| save_cursor(s.cursor.as_deref()));
                         new_ids.update(|ids| {
                             ids.insert(id);
@@ -71,29 +79,35 @@ pub fn TimelineView(initial: Vec<FeedItem>, feeds: Vec<Feed>, now: i64) -> impl 
                         });
                     }
                 }
-                "replay_done" => {
+                Kind::ReplayDone => {
                     let marker =
                         serde_json::from_str::<ReplayDone>(&event.data).unwrap_or_default();
                     let refresh = state
                         .try_update(|s| s.finish_replay(marker))
                         .unwrap_or(false);
                     state.with_untracked(|s| save_cursor(s.cursor.as_deref()));
-                    if refresh {
+                    // Also retries the first page when the server could not load it.
+                    let was_loaded = loaded.get_untracked();
+                    if refresh || !was_loaded {
                         spawn_local(async move {
                             if let Ok(items) =
                                 Api::default().items(&NewsFilters::default(), 0).await
                             {
+                                if !was_loaded {
+                                    has_more.set(items.len() >= PAGE_SIZE);
+                                }
                                 state.try_update(|s| merge_items(&mut s.items, items));
+                                loaded.set(true);
                             }
                         });
                     }
                 }
-                "lagged" => notice.set(Some(
+                Kind::Lagged => notice.set(Some(
                     "Some live updates were missed; reconnecting will replay them.".into(),
                 )),
-                "keep_alive" => pulse_once(pulse),
-                "message" if event.data == "keep-alive" => pulse_once(pulse),
-                _ => {}
+                Kind::KeepAlive => pulse_once(pulse),
+                Kind::Message if event.data == "keep-alive" => pulse_once(pulse),
+                Kind::Message => {}
             }
         }
     });
@@ -110,7 +124,7 @@ pub fn TimelineView(initial: Vec<FeedItem>, feeds: Vec<Feed>, now: i64) -> impl 
             match Api::default().items(&NewsFilters::default(), offset).await {
                 Ok(page) => {
                     let more = state
-                        .try_update(|s| append_page(&mut s.items, page, "keyword", ""))
+                        .try_update(|s| append_page(&mut s.items, page, Order::Newest))
                         .unwrap_or(false);
                     has_more.set(more);
                 }
@@ -127,20 +141,19 @@ pub fn TimelineView(initial: Vec<FeedItem>, feeds: Vec<Feed>, now: i64) -> impl 
         <div class="px-4 py-3 border-b border-sumi-ink3 flex flex-wrap items-center justify-between gap-2 text-xs text-fuji-gray">
             <span role="status">
                 <span
-                    class=move || {
-                        if connected.get() {
-                            "inline-block w-2 h-2 mr-2 rounded-full bg-spring-green"
-                        } else {
-                            "inline-block w-2 h-2 mr-2 rounded-full bg-autumn-red"
-                        }
-                    }
-                    style=move || if pulse.get() { "opacity: 0.3" } else { "opacity: 1" }
+                    class="inline-block w-2 h-2 mr-2 rounded-full"
+                    class=("bg-spring-green", move || connected.get())
+                    class=("bg-autumn-red", move || !connected.get())
+                    style:opacity=move || if pulse.get() { "0.3" } else { "1" }
                 ></span>
                 {move || if connected.get() { "Live" } else { "Connecting…" }}
                 {move || state.with(|s| s.replaying).then_some(" · catching up")}
             </span>
             <span>{move || format!("{} items", state.with(|s| s.items.len()))}</span>
         </div>
+        <Show when=move || !loaded.get()>
+            <ErrorNotice message="Could not load timeline." />
+        </Show>
         <Show when=move || state.with(|s| s.limited)>
             <p class="px-4 py-2 text-xs text-ronin-yellow">
                 "showing latest updates; older missed items skipped"
@@ -157,7 +170,8 @@ pub fn TimelineView(initial: Vec<FeedItem>, feeds: Vec<Feed>, now: i64) -> impl 
                     }
                 })
         }}
-        // Live items gain details after a follow-up fetch; including that in the key re-renders them once.
+        // Cards are static; live items gain details after a follow-up fetch, and including
+        // that in the key re-renders them once instead of making every card reactive.
         <For
             each=move || state.with(|s| s.items.clone())
             key=|item| (item.id, item.summary.is_some(), item.author.is_some(), item.published_at.is_some())
@@ -165,12 +179,12 @@ pub fn TimelineView(initial: Vec<FeedItem>, feeds: Vec<Feed>, now: i64) -> impl 
         >
             {
                 let id = item.id;
-                let name = feeds.with_value(|f| feed_name(f, item.feed_id));
+                let name = feeds.with_value(|names| feed_name(names, item.feed_id));
                 let is_new = Signal::derive(move || new_ids.with(|ids| ids.contains(&id)));
                 view! { <ItemCard item feed_name=name now is_new /> }
             }
         </For>
-        <Show when=move || state.with(|s| s.items.is_empty())>
+        <Show when=move || loaded.get() && state.with(|s| s.items.is_empty())>
             <p class="px-4 py-12 text-center text-katana-gray">
                 "No news yet. Add sources to start collecting news."
             </p>
