@@ -79,7 +79,7 @@ docker compose up -d db
 
 Migrations live in `backend/migrations/` and are auto-applied on server startup. Tests using `#[sqlx::test]` get an isolated DB per test with migrations applied.
 
-The root `.sqlx/` directory contains cached query metadata for offline compilation (used in Docker builds with `SQLX_OFFLINE=true`). After changing SQL queries, run `cargo sqlx prepare --workspace` from the repo root to regenerate these files.
+The root `.sqlx/` directory contains cached query metadata for offline compilation (used in Docker builds with `SQLX_OFFLINE=true`). After changing SQL queries, run `cargo sqlx prepare --workspace -- --all-targets` from the repo root to regenerate these files. The `--all-targets` flag is required so queries in `#[cfg(test)]` code are cached too; CI runs `cargo test` with `SQLX_OFFLINE=1`.
 
 ## Worker Commands (Rust / Cargo)
 
