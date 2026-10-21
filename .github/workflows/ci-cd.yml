@@ -109,6 +109,7 @@ jobs:
       - name: Check frontend
         working-directory: frontend
         run: |
+          rustup component add rustfmt clippy
           cargo fmt --all -- --check
           cargo clippy -p rss-centr-frontend --all-targets -- -D warnings
           rustup target add wasm32-unknown-unknown
