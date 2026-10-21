@@ -194,12 +194,95 @@ async fn read_embeddings(
         .collect())
 }
 
+/// Read embeddings for `model` of the given items.
+async fn read_embeddings_by_ids(
+    pool: &PgPool,
+    model: &str,
+    ids: &[i64],
+) -> Result<Vec<StoredEmbedding>> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT e.feed_item_id as "id!: i64",
+               f.feed_id as "feed_id!: i64",
+               LEAST(d.published_at, f.inserted_at) as "date!: DateTime<Utc>",
+               e.embedding as "embedding!",
+               e.embedded_at as "embedded_at!"
+        FROM feed_item_embeddings e
+        INNER JOIN feed_items f ON f.id = e.feed_item_id
+        LEFT JOIN feed_item_details d ON d.feed_item_id = f.id
+        WHERE e.model = $1
+          AND e.feed_item_id = ANY($2)
+        "#,
+        model,
+        ids,
+    )
+    .fetch_all(pool)
+    .await
+    .with_context(|| {
+        format!(
+            "failed to read embeddings for model={model} count={}",
+            ids.len()
+        )
+    })?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| StoredEmbedding {
+            id: row.id,
+            feed_id: row.feed_id,
+            date: row.date,
+            embedding: decode_embedding(&row.embedding),
+            embedded_at: row.embedded_at,
+        })
+        .collect())
+}
+
+/// Everything about a stored embedding except the vector itself.
+struct EmbeddingVersion {
+    id: i64,
+    feed_id: i64,
+    date: DateTime<Utc>,
+    embedded_at: DateTime<Utc>,
+}
+
+/// Read the stored embeddings for `model` without their vectors, which make
+/// up nearly all of the data.
+async fn read_embedding_versions(pool: &PgPool, model: &str) -> Result<Vec<EmbeddingVersion>> {
+    sqlx::query_as!(
+        EmbeddingVersion,
+        r#"
+        SELECT e.feed_item_id as "id!: i64",
+               f.feed_id as "feed_id!: i64",
+               LEAST(d.published_at, f.inserted_at) as "date!: DateTime<Utc>",
+               e.embedded_at as "embedded_at!"
+        FROM feed_item_embeddings e
+        INNER JOIN feed_items f ON f.id = e.feed_item_id
+        LEFT JOIN feed_item_details d ON d.feed_item_id = f.id
+        WHERE e.model = $1
+        "#,
+        model,
+    )
+    .fetch_all(pool)
+    .await
+    .with_context(|| format!("failed to read embedding versions for model={model}"))
+}
+
+/// What [`EmbeddingIndex::reconcile`] changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReconcileStats {
+    /// Items dropped because their embedding is gone.
+    pub removed: usize,
+    /// Embeddings fetched because they were missing or outdated.
+    pub fetched: usize,
+}
+
 /// Embeddings stored this long before the newest one seen are fetched again
 /// on refresh, so rows committed late with an earlier `embedded_at` are not
 /// missed.
 const REFRESH_OVERLAP: Duration = Duration::from_secs(5 * 60);
-/// Reload everything this often to drop embeddings of deleted items.
-const FULL_RELOAD_INTERVAL: Duration = Duration::from_secs(30 * 60);
+/// Reconcile the index with the database this often to drop embeddings of
+/// deleted items, see [`EmbeddingIndex::reconcile`].
+const RECONCILE_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const LOAD_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
 struct IndexedItem {
@@ -207,6 +290,7 @@ struct IndexedItem {
     feed_id: i64,
     /// Date used for recency ranking, see [`rss_centr_core::semantic::item_date`].
     date: DateTime<Utc>,
+    embedded_at: DateTime<Utc>,
     /// Normalized embedding.
     vector: QuantizedVector,
 }
@@ -232,6 +316,7 @@ impl IndexedItems {
             id: row.id,
             feed_id: row.feed_id,
             date: row.date,
+            embedded_at: row.embedded_at,
             vector,
         };
         match self.positions.get(&row.id) {
@@ -247,6 +332,23 @@ impl IndexedItems {
         self.positions
             .get(&id)
             .map(|&position| &self.items[position])
+    }
+
+    fn get_mut(&mut self, id: i64) -> Option<&mut IndexedItem> {
+        self.positions
+            .get(&id)
+            .map(|&position| &mut self.items[position])
+    }
+
+    /// Keep only the items for which `keep` returns true.
+    fn retain(&mut self, mut keep: impl FnMut(&IndexedItem) -> bool) {
+        self.items.retain(|item| keep(item));
+        self.positions = self
+            .items
+            .iter()
+            .enumerate()
+            .map(|(position, item)| (item.id, position))
+            .collect();
     }
 
     fn iter(&self) -> impl Iterator<Item = &IndexedItem> {
@@ -331,29 +433,87 @@ impl EmbeddingIndex {
         Ok(())
     }
 
-    /// Load the index right away, then reload it fully every
-    /// [`FULL_RELOAD_INTERVAL`] to drop embeddings of deleted items. Runs
+    /// Bring the index in line with the database without reading every
+    /// vector: drop items whose embedding is gone, fetch embeddings that are
+    /// missing or outdated (e.g. committed too late for an incremental
+    /// refresh), and update recency dates.
+    pub async fn reconcile(&self, pool: &PgPool) -> Result<ReconcileStats> {
+        let _guard = self.refresh.lock().await;
+        let versions: HashMap<i64, EmbeddingVersion> = read_embedding_versions(pool, &self.model)
+            .await?
+            .into_iter()
+            .map(|version| (version.id, version))
+            .collect();
+
+        let missing: Vec<i64> = {
+            let state = self.state.read().await;
+            versions
+                .values()
+                .filter(|version| {
+                    state
+                        .items
+                        .get(version.id)
+                        .is_none_or(|item| item.embedded_at != version.embedded_at)
+                })
+                .map(|version| version.id)
+                .collect()
+        };
+        let rows = if missing.is_empty() {
+            Vec::new()
+        } else {
+            read_embeddings_by_ids(pool, &self.model, &missing).await?
+        };
+
+        let mut state = self.state.write().await;
+        let before = state.items.len();
+        state.items.retain(|item| versions.contains_key(&item.id));
+        let removed = before - state.items.len();
+        for version in versions.values() {
+            if let Some(item) = state.items.get_mut(version.id) {
+                item.feed_id = version.feed_id;
+                item.date = version.date;
+            }
+        }
+        let fetched = rows.len();
+        let newest = rows.iter().map(|r| r.embedded_at).max();
+        for row in rows {
+            state.items.upsert(row);
+        }
+        state.newest = state.newest.max(newest);
+        Ok(ReconcileStats { removed, fetched })
+    }
+
+    /// Load the index right away, then [`reconcile`](Self::reconcile) it
+    /// every [`RECONCILE_INTERVAL`] to drop embeddings of deleted items. Runs
     /// until the task is dropped.
     pub async fn run_loader(&self, pool: &PgPool) {
         let mut first = true;
         loop {
             let started = Instant::now();
             let result = if first {
-                self.refresh(pool).await
+                self.refresh(pool).await.map(|()| None)
             } else {
-                self.load_all(pool).await
+                self.reconcile(pool).await.map(Some)
             };
             match result {
-                Ok(()) => {
+                Ok(stats) => {
                     first = false;
                     let count = self.item_count().await;
-                    info!(
-                        model = %self.model,
-                        count,
-                        elapsed_ms = started.elapsed().as_millis() as u64,
-                        "loaded embedding index"
-                    );
-                    tokio::time::sleep(FULL_RELOAD_INTERVAL).await;
+                    let elapsed_ms = started.elapsed().as_millis() as u64;
+                    match stats {
+                        None => {
+                            info!(model = %self.model, count, elapsed_ms, "loaded embedding index")
+                        }
+                        Some(stats) => info!(
+                            model = %self.model,
+                            count,
+                            removed = stats.removed,
+                            fetched = stats.fetched,
+                            elapsed_ms,
+                            "reconciled embedding index"
+                        ),
+                    }
+                    tokio::time::sleep(RECONCILE_INTERVAL).await;
                 }
                 Err(err) => {
                     warn!(error = %format!("{err:#}"), "failed to load embedding index; retrying");
@@ -710,8 +870,9 @@ mod tests {
         let dates = index.dates([old, new, i64::MAX]).await;
         let age_days = |id: i64| (Utc::now() - dates[&id]).num_days();
         assert_eq!(dates.len(), 2, "unknown ids are skipped");
-        assert_eq!(age_days(old), 365);
-        assert_eq!(age_days(new), 0);
+        // The database and test clocks may differ slightly.
+        assert!((364..=365).contains(&age_days(old)), "{}", age_days(old));
+        assert!((-1..=0).contains(&age_days(new)), "{}", age_days(new));
     }
 
     #[sqlx::test]
@@ -825,6 +986,125 @@ mod tests {
         let scores = search(&index, &pool, &[1.0, 0.0], None).await;
         let ids: Vec<i64> = scores.iter().map(|(id, _)| *id).collect();
         assert_eq!(ids, vec![kept]);
+    }
+
+    #[sqlx::test]
+    async fn reconcile_drops_deleted_items_and_keeps_the_rest(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/a.xml")
+            .await
+            .unwrap();
+        let a = item(&pool, feed.id, "a", "s").await;
+        let deleted = item(&pool, feed.id, "deleted", "s").await;
+        let c = item(&pool, feed.id, "c", "s").await;
+        store_item_embeddings(
+            &pool,
+            MODEL,
+            &[
+                embedding(a, &[1.0, 0.0]),
+                embedding(deleted, &[1.0, 0.0]),
+                embedding(c, &[0.0, 1.0]),
+            ],
+        )
+        .await
+        .unwrap();
+        let index = EmbeddingIndex::new(MODEL);
+        index.refresh(&pool).await.unwrap();
+
+        sqlx::query!("DELETE FROM feed_items WHERE id = $1", deleted)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let stats = index.reconcile(&pool).await.unwrap();
+        assert_eq!(
+            stats,
+            ReconcileStats {
+                removed: 1,
+                fetched: 0
+            }
+        );
+
+        let mut scores = search(&index, &pool, &[1.0, 0.0], None).await;
+        scores.sort_by_key(|(id, _)| *id);
+        assert_eq!(scores.len(), 2);
+        assert_eq!(scores[0].0, a);
+        assert!((scores[0].1 - 1.0).abs() < 1e-6);
+        assert_eq!(scores[1].0, c);
+        assert!(scores[1].1.abs() < 1e-6);
+    }
+
+    #[sqlx::test]
+    async fn reconcile_fetches_rows_missed_by_incremental_refresh(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/a.xml")
+            .await
+            .unwrap();
+        let seen = item(&pool, feed.id, "seen", "s").await;
+        let late = item(&pool, feed.id, "late", "s").await;
+        store_item_embeddings(&pool, MODEL, &[embedding(seen, &[1.0, 0.0])])
+            .await
+            .unwrap();
+        let index = EmbeddingIndex::new(MODEL);
+        index.refresh(&pool).await.unwrap();
+
+        // A row committed late with an `embedded_at` older than the refresh overlap.
+        store_item_embeddings(&pool, MODEL, &[embedding(late, &[1.0, 0.0])])
+            .await
+            .unwrap();
+        sqlx::query!(
+            "UPDATE feed_item_embeddings SET embedded_at = NOW() - INTERVAL '1 day' WHERE feed_item_id = $1",
+            late
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        index.refresh(&pool).await.unwrap();
+        assert_eq!(index.item_count().await, 1, "incremental refresh misses it");
+
+        let stats = index.reconcile(&pool).await.unwrap();
+        assert_eq!(
+            stats,
+            ReconcileStats {
+                removed: 0,
+                fetched: 1
+            }
+        );
+        assert_eq!(index.item_count().await, 2);
+    }
+
+    #[sqlx::test]
+    async fn reconcile_updates_recency_dates(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/a.xml")
+            .await
+            .unwrap();
+        let id = item(&pool, feed.id, "a", "s").await;
+        store_item_embeddings(&pool, MODEL, &[embedding(id, &[1.0, 0.0])])
+            .await
+            .unwrap();
+        let index = EmbeddingIndex::new(MODEL);
+        index.refresh(&pool).await.unwrap();
+
+        sqlx::query!(
+            "UPDATE feed_item_details SET published_at = NOW() - INTERVAL '30 days' WHERE feed_item_id = $1",
+            id
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let stats = index.reconcile(&pool).await.unwrap();
+        assert_eq!(
+            stats,
+            ReconcileStats {
+                removed: 0,
+                fetched: 0
+            }
+        );
+        let published_at = sqlx::query_scalar!(
+            "SELECT published_at FROM feed_item_details WHERE feed_item_id = $1",
+            id
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(index.dates([id]).await[&id], published_at);
     }
 
     #[sqlx::test]

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE feed_item_details SET published_at = NOW() - INTERVAL '30 days' WHERE feed_item_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "401a9b24d1e2f4cf05658242577906b39092d81b305da234597078439f65d420"
+}
