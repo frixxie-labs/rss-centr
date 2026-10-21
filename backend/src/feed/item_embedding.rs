@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use rss_centr_core::semantic::{
-    EmbeddingJob, ItemEmbedding, RecencyBoost, content_hash, dot, embedding_input, hybrid_rank,
-    normalize,
+    EmbeddingJob, ItemEmbedding, QuantizedVector, RecencyBoost, content_hash, embedding_input,
+    hybrid_rank, normalize,
 };
 use sqlx::PgPool;
 use tokio::sync::{Mutex, RwLock};
@@ -204,32 +204,70 @@ const FULL_RELOAD_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const LOAD_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
 struct IndexedItem {
+    id: i64,
     feed_id: i64,
     /// Date used for recency ranking, see [`rss_centr_core::semantic::item_date`].
     date: DateTime<Utc>,
     /// Normalized embedding.
-    vector: Vec<f32>,
+    vector: QuantizedVector,
 }
 
-impl From<StoredEmbedding> for IndexedItem {
-    fn from(row: StoredEmbedding) -> Self {
-        Self {
+/// Items in a `Vec` rather than a map: searches scan every item, and a `Vec`
+/// visits them in memory order, which is several times faster for large
+/// indexes than a `HashMap`'s scattered order.
+#[derive(Default)]
+struct IndexedItems {
+    items: Vec<IndexedItem>,
+    /// feed_item_id -> position in `items`
+    positions: HashMap<i64, usize>,
+}
+
+impl IndexedItems {
+    /// Insert or replace the embedding of `row.id`. Degenerate vectors, which
+    /// [`store_item_embeddings`] rejects, are skipped.
+    fn upsert(&mut self, row: StoredEmbedding) {
+        let Some(vector) = QuantizedVector::new(&row.embedding) else {
+            return;
+        };
+        let item = IndexedItem {
+            id: row.id,
             feed_id: row.feed_id,
             date: row.date,
-            vector: row.embedding,
+            vector,
+        };
+        match self.positions.get(&row.id) {
+            Some(&position) => self.items[position] = item,
+            None => {
+                self.positions.insert(row.id, self.items.len());
+                self.items.push(item);
+            }
         }
+    }
+
+    fn get(&self, id: i64) -> Option<&IndexedItem> {
+        self.positions
+            .get(&id)
+            .map(|&position| &self.items[position])
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &IndexedItem> {
+        self.items.iter()
+    }
+
+    fn len(&self) -> usize {
+        self.items.len()
     }
 }
 
 #[derive(Default)]
 struct IndexState {
-    /// feed_item_id -> indexed item
-    items: HashMap<i64, IndexedItem>,
+    items: IndexedItems,
     newest: Option<DateTime<Utc>>,
     loaded_at: Option<Instant>,
 }
 
-/// In-memory copy of the embeddings for one model. Each search pulls only
+/// In-memory copy of the embeddings for one model, quantized to a quarter of
+/// their size (see [`QuantizedVector`]). Each search pulls only
 /// embeddings stored since the previous one, so every backend replica stays
 /// current regardless of which replica stored them.
 pub struct EmbeddingIndex {
@@ -270,7 +308,7 @@ impl EmbeddingIndex {
         let newest = rows.iter().map(|r| r.embedded_at).max();
         let mut state = self.state.write().await;
         for row in rows {
-            state.items.insert(row.id, row.into());
+            state.items.upsert(row);
         }
         state.newest = state.newest.max(newest);
         Ok(())
@@ -282,7 +320,10 @@ impl EmbeddingIndex {
     async fn load_all(&self, pool: &PgPool) -> Result<()> {
         let rows = read_embeddings(pool, &self.model, None).await?;
         let newest = rows.iter().map(|r| r.embedded_at).max();
-        let items = rows.into_iter().map(|row| (row.id, row.into())).collect();
+        let mut items = IndexedItems::default();
+        for row in rows {
+            items.upsert(row);
+        }
         let mut state = self.state.write().await;
         state.items = items;
         state.newest = newest;
@@ -323,7 +364,8 @@ impl EmbeddingIndex {
     }
 
     /// Cosine similarity of `query` to every indexed item, in no particular
-    /// order. Items with a different vector dimension are skipped.
+    /// order, computed on quantized vectors (see [`QuantizedVector`]). Items
+    /// with a different vector dimension are skipped.
     pub async fn similarities(
         &self,
         pool: &PgPool,
@@ -331,15 +373,17 @@ impl EmbeddingIndex {
         feed_id: Option<i64>,
     ) -> Result<Vec<(i64, f32)>> {
         self.refresh(pool).await?;
+        let Some(query) = QuantizedVector::new(query) else {
+            return Ok(Vec::new());
+        };
         let state = self.state.read().await;
         Ok(state
             .items
             .iter()
-            .filter(|(_, item)| {
+            .filter(|item| {
                 feed_id.is_none_or(|f| f == item.feed_id) && item.vector.len() == query.len()
             })
-            .map(|(id, item)| (*id, dot(query, &item.vector)))
-            .filter(|(_, score)| score.is_finite())
+            .map(|item| (item.id, query.dot(&item.vector)))
             .collect())
     }
 
@@ -347,7 +391,7 @@ impl EmbeddingIndex {
     pub async fn dates(&self, ids: impl IntoIterator<Item = i64>) -> HashMap<i64, DateTime<Utc>> {
         let state = self.state.read().await;
         ids.into_iter()
-            .filter_map(|id| state.items.get(&id).map(|item| (id, item.date)))
+            .filter_map(|id| state.items.get(id).map(|item| (id, item.date)))
             .collect()
     }
 }

@@ -108,6 +108,56 @@ pub fn dot(a: &[f32], b: &[f32]) -> f32 {
     acc.iter().sum::<f32>() + rest
 }
 
+/// An embedding stored as one `i8` per dimension plus a single scale, a
+/// quarter of the memory of `f32`. Element `i` is approximately
+/// `values[i] * scale`; similarities computed from it differ from the `f32`
+/// ones by about 0.001 for 768-dimensional unit vectors.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuantizedVector {
+    values: Vec<i8>,
+    scale: f32,
+}
+
+impl QuantizedVector {
+    /// Map the largest magnitude in `vector` to ±127 and round the rest to
+    /// the nearest step. Returns `None` for empty, zero or non-finite vectors.
+    pub fn new(vector: &[f32]) -> Option<Self> {
+        if vector.iter().any(|v| !v.is_finite()) {
+            return None;
+        }
+        let max = vector.iter().fold(0.0f32, |max, v| max.max(v.abs()));
+        let scale = max / 127.0;
+        if !scale.is_normal() {
+            return None;
+        }
+        let values = vector.iter().map(|v| (v / scale).round() as i8).collect();
+        Some(Self { values, scale })
+    }
+
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    /// Approximate dot product of the original vectors, over the length of
+    /// the shorter one.
+    pub fn dot(&self, other: &Self) -> f32 {
+        dot_i8(&self.values, &other.values) as f32 * (self.scale * other.scale)
+    }
+}
+
+/// Integer addition is associative, so unlike the `f32` [`dot`] this plain
+/// sum is vectorized by the compiler. Cannot overflow below 133,000 elements.
+fn dot_i8(a: &[i8], b: &[i8]) -> i32 {
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| i32::from(*x) * i32::from(*y))
+        .sum()
+}
+
 /// Return the `k` candidates most similar to `query` (by dot product, i.e.
 /// cosine similarity for normalized vectors), highest first. Ties are broken
 /// by the newest (largest) id. Candidates whose dimension differs from the
@@ -426,6 +476,49 @@ mod tests {
         assert!((dot(&v, &v) - 1.0).abs() < 1e-5);
     }
 
+    #[test]
+    fn quantize_maps_the_largest_magnitude_to_127() {
+        let q = QuantizedVector::new(&[0.12, -0.31, 0.05, 0.27]).unwrap();
+        assert_eq!(q.values, vec![49, -127, 20, 111]);
+        assert!((q.scale - 0.31 / 127.0).abs() < 1e-9);
+        assert_eq!(q.len(), 4);
+    }
+
+    #[test]
+    fn quantize_rejects_degenerate_vectors() {
+        assert!(QuantizedVector::new(&[]).is_none());
+        assert!(QuantizedVector::new(&[0.0, 0.0]).is_none());
+        assert!(QuantizedVector::new(&[f32::NAN, 1.0]).is_none());
+        assert!(QuantizedVector::new(&[f32::INFINITY, 1.0]).is_none());
+        assert!(
+            QuantizedVector::new(&[f32::from_bits(1)]).is_none(),
+            "scale underflows"
+        );
+    }
+
+    #[test]
+    fn quantized_dot_is_exact_for_axis_aligned_vectors() {
+        let x = QuantizedVector::new(&[1.0, 0.0]).unwrap();
+        let y = QuantizedVector::new(&[0.0, 1.0]).unwrap();
+        assert!((x.dot(&x) - 1.0).abs() < 1e-6);
+        assert_eq!(x.dot(&y), 0.0);
+    }
+
+    #[test]
+    fn quantized_dot_is_close_to_exact_for_embedding_sized_vectors() {
+        let query = normalize(&pseudo_random_vector(768, 0)).unwrap();
+        let quantized_query = QuantizedVector::new(&query).unwrap();
+        for seed in 1..=200 {
+            let v = normalize(&pseudo_random_vector(768, seed)).unwrap();
+            let exact = dot(&query, &v);
+            let approx = quantized_query.dot(&QuantizedVector::new(&v).unwrap());
+            assert!(
+                (approx - exact).abs() < 5e-3,
+                "seed={seed}: {approx} != {exact}"
+            );
+        }
+    }
+
     /// Compare `dot` with a plain sequential sum on an index-sized workload:
     /// `cargo test -p rss-centr-core --release bench_dot -- --ignored --nocapture`
     #[test]
@@ -693,6 +786,25 @@ mod tests {
             let a: Vec<f32> = pairs.iter().map(|(x, _)| f32::from(*x) / 128.0).collect();
             let b: Vec<f32> = pairs.iter().map(|(_, y)| f32::from(*y) / 128.0).collect();
             (f64::from(dot(&a, &b)) - naive_dot(&a, &b)).abs() < 1e-3
+        }
+
+        fn prop_dot_i8_matches_wide_sum(pairs: Vec<(i8, i8)>) -> bool {
+            let a: Vec<i8> = pairs.iter().map(|(x, _)| *x).collect();
+            let b: Vec<i8> = pairs.iter().map(|(_, y)| *y).collect();
+            let expected: i64 = pairs.iter().map(|(x, y)| i64::from(*x) * i64::from(*y)).sum();
+            i64::from(dot_i8(&a, &b)) == expected
+        }
+
+        fn prop_quantize_round_trips_within_half_a_step(v: Vec<i16>) -> bool {
+            let v: Vec<f32> = v.into_iter().map(f32::from).collect();
+            match QuantizedVector::new(&v) {
+                Some(q) => q.len() == v.len()
+                    && q.values.iter().zip(&v).all(|(x, original)| {
+                        (f32::from(*x) * q.scale - original).abs()
+                            <= q.scale * 0.5 + original.abs() * 1e-6
+                    }),
+                None => v.iter().all(|x| *x == 0.0),
+            }
         }
 
         fn prop_top_k_is_sorted_and_bounded(scores: Vec<i16>, k: u8) -> bool {
