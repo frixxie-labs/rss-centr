@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -6,6 +7,7 @@ use rss_centr_core::ollama;
 use rss_centr_core::semantic::{
     ClaimEmbeddingsResponse, ItemEmbedding, StoreEmbeddingsRequest, StoreEmbeddingsResult,
 };
+use tokio::sync::Notify;
 use tokio::time::sleep;
 use tracing::{info, warn};
 
@@ -15,8 +17,8 @@ use crate::http_util::send_json;
 const EMBED_BATCH_SIZE: usize = 16;
 const CLAIM_LIMIT: i64 = 64;
 const LEASE_SECONDS: i64 = 600;
-// Feeds are polled at most about every 13 minutes, so new items rarely
-// arrive more often than this.
+// Fallback for items inserted by other workers, failed batches and model
+// changes; new items from this worker wake the indexer immediately.
 const IDLE_SLEEP: Duration = Duration::from_secs(15 * 60);
 const RETRY_SLEEP: Duration = Duration::from_secs(60);
 
@@ -84,6 +86,7 @@ pub(crate) async fn run(
     ollama_url: String,
     http: reqwest::Client,
     ollama_http: reqwest::Client,
+    new_items: Arc<Notify>,
 ) {
     let queue = HttpEmbeddingQueue {
         base_url: backend_url.trim_end_matches('/').to_string(),
@@ -95,7 +98,7 @@ pub(crate) async fn run(
     };
     loop {
         match run_once(&queue, &embedder, CLAIM_LIMIT, LEASE_SECONDS).await {
-            Ok(0) => sleep(IDLE_SLEEP).await,
+            Ok(0) => wait_for_new_items(&new_items, IDLE_SLEEP).await,
             Ok(count) => info!(count, "embedded feed items"),
             Err(err) => {
                 warn!(
@@ -106,6 +109,12 @@ pub(crate) async fn run(
             }
         }
     }
+}
+
+/// Waits until new feed items were inserted, or at most `timeout` so items
+/// from other workers and model changes are still picked up.
+async fn wait_for_new_items(new_items: &Notify, timeout: Duration) {
+    let _ = tokio::time::timeout(timeout, new_items.notified()).await;
 }
 
 struct HttpEmbeddingQueue {
@@ -145,6 +154,23 @@ mod tests {
 
     use super::*;
     use rss_centr_core::semantic::EmbeddingJob;
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_ends_when_new_items_arrive() {
+        let new_items = Notify::new();
+        new_items.notify_one();
+        let started = tokio::time::Instant::now();
+        wait_for_new_items(&new_items, IDLE_SLEEP).await;
+        assert_eq!(started.elapsed(), Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_falls_back_to_timeout() {
+        let new_items = Notify::new();
+        let started = tokio::time::Instant::now();
+        wait_for_new_items(&new_items, IDLE_SLEEP).await;
+        assert_eq!(started.elapsed(), IDLE_SLEEP);
+    }
 
     #[derive(Default)]
     struct FakeQueue {

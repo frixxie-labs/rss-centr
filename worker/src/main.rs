@@ -19,9 +19,9 @@ use cli::Opts;
 use feed_fetcher::{HttpFeedSource, http_client_builder};
 use metrics::counter;
 use metrics_exporter_prometheus::PrometheusBuilder;
-use queue_client::QueueClient;
+use queue_client::{NotifyOnInsert, QueueClient};
 use runner::RunnerConfig;
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 use tokio::task::JoinSet;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
@@ -54,7 +54,11 @@ async fn main() -> Result<()> {
         .timeout(HTTP_TIMEOUT)
         .build()
         .context("failed to build HTTP client")?;
-    let queue = Arc::new(QueueClient::new(&opts.backend_url, http.clone()));
+    let new_items = Arc::new(Notify::new());
+    let queue = Arc::new(NotifyOnInsert::new(
+        QueueClient::new(&opts.backend_url, http.clone()),
+        new_items.clone(),
+    ));
     let source = Arc::new(HttpFeedSource::new(http.clone()));
     let config = RunnerConfig {
         limit: opts.limit,
@@ -86,6 +90,7 @@ async fn main() -> Result<()> {
                 ollama_url.clone(),
                 http.clone(),
                 ollama_http.clone(),
+                new_items.clone(),
             )
         }));
     }
