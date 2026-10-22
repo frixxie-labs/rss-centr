@@ -204,6 +204,7 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
             rss_centr_core::feed_update_queue::FailedFeedUpdateRequest,
             rss_centr_core::feed_update_queue::FailedFeedUpdateResult,
             rss_centr_core::feed_update_queue::FeedUpdateItemInput,
+            rss_centr_core::summary_refresh::SummaryRefreshResponse,
             crate::feed::feed_item::FeedItem,
             crate::feed::feed_item::FeedItemWithDetail,
             crate::feed::feed_item::FeedItemDetail,

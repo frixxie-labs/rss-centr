@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use axum::{Json, extract::State, http::StatusCode};
 use chrono::{DateTime, Utc};
+use rss_centr_core::summary_refresh::SummaryRefreshResponse;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
 use tracing::{Instrument, error, info, instrument, warn};
@@ -536,16 +537,36 @@ async fn save_summary<'a>(
     path = "/internal/items/summary/refresh",
     tag = "items",
     responses(
-        (status = 202, description = "Summary refresh accepted, already in progress, or not due yet"),
+        (status = 202, description = "Summary refresh accepted, already in progress, or not due yet", body = SummaryRefreshResponse),
         (status = 500, description = "Summary service unavailable"),
     )
 )]
 #[instrument(skip(state))]
 pub async fn refresh_daily_summary(
     State(state): State<SummaryState>,
-) -> Result<StatusCode, HandlerError> {
+) -> Result<(StatusCode, Json<SummaryRefreshResponse>), HandlerError> {
+    let pool = state.pool.clone();
     start_refresh(state, false).await?;
-    Ok(StatusCode::ACCEPTED)
+    let next_due_at = summary_refresh_next_due_at(&pool).await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(SummaryRefreshResponse { next_due_at }),
+    ))
+}
+
+/// Earliest time the refresh lease can be claimed again: the schedule, or the
+/// lease expiry while a refresh is in progress.
+async fn summary_refresh_next_due_at(pool: &PgPool) -> Result<DateTime<Utc>, HandlerError> {
+    sqlx::query_scalar(
+        r#"SELECT GREATEST(due_at, COALESCE(lease_expires_at, due_at))
+           FROM summary_refresh_queue WHERE id = TRUE"#,
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|err| {
+        error!(%err, "failed to read summary refresh schedule");
+        HandlerError::internal("Failed to read summary refresh schedule")
+    })
 }
 
 #[utoipa::path(
@@ -1427,7 +1448,7 @@ mod tests {
         other_state.ollama_url = state.ollama_url.clone();
         other_state.models = state.models.clone();
         for instance in [state.clone(), other_state.clone()] {
-            let status = tokio::time::timeout(
+            let (status, _) = tokio::time::timeout(
                 Duration::from_secs(1),
                 refresh_daily_summary(State(instance)),
             )
@@ -1440,7 +1461,7 @@ mod tests {
         responses.add_permits(2);
         wait_for_refresh(&pool).await;
         // A staggered worker must not generate again immediately after completion.
-        refresh_daily_summary(State(other_state)).await.unwrap();
+        let _ = refresh_daily_summary(State(other_state)).await.unwrap();
         assert!(claim_summary_refresh(&pool, false).await.unwrap().is_none());
         let stored = fetch_daily_summary(State(SummaryState::new(pool)))
             .await
@@ -1578,7 +1599,7 @@ mod tests {
         let state = SummaryState::new(pool);
         for _ in 0..2 {
             assert_eq!(
-                refresh_daily_summary(State(state.clone())).await.unwrap(),
+                refresh_daily_summary(State(state.clone())).await.unwrap().0,
                 StatusCode::ACCEPTED
             );
             wait_for_refresh(&state.pool).await;
@@ -1617,6 +1638,39 @@ mod tests {
         let replacement = claim_summary_refresh(&pool, false).await.unwrap().unwrap();
         assert_ne!(replacement, winners[0]);
         assert!(claim_summary_refresh(&pool, false).await.unwrap().is_none());
+    }
+
+    #[sqlx::test]
+    async fn refresh_reports_next_due_at_when_not_due(pool: PgPool) {
+        let due_at: DateTime<Utc> = sqlx::query_scalar(
+            "UPDATE summary_refresh_queue SET due_at = NOW() + INTERVAL '1 hour' RETURNING due_at",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let (status, Json(body)) = refresh_daily_summary(State(SummaryState::new(pool)))
+            .await
+            .unwrap();
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(body.next_due_at, due_at);
+    }
+
+    #[sqlx::test]
+    async fn refresh_reports_lease_expiry_while_in_progress(pool: PgPool) {
+        let lease_expires_at: DateTime<Utc> = sqlx::query_scalar(
+            r#"UPDATE summary_refresh_queue
+               SET due_at = NOW() - INTERVAL '1 minute',
+                   lease_token = 'busy',
+                   lease_expires_at = NOW() + INTERVAL '30 minutes'
+               RETURNING lease_expires_at"#,
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let (_, Json(body)) = refresh_daily_summary(State(SummaryState::new(pool)))
+            .await
+            .unwrap();
+        assert_eq!(body.next_due_at, lease_expires_at);
     }
 
     #[sqlx::test]

@@ -15,7 +15,9 @@ use crate::http_util::send_json;
 const EMBED_BATCH_SIZE: usize = 16;
 const CLAIM_LIMIT: i64 = 64;
 const LEASE_SECONDS: i64 = 600;
-const IDLE_SLEEP: Duration = Duration::from_secs(30);
+// Feeds are polled at most about every 13 minutes, so new items rarely
+// arrive more often than this.
+const IDLE_SLEEP: Duration = Duration::from_secs(15 * 60);
 const RETRY_SLEEP: Duration = Duration::from_secs(60);
 
 pub(crate) trait EmbeddingQueue {
