@@ -86,10 +86,11 @@ async fn main() -> Result<()> {
         .install_recorder()
         .context("failed to install metrics recorder/exporter")?;
 
-    info!("Connecting to DB at {}", opts.db_url);
+    let redacted_db_url = redact_db_url(&opts.db_url);
+    info!("Connecting to DB at {redacted_db_url}");
     let pool = PgPool::connect(&opts.db_url)
         .await
-        .with_context(|| format!("failed to connect to {}", opts.db_url))?;
+        .with_context(|| format!("failed to connect to {redacted_db_url}"))?;
 
     sqlx::migrate!()
         .run(&pool)
@@ -131,4 +132,46 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Hide the password of a database URL so it can be logged.
+fn redact_db_url(db_url: &str) -> String {
+    match reqwest::Url::parse(db_url) {
+        Ok(mut url) => {
+            if url.password().is_some() && url.set_password(Some("***")).is_err() {
+                return "<unparseable database url>".to_string();
+            }
+            url.to_string()
+        }
+        Err(_) => "<unparseable database url>".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_db_url;
+
+    #[test]
+    fn redacts_password() {
+        assert_eq!(
+            redact_db_url("postgresql://postgres:admin@server:5432/rsscentr"),
+            "postgresql://postgres:***@server:5432/rsscentr"
+        );
+    }
+
+    #[test]
+    fn keeps_url_without_password() {
+        assert_eq!(
+            redact_db_url("postgres://postgres@localhost:5432/rss_centr"),
+            "postgres://postgres@localhost:5432/rss_centr"
+        );
+    }
+
+    #[test]
+    fn hides_unparseable_url() {
+        assert_eq!(
+            redact_db_url("not a url :secret"),
+            "<unparseable database url>"
+        );
+    }
 }
