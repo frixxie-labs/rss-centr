@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO feed_item_details (feed_item_id, summary, content, author, published_at)\n        SELECT *\n        FROM UNNEST($1::BIGINT[], $2::TEXT[], $3::TEXT[], $4::TEXT[], $5::TIMESTAMPTZ[])\n        ON CONFLICT(feed_item_id) DO NOTHING\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TimestamptzArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f7319480ad73ae02beb6ec9b66d690ed5e4df4c821804e62f78411163641a2a4"
+}

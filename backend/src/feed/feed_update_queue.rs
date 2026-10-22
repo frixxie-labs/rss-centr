@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use rss_centr_core::feed_update_queue::{
@@ -7,7 +9,7 @@ use rss_centr_core::feed_update_queue::{
 use sqlx::{PgPool, Postgres, Transaction};
 
 use super::feed_item::{
-    insert_feed_item_dedup, insert_feed_item_detail_dedup, read_feed_cadence_seconds,
+    insert_feed_item_details_dedup_batch, insert_feed_items_dedup_batch, read_feed_cadence_seconds,
 };
 use super::feed_subscription::FeedSuccessUpdate;
 use super::poll_interval::{
@@ -151,41 +153,7 @@ pub async fn complete_feed_update(
 
     ensure_current_lease(&mut tx, feed_id, &request.lease_token).await?;
 
-    let mut inserted_items = 0i64;
-    for item in &request.items {
-        let inserted = insert_feed_item_dedup(
-            &mut *tx,
-            feed_id,
-            item.external_id.as_str(),
-            item.title.as_str(),
-            item.url.as_str(),
-        )
-        .await?;
-
-        let Some(inserted) = inserted else {
-            continue;
-        };
-        inserted_items += 1;
-
-        if item_has_detail(item) {
-            let summary = item.summary.as_deref().unwrap_or("");
-            let content = item.content.as_deref().unwrap_or("");
-            let author = item.author.as_deref().unwrap_or("");
-            let published_at = item.published_at.unwrap_or(completed_at);
-
-            let _detail = insert_feed_item_detail_dedup(
-                &mut *tx,
-                inserted.id,
-                summary,
-                content,
-                author,
-                published_at,
-            )
-            .await
-            .with_context(|| format!("failed to insert detail for feed_item_id={}", inserted.id))?;
-        }
-    }
-
+    let inserted_items = insert_items(&mut tx, feed_id, &request.items, completed_at).await?;
     let poll_interval_seconds = if request.fetched {
         resolved_poll_interval_seconds(read_feed_cadence_seconds(&mut *tx, feed_id).await?)
     } else {
@@ -439,6 +407,66 @@ fn item_has_detail(item: &FeedUpdateItemInput) -> bool {
         || item.published_at.is_some()
 }
 
+/// Insert the new items and their details with one statement each. The first
+/// occurrence of a repeated `external_id` wins. Returns the inserted count.
+async fn insert_items(
+    tx: &mut Transaction<'_, Postgres>,
+    feed_id: i64,
+    items: &[FeedUpdateItemInput],
+    completed_at: DateTime<Utc>,
+) -> Result<i64> {
+    let mut seen = HashSet::new();
+    let unique: Vec<&FeedUpdateItemInput> = items
+        .iter()
+        .filter(|item| seen.insert(item.external_id.as_str()))
+        .collect();
+    if unique.is_empty() {
+        return Ok(0);
+    }
+
+    let external_ids: Vec<String> = unique.iter().map(|i| i.external_id.clone()).collect();
+    let titles: Vec<String> = unique.iter().map(|i| i.title.clone()).collect();
+    let urls: Vec<String> = unique.iter().map(|i| i.url.clone()).collect();
+    let inserted =
+        insert_feed_items_dedup_batch(&mut **tx, feed_id, &external_ids, &titles, &urls).await?;
+
+    let by_external_id: HashMap<&str, &FeedUpdateItemInput> = unique
+        .iter()
+        .map(|item| (item.external_id.as_str(), *item))
+        .collect();
+    let with_detail: Vec<(i64, &FeedUpdateItemInput)> = inserted
+        .iter()
+        .filter_map(|(id, external_id)| {
+            by_external_id
+                .get(external_id.as_str())
+                .filter(|item| item_has_detail(item))
+                .map(|item| (*id, *item))
+        })
+        .collect();
+    if !with_detail.is_empty() {
+        let field = |f: fn(&FeedUpdateItemInput) -> &Option<String>| -> Vec<String> {
+            with_detail
+                .iter()
+                .map(|(_, item)| f(item).clone().unwrap_or_default())
+                .collect()
+        };
+        insert_feed_item_details_dedup_batch(
+            &mut **tx,
+            &with_detail.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            &field(|i| &i.summary),
+            &field(|i| &i.content),
+            &field(|i| &i.author),
+            &with_detail
+                .iter()
+                .map(|(_, item)| item.published_at.unwrap_or(completed_at))
+                .collect::<Vec<_>>(),
+        )
+        .await?;
+    }
+
+    Ok(inserted.len() as i64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -556,6 +584,99 @@ mod tests {
         let second = dequeue_due_feeds(&pool, 100, 300).await.unwrap();
         let leased_again = second.iter().find(|row| row.feed_id == feed.id).unwrap();
         assert_ne!(leased.lease_token, leased_again.lease_token);
+    }
+
+    fn item_input(external_id: &str, summary: Option<&str>) -> FeedUpdateItemInput {
+        FeedUpdateItemInput {
+            external_id: external_id.to_string(),
+            title: format!("Title {external_id}"),
+            url: format!("https://example.com/{external_id}"),
+            summary: summary.map(str::to_string),
+            content: None,
+            author: None,
+            published_at: None,
+        }
+    }
+
+    async fn complete_with_items(
+        pool: &PgPool,
+        feed_id: i64,
+        items: Vec<FeedUpdateItemInput>,
+    ) -> CompleteFeedUpdateResult {
+        enqueue_feed_now(pool, feed_id).await.unwrap();
+        let leased = dequeue_due_feeds(pool, 100, 300)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.feed_id == feed_id)
+            .unwrap();
+        complete_feed_update(
+            pool,
+            feed_id,
+            CompleteFeedUpdateRequest {
+                lease_token: leased.lease_token,
+                fetched: true,
+                title: None,
+                site_url: None,
+                etag: None,
+                last_modified: None,
+                items,
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    #[sqlx::test]
+    async fn test_complete_feed_update_dedups_existing_and_repeated_items(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/queue-batch.xml")
+            .await
+            .unwrap();
+        let first = complete_with_items(&pool, feed.id, vec![item_input("a", Some("A1"))]).await;
+        assert_eq!(first.inserted_items, 1);
+
+        let second = complete_with_items(
+            &pool,
+            feed.id,
+            vec![
+                item_input("a", Some("A2")),
+                item_input("b", Some("B1")),
+                item_input("b", Some("B2")),
+                item_input("c", None),
+            ],
+        )
+        .await;
+        assert_eq!(second.inserted_items, 2);
+
+        let details: Vec<(String, String)> = sqlx::query_as(
+            r#"SELECT f.external_id, d.summary
+               FROM feed_items f JOIN feed_item_details d ON d.feed_item_id = f.id
+               WHERE f.feed_id = $1 ORDER BY f.external_id"#,
+        )
+        .bind(feed.id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            details,
+            vec![
+                ("a".to_string(), "A1".to_string()),
+                ("b".to_string(), "B1".to_string()),
+            ]
+        );
+        let items = read_feed_items_by_feed(&pool, feed.id).await.unwrap();
+        assert_eq!(items.len(), 3);
+        let b = items.iter().find(|item| item.external_id == "b").unwrap();
+        assert_eq!(b.title, "Title b");
+    }
+
+    #[sqlx::test]
+    async fn test_complete_feed_update_without_items(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/queue-empty.xml")
+            .await
+            .unwrap();
+        let result = complete_with_items(&pool, feed.id, vec![]).await;
+        assert_eq!(result.inserted_items, 0);
     }
 
     #[sqlx::test]

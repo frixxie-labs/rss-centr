@@ -491,6 +491,86 @@ pub async fn insert_feed_item_detail(
     Ok(row)
 }
 
+/// Insert new items for `feed_id` in one statement, in the given order,
+/// skipping ones that already exist. Returns `(id, external_id)` of the
+/// inserted rows. `external_ids` must not contain duplicates.
+pub async fn insert_feed_items_dedup_batch<'e, E>(
+    executor: E,
+    feed_id: i64,
+    external_ids: &[String],
+    titles: &[String],
+    urls: &[String],
+) -> Result<Vec<(i64, String)>>
+where
+    E: sqlx::Executor<'e, Database = Postgres>,
+{
+    let rows = sqlx::query!(
+        r#"
+        INSERT INTO feed_items (feed_id, external_id, title, url)
+        SELECT $1, new.external_id, new.title, new.url
+        FROM UNNEST($2::TEXT[], $3::TEXT[], $4::TEXT[])
+             WITH ORDINALITY AS new(external_id, title, url, ord)
+        ORDER BY new.ord
+        ON CONFLICT(feed_id, external_id) DO NOTHING
+        RETURNING id as "id!: i64", external_id
+        "#,
+        feed_id,
+        external_ids,
+        titles,
+        urls,
+    )
+    .fetch_all(executor)
+    .await
+    .with_context(|| {
+        format!(
+            "failed to insert {} feed items for feed_id={feed_id}",
+            external_ids.len()
+        )
+    })?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.id, row.external_id))
+        .collect())
+}
+
+/// Insert details for many items in one statement, skipping existing ones.
+pub async fn insert_feed_item_details_dedup_batch<'e, E>(
+    executor: E,
+    feed_item_ids: &[i64],
+    summaries: &[String],
+    contents: &[String],
+    authors: &[String],
+    published_ats: &[DateTime<Utc>],
+) -> Result<()>
+where
+    E: sqlx::Executor<'e, Database = Postgres>,
+{
+    sqlx::query!(
+        r#"
+        INSERT INTO feed_item_details (feed_item_id, summary, content, author, published_at)
+        SELECT *
+        FROM UNNEST($1::BIGINT[], $2::TEXT[], $3::TEXT[], $4::TEXT[], $5::TIMESTAMPTZ[])
+        ON CONFLICT(feed_item_id) DO NOTHING
+        "#,
+        feed_item_ids,
+        summaries,
+        contents,
+        authors,
+        published_ats,
+    )
+    .execute(executor)
+    .await
+    .with_context(|| {
+        format!(
+            "failed to insert details for {} feed items",
+            feed_item_ids.len()
+        )
+    })?;
+
+    Ok(())
+}
+
 pub async fn insert_feed_item_detail_dedup<'e, E>(
     executor: E,
     feed_item_id: i64,
