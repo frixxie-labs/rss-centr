@@ -61,6 +61,29 @@ impl From<crate::summary::SummaryStoreError> for HandlerError {
     }
 }
 
+impl From<crate::summary::SummaryError> for HandlerError {
+    fn from(error: crate::summary::SummaryError) -> Self {
+        use crate::summary::SummaryError;
+
+        let status = match error {
+            SummaryError::Store(error) => return Self::from(error),
+            SummaryError::InputTooLarge(error) => return Self::from(error),
+            SummaryError::NoArticles => StatusCode::NOT_FOUND,
+            SummaryError::MergeBudgetTooSmall => StatusCode::INTERNAL_SERVER_ERROR,
+            SummaryError::ModelUnavailable
+            | SummaryError::InvalidModelMetadata
+            | SummaryError::MissingContextLimit
+            | SummaryError::ServiceUnavailable
+            | SummaryError::InvalidResponse
+            | SummaryError::ContextOverflow
+            | SummaryError::Truncated
+            | SummaryError::Incomplete
+            | SummaryError::EmptyResponse => StatusCode::BAD_GATEWAY,
+        };
+        Self::new(status, error.to_string())
+    }
+}
+
 impl IntoResponse for HandlerError {
     fn into_response(self) -> axum::response::Response {
         (self.status, self.message).into_response()
@@ -104,6 +127,83 @@ mod tests {
         ] {
             let error = HandlerError::from(error);
             assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(error.message, message);
+        }
+    }
+
+    #[test]
+    fn summary_generation_errors_preserve_http_statuses_and_messages() {
+        use crate::summary::SummaryError;
+
+        for (error, status, message) in [
+            (
+                SummaryError::NoArticles,
+                StatusCode::NOT_FOUND,
+                "No recent articles available for summary generation.",
+            ),
+            (
+                SummaryError::MergeBudgetTooSmall,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Summary context budget too small to merge summaries",
+            ),
+            (
+                SummaryError::ModelUnavailable,
+                StatusCode::BAD_GATEWAY,
+                "Summary model unavailable",
+            ),
+            (
+                SummaryError::InvalidModelMetadata,
+                StatusCode::BAD_GATEWAY,
+                "Invalid summary model metadata",
+            ),
+            (
+                SummaryError::MissingContextLimit,
+                StatusCode::BAD_GATEWAY,
+                "Summary model context limit missing",
+            ),
+            (
+                SummaryError::ServiceUnavailable,
+                StatusCode::BAD_GATEWAY,
+                "Summary service unavailable",
+            ),
+            (
+                SummaryError::InvalidResponse,
+                StatusCode::BAD_GATEWAY,
+                "Invalid summary response",
+            ),
+            (
+                SummaryError::ContextOverflow,
+                StatusCode::BAD_GATEWAY,
+                "Summary generation exceeded context budget",
+            ),
+            (
+                SummaryError::Truncated,
+                StatusCode::BAD_GATEWAY,
+                "Summary generation truncated",
+            ),
+            (
+                SummaryError::Incomplete,
+                StatusCode::BAD_GATEWAY,
+                "Summary generation incomplete",
+            ),
+            (
+                SummaryError::EmptyResponse,
+                StatusCode::BAD_GATEWAY,
+                "Empty summary response",
+            ),
+            (
+                SummaryError::InputTooLarge(crate::summary::InputTooLarge),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Summary input exceeds model context budget",
+            ),
+            (
+                SummaryError::Store(crate::summary::SummaryStoreError::LeaseConflict),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Summary refresh lease conflict",
+            ),
+        ] {
+            let error = HandlerError::from(error);
+            assert_eq!(error.status, status);
             assert_eq!(error.message, message);
         }
     }

@@ -26,3 +26,4 @@ tokio = { version = "1.54.0", features = ["full", "tracing"] }
 [dev-dependencies]
 http-body-util = "0.1.5"
 quickcheck = "1"
+tokio = { version = "1.54.0", features = ["test-util"] }

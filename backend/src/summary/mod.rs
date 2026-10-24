@@ -1,5 +1,10 @@
+mod error;
+mod ollama;
 mod prompts;
 mod repository;
+mod service;
+
+use std::future::Future;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -12,9 +17,28 @@ pub(crate) use prompts::{
     build_final_prompt, build_merge_prompt,
 };
 
+pub(crate) use error::SummaryError;
+pub(crate) use ollama::OllamaSummaryGenerator;
 #[cfg(test)]
 pub(crate) use repository::LEASE_SECONDS;
 pub(crate) use repository::{PostgresSummaryRepository, SummaryRepository, SummaryStoreError};
+pub(crate) use service::SummaryState;
+
+pub(crate) trait SummaryGenerator: Send + Sync {
+    fn context_budget(
+        &self,
+        model: &str,
+    ) -> impl Future<Output = Result<ContextBudget, SummaryError>> + Send;
+
+    fn generate(
+        &self,
+        model: &str,
+        budget: ContextBudget,
+        prompt: String,
+        num_predict: u32,
+        usage: &mut SummaryUsage,
+    ) -> impl Future<Output = Result<String, SummaryError>> + Send;
+}
 
 #[derive(Clone, Serialize, FromRow, ToSchema)]
 pub struct DailySummary {

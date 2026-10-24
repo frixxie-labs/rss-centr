@@ -19,7 +19,7 @@ use utoipa::OpenApi;
 use crate::events::NewFeedItemEvent;
 use crate::search::SearchState;
 
-mod daily_summary;
+pub(crate) mod daily_summary;
 mod embeddings;
 mod error;
 mod feed_title_index;
