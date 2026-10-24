@@ -16,6 +16,7 @@ pub mod events;
 pub mod feed;
 pub mod handlers;
 pub mod search;
+mod summary;
 
 #[derive(Debug, Clone)]
 enum LogLevel {

@@ -47,6 +47,13 @@ impl fmt::Display for HandlerError {
 
 impl Error for HandlerError {}
 
+impl From<crate::summary::InputTooLarge> for HandlerError {
+    fn from(error: crate::summary::InputTooLarge) -> Self {
+        tracing::error!(%error, "single summary input exceeds context budget");
+        Self::internal(error.to_string())
+    }
+}
+
 impl IntoResponse for HandlerError {
     fn into_response(self) -> axum::response::Response {
         (self.status, self.message).into_response()
@@ -60,4 +67,16 @@ fn is_not_found_error(err: &anyhow::Error) -> bool {
             .is_some_and(|sqlx_err| matches!(sqlx_err, SqlxError::RowNotFound))
             || cause.to_string().starts_with("no ")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oversized_summary_input_preserves_http_error() {
+        let error = HandlerError::from(crate::summary::InputTooLarge);
+        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(error.message, "Summary input exceeds model context budget");
+    }
 }
