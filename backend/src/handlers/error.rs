@@ -54,6 +54,13 @@ impl From<crate::summary::InputTooLarge> for HandlerError {
     }
 }
 
+impl From<crate::summary::SummaryStoreError> for HandlerError {
+    fn from(error: crate::summary::SummaryStoreError) -> Self {
+        tracing::error!(error = ?error, "summary persistence failed");
+        Self::internal(error.to_string())
+    }
+}
+
 impl IntoResponse for HandlerError {
     fn into_response(self) -> axum::response::Response {
         (self.status, self.message).into_response()
@@ -78,5 +85,26 @@ mod tests {
         let error = HandlerError::from(crate::summary::InputTooLarge);
         assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(error.message, "Summary input exceeds model context budget");
+    }
+
+    #[test]
+    fn summary_storage_errors_preserve_http_messages_without_exposing_database_details() {
+        for (error, message) in [
+            (
+                crate::summary::SummaryStoreError::LeaseConflict,
+                "Summary refresh lease conflict",
+            ),
+            (
+                crate::summary::SummaryStoreError::Database {
+                    operation: "Failed to save summary",
+                    source: sqlx::Error::Protocol("private database details".into()),
+                },
+                "Failed to save summary",
+            ),
+        ] {
+            let error = HandlerError::from(error);
+            assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(error.message, message);
+        }
     }
 }

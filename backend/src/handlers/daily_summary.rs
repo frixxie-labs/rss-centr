@@ -1,20 +1,20 @@
 use std::time::{Duration, Instant};
 
 use axum::{Json, extract::State, http::StatusCode};
-use chrono::{DateTime, Utc};
 use rss_centr_core::summary_refresh::SummaryRefreshResponse;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, PgPool};
+use sqlx::PgPool;
 use tracing::{Instrument, error, info, instrument, warn};
-use utoipa::ToSchema;
 
 use crate::summary::{
-    ARTICLES_PER_BATCH, BATCH_OUTPUT_TOKENS, ContextBudget, FINAL_OUTPUT_TOKENS,
-    SUMMARY_CONTEXT_TOKENS, SUMMARY_SYSTEM_PROMPT, SummaryArticle, budgeted_prompts,
-    build_batch_prompt, build_final_prompt, build_merge_prompt,
+    ARTICLES_PER_BATCH, BATCH_OUTPUT_TOKENS, ContextBudget, FINAL_OUTPUT_TOKENS, GeneratedSummary,
+    PostgresSummaryRepository, SUMMARY_CONTEXT_TOKENS, SUMMARY_SYSTEM_PROMPT, SummaryRepository,
+    SummaryUsage, budgeted_prompts, build_batch_prompt, build_final_prompt, build_merge_prompt,
 };
 
 use super::error::HandlerError;
+
+pub use crate::summary::DailySummary;
 
 const DEFAULT_MODEL: &str = "gemma4:e4b";
 const OLLAMA_REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -22,11 +22,10 @@ const OLLAMA_REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 // A day's articles require multiple sequential calls. The 12B model can take
 // over two minutes per batch; a 14-minute job deadline cannot cover them all.
 const GENERATION_TIMEOUT: Duration = Duration::from_secs(59 * 60);
-const LEASE_SECONDS: i64 = 60 * 60;
 
 #[derive(Clone)]
 pub struct SummaryState {
-    pool: PgPool,
+    repository: PostgresSummaryRepository,
     http: reqwest::Client,
     ollama_url: String,
     models: SummaryModels,
@@ -66,7 +65,7 @@ impl SummaryModels {
 impl SummaryState {
     pub fn new(pool: PgPool) -> Self {
         Self {
-            pool,
+            repository: PostgresSummaryRepository::new(pool),
             http: reqwest::Client::new(),
             ollama_url: std::env::var("OLLAMA_URL")
                 .unwrap_or_else(|_| "http://desktop:11434".to_string()),
@@ -77,31 +76,6 @@ impl SummaryState {
             ),
         }
     }
-}
-
-#[derive(Clone, Serialize, FromRow, ToSchema)]
-pub struct DailySummary {
-    pub id: i64,
-    pub summary: String,
-    pub feed_ids: Vec<i64>,
-    pub feed_item_ids: Vec<i64>,
-    pub generated_at: DateTime<Utc>,
-    pub model: String,
-    pub generation_ms: Option<i64>,
-    pub llm_calls: Option<i32>,
-    pub prompt_tokens: Option<i64>,
-    pub output_tokens: Option<i64>,
-    pub llm_ms: Option<i64>,
-    pub eval_ms: Option<i64>,
-}
-
-#[derive(Default)]
-struct SummaryUsage {
-    llm_calls: i32,
-    prompt_tokens: i64,
-    output_tokens: i64,
-    llm_ms: i64,
-    eval_ms: i64,
 }
 
 #[derive(Serialize)]
@@ -186,26 +160,6 @@ async fn fetch_context_budget(
         model_context, num_ctx, "summary model context budget"
     );
     Ok(ContextBudget { num_ctx })
-}
-
-async fn fetch_articles(pool: &PgPool) -> Result<Vec<SummaryArticle>, sqlx::Error> {
-    sqlx::query_as::<_, SummaryArticle>(
-        r#"
-        SELECT i.id, i.feed_id, i.title, COALESCE(f.title, f.url) AS feed,
-               LEFT(COALESCE(NULLIF(BTRIM(d.summary), ''),
-                             NULLIF(BTRIM(d.content), '')), 300) AS description
-        FROM feed_items i
-        JOIN feeds f ON f.id = i.feed_id
-        JOIN feed_item_details d ON d.feed_item_id = i.id
-        WHERE i.inserted_at >= NOW() - INTERVAL '24 hours'
-          AND i.inserted_at <= NOW()
-          AND COALESCE(NULLIF(BTRIM(d.summary), ''),
-                       NULLIF(BTRIM(d.content), '')) IS NOT NULL
-        ORDER BY i.inserted_at DESC, i.id DESC
-        "#,
-    )
-    .fetch_all(pool)
-    .await
 }
 
 async fn generate(
@@ -355,58 +309,12 @@ async fn generate(
 pub async fn fetch_daily_summary(
     State(state): State<SummaryState>,
 ) -> Result<Json<DailySummary>, HandlerError> {
-    latest_summary(&state.pool)
+    state
+        .repository
+        .latest_summary()
         .await?
         .map(Json)
         .ok_or_else(|| HandlerError::not_found("No summary is available yet."))
-}
-
-async fn latest_summary(pool: &PgPool) -> Result<Option<DailySummary>, HandlerError> {
-    sqlx::query_as::<_, DailySummary>(
-        r#"SELECT id, summary, feed_ids, feed_item_ids, generated_at, model,
-                  generation_ms, llm_calls, prompt_tokens, output_tokens, llm_ms, eval_ms
-           FROM ai_summaries ORDER BY generated_at DESC, id DESC LIMIT 1"#,
-    )
-    .fetch_optional(pool)
-    .await
-    .map_err(|err| {
-        error!(%err, "failed to fetch latest summary");
-        HandlerError::internal("Failed to fetch latest summary")
-    })
-}
-
-async fn save_summary<'a>(
-    executor: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
-    summary: &str,
-    feed_ids: &[i64],
-    feed_item_ids: &[i64],
-    model: &str,
-    generation_ms: i64,
-    usage: &SummaryUsage,
-) -> Result<DailySummary, HandlerError> {
-    sqlx::query_as::<_, DailySummary>(
-        r#"INSERT INTO ai_summaries (summary, feed_ids, feed_item_ids, model, generation_ms,
-                                     llm_calls, prompt_tokens, output_tokens, llm_ms, eval_ms)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-           RETURNING id, summary, feed_ids, feed_item_ids, generated_at, model,
-                     generation_ms, llm_calls, prompt_tokens, output_tokens, llm_ms, eval_ms"#,
-    )
-    .bind(summary)
-    .bind(feed_ids)
-    .bind(feed_item_ids)
-    .bind(model)
-    .bind(generation_ms)
-    .bind(usage.llm_calls)
-    .bind(usage.prompt_tokens)
-    .bind(usage.output_tokens)
-    .bind(usage.llm_ms)
-    .bind(usage.eval_ms)
-    .fetch_one(executor)
-    .await
-    .map_err(|err| {
-        error!(%err, "failed to persist summary");
-        HandlerError::internal("Failed to save summary")
-    })
 }
 
 #[utoipa::path(
@@ -422,28 +330,13 @@ async fn save_summary<'a>(
 pub async fn refresh_daily_summary(
     State(state): State<SummaryState>,
 ) -> Result<(StatusCode, Json<SummaryRefreshResponse>), HandlerError> {
-    let pool = state.pool.clone();
+    let repository = state.repository.clone();
     start_refresh(state, false).await?;
-    let next_due_at = summary_refresh_next_due_at(&pool).await?;
+    let next_due_at = repository.next_due_at().await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(SummaryRefreshResponse { next_due_at }),
     ))
-}
-
-/// Earliest time the refresh lease can be claimed again: the schedule, or the
-/// lease expiry while a refresh is in progress.
-async fn summary_refresh_next_due_at(pool: &PgPool) -> Result<DateTime<Utc>, HandlerError> {
-    sqlx::query_scalar(
-        r#"SELECT GREATEST(due_at, COALESCE(lease_expires_at, due_at))
-           FROM summary_refresh_queue WHERE id = TRUE"#,
-    )
-    .fetch_one(pool)
-    .await
-    .map_err(|err| {
-        error!(%err, "failed to read summary refresh schedule");
-        HandlerError::internal("Failed to read summary refresh schedule")
-    })
 }
 
 #[utoipa::path(
@@ -470,7 +363,7 @@ pub async fn generate_daily_summary(
 /// Claims the refresh lease and spawns generation. `force` ignores the
 /// schedule but still respects an active lease. Returns whether it started.
 async fn start_refresh(state: SummaryState, force: bool) -> Result<bool, HandlerError> {
-    let Some(token) = claim_summary_refresh(&state.pool, force).await? else {
+    let Some(token) = state.repository.claim_refresh(force).await? else {
         return Ok(false);
     };
     info!(batch_model = %state.models.batch, final_model = %state.models.final_summary, timeout_seconds = GENERATION_TIMEOUT.as_secs(), "daily news summary refresh started");
@@ -484,17 +377,8 @@ async fn start_refresh(state: SummaryState, force: bool) -> Result<bool, Handler
                 Ok(Err(err)) => error!(%err, "background summary refresh failed"),
                 Err(err) => error!(%err, "background summary refresh timed out"),
             }
-            if let Err(err) = sqlx::query(
-                r#"UPDATE summary_refresh_queue
-                   SET lease_token = NULL, lease_expires_at = NULL,
-                       due_at = NOW() + INTERVAL '1 minute'
-                   WHERE id = TRUE AND lease_token = $1"#,
-            )
-            .bind(&token)
-            .execute(&state.pool)
-            .await
-            {
-                error!(%err, "failed to release summary refresh lease");
+            if let Err(err) = state.repository.release_refresh(&token).await {
+                error!(error = ?err, "failed to release summary refresh lease");
             }
         }
         .in_current_span(),
@@ -502,37 +386,10 @@ async fn start_refresh(state: SummaryState, force: bool) -> Result<bool, Handler
     Ok(true)
 }
 
-async fn claim_summary_refresh(pool: &PgPool, force: bool) -> Result<Option<String>, HandlerError> {
-    sqlx::query_scalar(
-        r#"WITH due AS (
-               SELECT id FROM summary_refresh_queue
-               WHERE ($2 OR due_at <= NOW())
-                 AND (lease_expires_at IS NULL OR lease_expires_at <= NOW())
-               FOR UPDATE SKIP LOCKED
-           )
-           UPDATE summary_refresh_queue q
-           SET lease_token = md5(random()::TEXT || clock_timestamp()::TEXT),
-               lease_expires_at = NOW() + ($1::BIGINT * INTERVAL '1 second')
-           FROM due WHERE q.id = due.id
-           RETURNING q.lease_token"#,
-    )
-    .bind(LEASE_SECONDS)
-    .bind(force)
-    .fetch_optional(pool)
-    .await
-    .map_err(|err| {
-        error!(%err, "failed to claim summary refresh lease");
-        HandlerError::internal("Failed to claim summary refresh")
-    })
-}
-
 async fn generate_summary(state: &SummaryState, token: &str) -> Result<DailySummary, HandlerError> {
     let started = Instant::now();
     let mut usage = SummaryUsage::default();
-    let articles = fetch_articles(&state.pool).await.map_err(|err| {
-        error!(%err, "failed to fetch summary articles");
-        HandlerError::internal("Failed to fetch recent articles")
-    })?;
+    let articles = state.repository.fetch_articles().await?;
 
     if articles.is_empty() {
         return Err(HandlerError::not_found(
@@ -623,37 +480,16 @@ async fn generate_summary(state: &SummaryState, token: &str) -> Result<DailySumm
     feed_ids.sort_unstable();
     feed_ids.dedup();
     let feed_item_ids: Vec<i64> = articles.iter().map(|article| article.id).collect();
-    let mut tx = state.pool.begin().await.map_err(|err| {
-        error!(%err, "failed to begin summary completion");
-        HandlerError::internal("Failed to save summary")
-    })?;
-    // Fence stale jobs and reschedule atomically with persistence, like feed completion.
-    let completed = sqlx::query(
-        r#"UPDATE summary_refresh_queue
-           SET lease_token = NULL, lease_expires_at = NULL,
-               due_at = NOW() + INTERVAL '1 hour'
-           WHERE id = TRUE AND lease_token = $1 AND lease_expires_at > NOW()"#,
-    )
-    .bind(token)
-    .execute(&mut *tx)
-    .await
-    .map_err(|err| {
-        error!(%err, "failed to complete summary refresh lease");
-        HandlerError::internal("Failed to complete summary refresh")
-    })?;
-    if completed.rows_affected() == 0 {
-        return Err(HandlerError::internal("Summary refresh lease conflict"));
-    }
-    let result = save_summary(
-        &mut *tx,
-        &summary,
-        &feed_ids,
-        &feed_item_ids,
-        &state.models.label(),
-        started.elapsed().as_millis() as i64,
-        &usage,
-    )
-    .await?;
+    let generated = GeneratedSummary {
+        summary,
+        feed_ids,
+        feed_item_ids,
+        model: state.models.label(),
+        generation_ms: started.elapsed().as_millis() as i64,
+        usage,
+    };
+    let result = state.repository.complete_refresh(token, &generated).await?;
+    let usage = &generated.usage;
     info!(
         generation_ms = result.generation_ms,
         llm_calls = usage.llm_calls,
@@ -663,10 +499,6 @@ async fn generate_summary(state: &SummaryState, token: &str) -> Result<DailySumm
         eval_ms = usage.eval_ms,
         "summary generation usage"
     );
-    tx.commit().await.map_err(|err| {
-        error!(%err, "failed to commit summary completion");
-        HandlerError::internal("Failed to save summary")
-    })?;
     Ok(result)
 }
 
@@ -676,7 +508,11 @@ mod tests {
         collections::VecDeque,
         sync::{Arc, Mutex},
     };
+
+    use chrono::{DateTime, Utc};
     use tokio::sync::Semaphore;
+
+    use crate::summary::LEASE_SECONDS;
 
     use super::*;
 
@@ -1076,6 +912,7 @@ mod tests {
 
     #[sqlx::test]
     async fn worker_refresh_generates_and_persists_source_ids(pool: PgPool) {
+        let repository = PostgresSummaryRepository::new(pool.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let responses = Arc::new(Semaphore::new(0));
@@ -1161,13 +998,13 @@ mod tests {
             .unwrap();
             assert_eq!(status, StatusCode::ACCEPTED);
         }
-        assert!(latest_summary(&pool).await.unwrap().is_none());
+        assert!(repository.latest_summary().await.unwrap().is_none());
         responses.add_permits(2);
         wait_for_refresh(&pool).await;
         // A staggered worker must not generate again immediately after completion.
         let _ = refresh_daily_summary(State(other_state)).await.unwrap();
-        assert!(claim_summary_refresh(&pool, false).await.unwrap().is_none());
-        let stored = fetch_daily_summary(State(SummaryState::new(pool)))
+        assert!(repository.claim_refresh(false).await.unwrap().is_none());
+        let stored = fetch_daily_summary(State(SummaryState::new(pool.clone())))
             .await
             .unwrap()
             .0;
@@ -1176,7 +1013,7 @@ mod tests {
         assert_eq!(stored.model, "batch-model → final-model");
         assert_eq!(stored.summary, "News overview (Example).");
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ai_summaries")
-            .fetch_one(&state.pool)
+            .fetch_one(&pool)
             .await
             .unwrap();
         assert_eq!(count, 1);
@@ -1186,6 +1023,7 @@ mod tests {
 
     #[sqlx::test]
     async fn model_budgets_control_merging_and_shared_models_reuse_metadata(pool: PgPool) {
+        let repository = PostgresSummaryRepository::new(pool.clone());
         let feed_id: i64 = sqlx::query_scalar(
             "INSERT INTO feeds (url, title) VALUES ('https://example.com/rss', 'Example') RETURNING id",
         )
@@ -1271,7 +1109,7 @@ mod tests {
                 .execute(&pool)
                 .await
                 .unwrap();
-            let token = claim_summary_refresh(&pool, false).await.unwrap().unwrap();
+            let token = repository.claim_refresh(false).await.unwrap().unwrap();
             let summary = generate_summary(&state, &token).await.unwrap();
             assert_eq!(summary.summary, "Final overview (Example).");
             assert_eq!(summary.feed_item_ids.len(), 26);
@@ -1300,22 +1138,18 @@ mod tests {
 
     #[sqlx::test]
     async fn failed_background_refresh_releases_lease_and_backs_off(pool: PgPool) {
-        let state = SummaryState::new(pool);
+        let state = SummaryState::new(pool.clone());
+        let repository = PostgresSummaryRepository::new(pool.clone());
         for _ in 0..2 {
             assert_eq!(
                 refresh_daily_summary(State(state.clone())).await.unwrap().0,
                 StatusCode::ACCEPTED
             );
-            wait_for_refresh(&state.pool).await;
-            assert!(latest_summary(&state.pool).await.unwrap().is_none());
-            assert!(
-                claim_summary_refresh(&state.pool, false)
-                    .await
-                    .unwrap()
-                    .is_none()
-            );
+            wait_for_refresh(&pool).await;
+            assert!(repository.latest_summary().await.unwrap().is_none());
+            assert!(repository.claim_refresh(false).await.unwrap().is_none());
             sqlx::query("UPDATE summary_refresh_queue SET due_at = NOW()")
-                .execute(&state.pool)
+                .execute(&pool)
                 .await
                 .unwrap();
         }
@@ -1323,25 +1157,26 @@ mod tests {
 
     #[sqlx::test]
     async fn concurrent_claims_have_one_winner_and_expired_leases_are_recoverable(pool: PgPool) {
+        let repository = PostgresSummaryRepository::new(pool.clone());
         let (first, second) = tokio::join!(
-            claim_summary_refresh(&pool, false),
-            claim_summary_refresh(&pool, false)
+            repository.claim_refresh(false),
+            repository.claim_refresh(false)
         );
         let winners: Vec<_> = [first.unwrap(), second.unwrap()]
             .into_iter()
             .flatten()
             .collect();
         assert_eq!(winners.len(), 1);
-        assert!(claim_summary_refresh(&pool, false).await.unwrap().is_none());
+        assert!(repository.claim_refresh(false).await.unwrap().is_none());
         sqlx::query(
             "UPDATE summary_refresh_queue SET lease_expires_at = NOW() - INTERVAL '1 second'",
         )
         .execute(&pool)
         .await
         .unwrap();
-        let replacement = claim_summary_refresh(&pool, false).await.unwrap().unwrap();
+        let replacement = repository.claim_refresh(false).await.unwrap().unwrap();
         assert_ne!(replacement, winners[0]);
-        assert!(claim_summary_refresh(&pool, false).await.unwrap().is_none());
+        assert!(repository.claim_refresh(false).await.unwrap().is_none());
     }
 
     #[sqlx::test]
@@ -1379,45 +1214,55 @@ mod tests {
 
     #[sqlx::test]
     async fn forced_claim_ignores_schedule_but_respects_active_lease(pool: PgPool) {
+        let repository = PostgresSummaryRepository::new(pool.clone());
         sqlx::query("UPDATE summary_refresh_queue SET due_at = NOW() + INTERVAL '1 hour'")
             .execute(&pool)
             .await
             .unwrap();
-        assert!(claim_summary_refresh(&pool, false).await.unwrap().is_none());
-        assert!(claim_summary_refresh(&pool, true).await.unwrap().is_some());
-        assert!(claim_summary_refresh(&pool, true).await.unwrap().is_none());
+        assert!(repository.claim_refresh(false).await.unwrap().is_none());
+        assert!(repository.claim_refresh(true).await.unwrap().is_some());
+        assert!(repository.claim_refresh(true).await.unwrap().is_none());
     }
 
     #[sqlx::test]
     async fn get_reads_latest_persisted_summary_and_handles_empty_database(pool: PgPool) {
+        let repository = PostgresSummaryRepository::new(pool.clone());
         let state = SummaryState::new(pool.clone());
         let Err(error) = fetch_daily_summary(State(state)).await else {
             panic!("expected missing summary");
         };
         assert_eq!(error.status, axum::http::StatusCode::NOT_FOUND);
         assert_eq!(error.message, "No summary is available yet.");
-        let first = save_summary(
-            &pool,
-            "First",
-            &[1, 2],
-            &[10, 20],
-            "model-a",
-            1,
-            &SummaryUsage::default(),
-        )
-        .await
-        .unwrap();
-        let second = save_summary(
-            &pool,
-            "Second",
-            &[2, 3],
-            &[20, 30],
-            "model-b",
-            1,
-            &SummaryUsage::default(),
-        )
-        .await
-        .unwrap();
+        let token = repository.claim_refresh(true).await.unwrap().unwrap();
+        let first = repository
+            .complete_refresh(
+                &token,
+                &GeneratedSummary {
+                    summary: "First".into(),
+                    feed_ids: vec![1, 2],
+                    feed_item_ids: vec![10, 20],
+                    model: "model-a".into(),
+                    generation_ms: 1,
+                    usage: SummaryUsage::default(),
+                },
+            )
+            .await
+            .unwrap();
+        let token = repository.claim_refresh(true).await.unwrap().unwrap();
+        let second = repository
+            .complete_refresh(
+                &token,
+                &GeneratedSummary {
+                    summary: "Second".into(),
+                    feed_ids: vec![2, 3],
+                    feed_item_ids: vec![20, 30],
+                    model: "model-b".into(),
+                    generation_ms: 1,
+                    usage: SummaryUsage::default(),
+                },
+            )
+            .await
+            .unwrap();
         let result = fetch_daily_summary(State(SummaryState::new(pool.clone())))
             .await
             .unwrap()
@@ -1437,7 +1282,93 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn stale_refresh_cannot_replace_previous_summary(pool: PgPool) {
+        let repository = PostgresSummaryRepository::new(pool.clone());
+        let feed_id: i64 = sqlx::query_scalar(
+            "INSERT INTO feeds (url, title) VALUES ('https://example.com/rss', 'Example') RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "WITH item AS (
+                INSERT INTO feed_items (feed_id, external_id, title, url)
+                VALUES ($1, 'news', 'News', 'https://example.com/news') RETURNING id
+             ) INSERT INTO feed_item_details (feed_item_id, summary, content, author, published_at)
+               SELECT id, 'Description', '', '', NOW() FROM item",
+        )
+        .bind(feed_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let token = repository.claim_refresh(true).await.unwrap().unwrap();
+        let previous = repository
+            .complete_refresh(
+                &token,
+                &GeneratedSummary {
+                    summary: "Previous overview".into(),
+                    feed_ids: vec![feed_id],
+                    feed_item_ids: vec![],
+                    model: "old-model".into(),
+                    generation_ms: 1,
+                    usage: SummaryUsage::default(),
+                },
+            )
+            .await
+            .unwrap();
+
+        for expired in [false, true] {
+            let (mut state, server) = mock_ollama_responses(
+                serde_json::json!({"model_info": {"test.context_length": SUMMARY_CONTEXT_TOKENS}}),
+                vec![
+                    (serde_json::json!({"response": "Notes", "prompt_eval_count": 100, "eval_count": 20, "done_reason": "stop"}), BATCH_OUTPUT_TOKENS),
+                    (serde_json::json!({"response": "New overview", "prompt_eval_count": 100, "eval_count": 20, "done_reason": "stop"}), FINAL_OUTPUT_TOKENS),
+                ],
+            )
+            .await;
+            state.repository = repository.clone();
+            state.models = SummaryModels {
+                batch: "test-model".into(),
+                final_summary: "test-model".into(),
+            };
+            sqlx::query(
+                "UPDATE summary_refresh_queue SET due_at = NOW(), lease_token = 'current',
+                 lease_expires_at = NOW() + INTERVAL '1 hour'",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            if expired {
+                sqlx::query(
+                    "UPDATE summary_refresh_queue SET lease_expires_at = NOW() - INTERVAL '1 second'",
+                )
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            let schedule_before = repository.next_due_at().await.unwrap();
+            let token = if expired { "current" } else { "stale" };
+            let error = generate_summary(&state, token).await.err().unwrap();
+            assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(error.message, "Summary refresh lease conflict");
+            assert_eq!(
+                repository.latest_summary().await.unwrap().unwrap().id,
+                previous.id
+            );
+            assert_eq!(repository.next_due_at().await.unwrap(), schedule_before);
+            let token: Option<String> =
+                sqlx::query_scalar("SELECT lease_token FROM summary_refresh_queue WHERE id = TRUE")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(token.as_deref(), Some("current"));
+            server.abort();
+        }
+    }
+
+    #[sqlx::test]
     async fn recent_articles_include_all_nonempty_descriptions(pool: PgPool) {
+        let repository = PostgresSummaryRepository::new(pool.clone());
         let feed_id: i64 = sqlx::query_scalar(
             "INSERT INTO feeds (url, title) VALUES ('https://example.com/rss', 'Example') RETURNING id",
         )
@@ -1480,7 +1411,7 @@ mod tests {
             .unwrap();
         }
 
-        let articles = fetch_articles(&pool).await.unwrap();
+        let articles = repository.fetch_articles().await.unwrap();
         assert_eq!(articles.len(), 6);
         assert!(
             articles
@@ -1520,7 +1451,7 @@ mod tests {
         .await
         .unwrap();
 
-        let articles = fetch_articles(&pool).await.unwrap();
+        let articles = repository.fetch_articles().await.unwrap();
         assert_eq!(articles.len(), 107);
         assert!(
             articles
