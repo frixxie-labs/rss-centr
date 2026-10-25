@@ -79,7 +79,7 @@ pub async fn create_feed(
         .await
         .map_err(|e| {
             warn!("failed with error: {e:#}");
-            HandlerError::from_db(e, "Failed to enqueue feed update")
+            HandlerError::from_feed_queue(e, "Failed to enqueue feed update")
         })?;
     Ok(Json(feed))
 }
@@ -144,7 +144,7 @@ pub async fn update_feed_enabled(
             .await
             .map_err(|e| {
                 warn!("failed with error: {e:#}");
-                HandlerError::from_db(e, "Failed to enqueue feed update")
+                HandlerError::from_feed_queue(e, "Failed to enqueue feed update")
             })?;
     }
 
@@ -175,10 +175,10 @@ pub async fn queue_ingest_feed(
         .await
         .map_err(|e| {
             warn!("failed with error: {e:#}");
-            if feed_update_queue::is_feed_paused(&e) {
+            if matches!(e, feed_update_queue::FeedQueueError::FeedPaused { .. }) {
                 return HandlerError::conflict("feed is paused; enable it before fetching now");
             }
-            HandlerError::from_db(e, "Failed to enqueue feed update")
+            HandlerError::from_feed_queue(e, "Failed to enqueue feed update")
         })?;
 
     Ok((StatusCode::ACCEPTED, "queued"))
@@ -209,4 +209,66 @@ pub async fn delete_feed(
             HandlerError::from_db(e, "Failed to delete feed")
         })?;
     Ok("OK".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[sqlx::test]
+    async fn manual_ingest_preserves_accepted_paused_and_missing_feed_responses(pool: PgPool) {
+        let feed = feed_subscription::upsert_feed_by_url(&pool, "https://example.com/ingest.xml")
+            .await
+            .unwrap();
+        let (status, body) = queue_ingest_feed(State(pool.clone()), Path(feed.id))
+            .await
+            .unwrap();
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(body, "queued");
+
+        feed_subscription::set_feed_enabled(&pool, feed.id, false)
+            .await
+            .unwrap();
+        let paused = queue_ingest_feed(State(pool.clone()), Path(feed.id))
+            .await
+            .unwrap_err();
+        assert_eq!(paused.status, StatusCode::CONFLICT);
+        assert_eq!(
+            paused.message,
+            "feed is paused; enable it before fetching now"
+        );
+
+        let missing = queue_ingest_feed(State(pool), Path(i64::MAX))
+            .await
+            .unwrap_err();
+        assert_eq!(missing.status, StatusCode::NOT_FOUND);
+        assert_eq!(
+            missing.message,
+            format!("no feed found with id={}", i64::MAX)
+        );
+    }
+
+    #[sqlx::test]
+    async fn creating_an_existing_paused_feed_preserves_its_enqueue_error_response(pool: PgPool) {
+        let url = "https://example.com/paused-create.xml";
+        let feed = feed_subscription::upsert_feed_by_url(&pool, url)
+            .await
+            .unwrap();
+        feed_subscription::set_feed_enabled(&pool, feed.id, false)
+            .await
+            .unwrap();
+
+        let error = create_feed(State(pool), Json(NewFeed { url: url.into() }))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            error.message,
+            format!(
+                "Failed to enqueue feed update: feed is paused for feed_id={}",
+                feed.id
+            )
+        );
+    }
 }

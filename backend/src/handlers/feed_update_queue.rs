@@ -13,7 +13,7 @@ use tracing::{instrument, warn};
 use utoipa::ToSchema;
 
 use crate::feed::feed_update_queue::{
-    complete_feed_update, dequeue_due_feeds, fail_feed_update, is_lease_conflict,
+    FeedQueueError, complete_feed_update, dequeue_due_feeds, fail_feed_update,
 };
 
 use super::error::HandlerError;
@@ -144,13 +144,9 @@ pub async fn fail_feed_update_handler(
     Ok(Json(result))
 }
 
-fn map_queue_error(err: anyhow::Error) -> HandlerError {
+fn map_queue_error(err: FeedQueueError) -> HandlerError {
     warn!("failed with error: {err:#}");
-    if is_lease_conflict(&err) {
-        return HandlerError::conflict(err.to_string());
-    }
-
-    HandlerError::from_db(err, "Failed to update feed queue")
+    HandlerError::from_feed_queue(err, "Failed to update feed queue")
 }
 
 #[cfg(test)]
@@ -203,6 +199,17 @@ mod tests {
             .await
             .unwrap()
             .status()
+    }
+
+    #[test]
+    fn storage_errors_with_domain_message_prefixes_remain_server_errors() {
+        for message in [
+            "feed update lease conflict simulated storage failure",
+            "no feed found simulated storage failure",
+        ] {
+            let error = map_queue_error(FeedQueueError::Storage(anyhow::anyhow!(message)));
+            assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+        }
     }
 
     #[sqlx::test]

@@ -135,9 +135,7 @@ mod tests {
                 pool,
                 embedder: Arc::new(NoEmbedder),
                 model: "test-model".to_string(),
-                embeddings: Arc::new(crate::feed::item_embedding::EmbeddingIndex::new(
-                    "test-model",
-                )),
+                embeddings: Arc::new(crate::search::EmbeddingIndex::new("test-model")),
                 min_similarity: 0.3,
                 recency: rss_centr_core::semantic::RecencyBoost::NONE,
             })

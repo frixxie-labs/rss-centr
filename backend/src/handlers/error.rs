@@ -37,6 +37,24 @@ impl HandlerError {
 
         Self::internal(format!("{}: {err}", internal_message.into()))
     }
+
+    pub fn from_feed_queue(
+        error: crate::feed::feed_update_queue::FeedQueueError,
+        internal_message: impl Into<String>,
+    ) -> Self {
+        use crate::feed::feed_update_queue::FeedQueueError;
+
+        match error {
+            FeedQueueError::LeaseConflict { .. } => Self::conflict(error.to_string()),
+            FeedQueueError::FeedNotFound { .. } => Self::not_found(error.to_string()),
+            FeedQueueError::FeedPaused { .. } => {
+                Self::internal(format!("{}: {error}", internal_message.into()))
+            }
+            FeedQueueError::Storage(error) => {
+                Self::internal(format!("{}: {error}", internal_message.into()))
+            }
+        }
+    }
 }
 
 impl fmt::Display for HandlerError {
@@ -46,6 +64,21 @@ impl fmt::Display for HandlerError {
 }
 
 impl Error for HandlerError {}
+
+impl From<crate::search::SearchError> for HandlerError {
+    fn from(error: crate::search::SearchError) -> Self {
+        match error {
+            crate::search::SearchError::Storage(error) => {
+                tracing::warn!("failed with error: {error:#}");
+                Self::from_db(error, "Failed to fetch data from database")
+            }
+            crate::search::SearchError::EmbeddingUnavailable => Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Semantic search is unavailable".to_string(),
+            ),
+        }
+    }
+}
 
 impl From<crate::summary::InputTooLarge> for HandlerError {
     fn from(error: crate::summary::InputTooLarge) -> Self {
@@ -102,6 +135,60 @@ fn is_not_found_error(err: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feed_queue_domain_errors_preserve_http_messages_and_statuses() {
+        use crate::feed::feed_update_queue::FeedQueueError;
+
+        for (error, status, message) in [
+            (
+                FeedQueueError::LeaseConflict { feed_id: 7 },
+                StatusCode::CONFLICT,
+                "feed update lease conflict for feed_id=7",
+            ),
+            (
+                FeedQueueError::FeedNotFound { feed_id: 7 },
+                StatusCode::NOT_FOUND,
+                "no feed found with id=7",
+            ),
+            (
+                FeedQueueError::FeedPaused { feed_id: 7 },
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Queue failed: feed is paused for feed_id=7",
+            ),
+            (
+                FeedQueueError::Storage(anyhow::anyhow!("database unavailable")),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Queue failed: database unavailable",
+            ),
+        ] {
+            let error = HandlerError::from_feed_queue(error, "Queue failed");
+            assert_eq!(error.status, status);
+            assert_eq!(error.message, message);
+        }
+    }
+
+    #[test]
+    fn search_errors_preserve_http_statuses_and_messages() {
+        let unavailable = HandlerError::from(crate::search::SearchError::EmbeddingUnavailable);
+        assert_eq!(unavailable.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(unavailable.message, "Semantic search is unavailable");
+
+        let storage = HandlerError::from(crate::search::SearchError::Storage(anyhow::anyhow!(
+            "storage unavailable"
+        )));
+        assert_eq!(storage.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            storage.message,
+            "Failed to fetch data from database: storage unavailable"
+        );
+
+        let missing = HandlerError::from(crate::search::SearchError::Storage(
+            anyhow::Error::new(sqlx::Error::RowNotFound).context("missing item"),
+        ));
+        assert_eq!(missing.status, StatusCode::NOT_FOUND);
+        assert_eq!(missing.message, "missing item");
+    }
 
     #[test]
     fn oversized_summary_input_preserves_http_error() {

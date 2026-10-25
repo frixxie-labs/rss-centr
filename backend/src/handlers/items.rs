@@ -1,17 +1,10 @@
-use axum::{Json, extract::Path, extract::Query, extract::State, http::StatusCode};
-use rss_centr_core::semantic::{hybrid_rank, item_date};
-use serde::Deserialize;
+use axum::{Json, extract::Path, extract::Query, extract::State};
 use sqlx::PgPool;
 use tracing::{instrument, warn};
-use utoipa::ToSchema;
 
 use crate::feed::feed_item::{FeedItem, FeedItemDetail, FeedItemWithDetail};
-use crate::feed::feed_item::{
-    read_feed_item, read_feed_item_detail, read_feed_items_by_feed,
-    read_latest_feed_items_with_detail,
-};
-use crate::feed::item_embedding::read_feed_items_with_detail_by_ids;
-use crate::search::{SearchCounts, SearchStage, SearchState, SearchTimings};
+use crate::feed::feed_item::{read_feed_item, read_feed_item_detail, read_feed_items_by_feed};
+use crate::search::{LatestItemsQuery, SearchMode, SearchState, search_items};
 
 use super::error::HandlerError;
 
@@ -39,40 +32,6 @@ pub async fn fetch_items_by_feed(
     Ok(Json(items))
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, ToSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum SearchMode {
-    #[default]
-    Keyword,
-    Semantic,
-    Hybrid,
-}
-
-impl SearchMode {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Keyword => "keyword",
-            Self::Semantic => "semantic",
-            Self::Hybrid => "hybrid",
-        }
-    }
-}
-
-/// Default page size for ranked (semantic/hybrid) searches.
-const DEFAULT_SEARCH_LIMIT: usize = 50;
-/// Maximum number of keyword matches considered in a hybrid search.
-const KEYWORD_CANDIDATES: usize = 500;
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct LatestItemsQuery {
-    pub limit: Option<u32>,
-    pub offset: Option<u32>,
-    pub feed_id: Option<i64>,
-    pub q: Option<String>,
-    #[serde(default)]
-    pub mode: SearchMode,
-}
-
 #[utoipa::path(
     get,
     path = "/api/items/latest",
@@ -96,121 +55,9 @@ pub async fn fetch_latest_items(
     State(state): State<SearchState>,
     Query(query): Query<LatestItemsQuery>,
 ) -> Result<Json<Vec<FeedItemWithDetail>>, HandlerError> {
-    let search_query = query.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
-    let db_error = |e: anyhow::Error| {
-        warn!("failed with error: {e:#}");
-        HandlerError::from_db(e, "Failed to fetch data from database")
-    };
-
-    let (Some(search_query), SearchMode::Semantic | SearchMode::Hybrid) =
-        (search_query, query.mode)
-    else {
-        let items = read_latest_feed_items_with_detail(
-            &state.pool,
-            query.limit.map(i64::from),
-            query.feed_id,
-            search_query,
-            query.offset.map(i64::from),
-        )
-        .await
-        .map_err(db_error)?;
-        return Ok(Json(items));
-    };
-
-    // Ranking is not incremental, so rank everything up to the end of the page and skip the rest.
-    let offset = query.offset.unwrap_or(0) as usize;
-    let limit = query.limit.map_or(DEFAULT_SEARCH_LIMIT, |l| l as usize) + offset;
-    let mut timings = SearchTimings::new(query.mode.name());
-    let mut counts = SearchCounts::default();
-    let query_vector = match timings
-        .time(SearchStage::Embed, state.embedder.embed_query(search_query))
-        .await
-    {
-        Ok(vector) => Some(vector),
-        Err(e) => {
-            warn!("failed to embed search query: {e:#}");
-            None
-        }
-    };
-    if query.mode == SearchMode::Semantic && query_vector.is_none() {
-        return Err(HandlerError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Semantic search is unavailable".to_string(),
-        ));
-    }
-
-    let keyword_items = if query.mode == SearchMode::Hybrid {
-        timings
-            .time(
-                SearchStage::Keyword,
-                read_latest_feed_items_with_detail(
-                    &state.pool,
-                    Some(KEYWORD_CANDIDATES.max(limit) as i64),
-                    query.feed_id,
-                    Some(search_query),
-                    None,
-                ),
-            )
-            .await
-            .map_err(db_error)?
-    } else {
-        Vec::new()
-    };
-    let keyword_ids: Vec<i64> = keyword_items.iter().map(|item| item.id).collect();
-    counts.keyword_matches = keyword_ids.len();
-
-    let now = chrono::Utc::now();
-    let ids = match query_vector {
-        Some(vector) => {
-            let index = &state.embeddings;
-            timings
-                .time(SearchStage::Refresh, index.refresh(&state.pool))
-                .await
-                .map_err(db_error)?;
-            let similarities = timings
-                .time(
-                    SearchStage::Scan,
-                    index.similarities(&vector, query.feed_id),
-                )
-                .await;
-            counts.indexed = index.item_count().await;
-            counts.scored = similarities.len();
-            timings
-                .time(SearchStage::Rank, async {
-                    let mut dates = index.dates(similarities.iter().map(|(id, _)| *id)).await;
-                    dates.extend(
-                        keyword_items
-                            .iter()
-                            .map(|item| (item.id, item_date(item.published_at, item.inserted_at))),
-                    );
-                    hybrid_rank(
-                        &similarities,
-                        &keyword_ids,
-                        state.min_similarity,
-                        limit,
-                        |id| {
-                            dates
-                                .get(&id)
-                                .map_or(1.0, |d| state.recency.factor(*d, now))
-                        },
-                    )
-                })
-                .await
-        }
-        None => keyword_ids.into_iter().take(limit).collect(),
-    };
-
-    let ids: Vec<i64> = ids.into_iter().skip(offset).collect();
-    let items = timings
-        .time(
-            SearchStage::Load,
-            read_feed_items_with_detail_by_ids(&state.pool, &ids),
-        )
-        .await
-        .map_err(db_error)?;
-    counts.results = items.len();
-    timings.finish(counts);
-    Ok(Json(items))
+    Ok(Json(
+        search_items(&state, &query, chrono::Utc::now()).await?,
+    ))
 }
 
 #[utoipa::path(
@@ -274,6 +121,7 @@ mod tests {
     use axum::Router;
     use axum::body::Body;
     use axum::http::Request;
+    use axum::http::StatusCode;
     use axum::routing::get;
     use chrono::{Duration, Utc};
     use http_body_util::BodyExt;
@@ -306,7 +154,7 @@ mod tests {
             pool,
             embedder: Arc::new(embedder),
             model: MODEL.to_string(),
-            embeddings: Arc::new(crate::feed::item_embedding::EmbeddingIndex::new(MODEL)),
+            embeddings: Arc::new(crate::search::EmbeddingIndex::new(MODEL)),
             min_similarity: 0.3,
             recency: rss_centr_core::semantic::RecencyBoost::NONE,
         };
@@ -466,6 +314,80 @@ mod tests {
         fixture(&pool).await;
         let (status, _) = get_items(&pool, "/items/latest?q=repair&mode=semantic").await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[sqlx::test]
+    async fn ranked_search_pages_match_slices_of_the_full_ranking(pool: PgPool) {
+        fixture(&pool).await;
+        for (query, mode) in [("automobile", "semantic"), ("car", "hybrid")] {
+            let base = format!("/items/latest?q={query}&mode={mode}");
+            let (status, all) = get_items(&pool, &base).await;
+            assert_eq!(status, StatusCode::OK);
+            for offset in 0..=all.len() + 1 {
+                let (status, page) =
+                    get_items(&pool, &format!("{base}&limit=1&offset={offset}")).await;
+                assert_eq!(status, StatusCode::OK);
+                assert_eq!(
+                    page,
+                    all.iter().copied().skip(offset).take(1).collect::<Vec<_>>()
+                );
+            }
+            let (status, page) = get_items(&pool, &format!("{base}&limit=0&offset=1")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(page.is_empty());
+        }
+    }
+
+    #[sqlx::test]
+    async fn hybrid_fallback_preserves_keyword_order_and_pagination(pool: PgPool) {
+        let f = fixture(&pool).await;
+        let mut older = Vec::new();
+        for age in [2, 3] {
+            let key = format!("repair-{age}");
+            let item = insert_feed_item(
+                &pool,
+                f.feed_a,
+                &key,
+                "Repair advice",
+                &format!("https://a.example.com/{key}"),
+            )
+            .await
+            .unwrap();
+            insert_feed_item_detail(
+                &pool,
+                item.id,
+                "",
+                "",
+                "",
+                Utc::now() - Duration::hours(age),
+            )
+            .await
+            .unwrap();
+            older.push(item.id);
+        }
+        let (status, all) = get_items(&pool, "/items/latest?q=repair&mode=hybrid").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(all, vec![f.repair, older[0], older[1]]);
+
+        let (status, page) =
+            get_items(&pool, "/items/latest?q=repair&mode=hybrid&limit=1&offset=1").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page, vec![older[0]]);
+    }
+
+    #[sqlx::test]
+    async fn query_whitespace_is_trimmed_before_keyword_search_and_embedding(pool: PgPool) {
+        let f = fixture(&pool).await;
+        for (query, mode, expected) in [
+            ("car", "keyword", vec![f.repair]),
+            ("automobile", "semantic", vec![f.ev, f.other_feed_ev]),
+            ("car", "hybrid", vec![f.ev, f.other_feed_ev, f.repair]),
+        ] {
+            let (status, ids) =
+                get_items(&pool, &format!("/items/latest?q=++{query}++&mode={mode}")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(ids, expected);
+        }
     }
 
     #[sqlx::test]

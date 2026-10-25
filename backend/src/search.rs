@@ -1,3 +1,12 @@
+mod embedding_index;
+mod items;
+
+pub use embedding_index::EmbeddingIndex;
+#[cfg(test)]
+pub(crate) use embedding_index::ReconcileStats;
+pub(crate) use embedding_index::{EmbeddingSource, EmbeddingVersion, StoredEmbedding};
+pub(crate) use items::{LatestItemsQuery, SearchError, SearchMode, search_items};
+
 use std::{
     collections::HashMap,
     future::Future,
@@ -16,8 +25,6 @@ use rss_centr_core::{
 use sqlx::PgPool;
 use tokio::time::Instant;
 use tracing::info;
-
-use crate::feed::item_embedding::EmbeddingIndex;
 
 pub const DEFAULT_EMBED_MODEL: &str = "embeddinggemma-2";
 pub const DEFAULT_MIN_SIMILARITY: f32 = 0.2;

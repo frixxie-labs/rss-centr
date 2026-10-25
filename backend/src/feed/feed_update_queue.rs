@@ -1,3 +1,7 @@
+mod domain;
+
+pub use domain::FeedQueueError;
+
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
@@ -16,24 +20,13 @@ use super::poll_interval::{
     backoff_poll_interval_seconds, failure_poll_interval_seconds, resolved_poll_interval_seconds,
 };
 
-const LEASE_CONFLICT_MESSAGE: &str = "feed update lease conflict";
-const FEED_PAUSED_MESSAGE: &str = "feed is paused";
+use domain::FeedUpdateCompletion;
 
 struct FeedPollInterval {
     poll_interval_seconds: i64,
 }
 
-pub fn is_lease_conflict(err: &anyhow::Error) -> bool {
-    err.chain()
-        .any(|cause| cause.to_string().starts_with(LEASE_CONFLICT_MESSAGE))
-}
-
-pub fn is_feed_paused(err: &anyhow::Error) -> bool {
-    err.chain()
-        .any(|cause| cause.to_string().starts_with(FEED_PAUSED_MESSAGE))
-}
-
-pub async fn enqueue_feed_now(pool: &PgPool, feed_id: i64) -> Result<()> {
+pub async fn enqueue_feed_now(pool: &PgPool, feed_id: i64) -> Result<(), FeedQueueError> {
     let feed = sqlx::query!(
         r#"
         SELECT is_enabled as "is_enabled!: bool"
@@ -47,11 +40,11 @@ pub async fn enqueue_feed_now(pool: &PgPool, feed_id: i64) -> Result<()> {
     .with_context(|| format!("failed to check feed status for feed_id={feed_id}"))?;
 
     let Some(feed) = feed else {
-        anyhow::bail!("no feed found with id={feed_id}");
+        return Err(FeedQueueError::FeedNotFound { feed_id });
     };
 
     if !feed.is_enabled {
-        anyhow::bail!("{FEED_PAUSED_MESSAGE} for feed_id={feed_id}");
+        return Err(FeedQueueError::FeedPaused { feed_id });
     }
 
     let result = sqlx::query!(
@@ -69,7 +62,7 @@ pub async fn enqueue_feed_now(pool: &PgPool, feed_id: i64) -> Result<()> {
     .with_context(|| format!("failed to enqueue feed update for feed_id={feed_id}"))?;
 
     if result.rows_affected() == 0 {
-        anyhow::bail!("no feed found with id={feed_id}");
+        return Err(FeedQueueError::FeedNotFound { feed_id });
     }
 
     Ok(())
@@ -144,21 +137,26 @@ pub async fn complete_feed_update(
     pool: &PgPool,
     feed_id: i64,
     request: CompleteFeedUpdateRequest,
-) -> Result<CompleteFeedUpdateResult> {
+) -> Result<CompleteFeedUpdateResult, FeedQueueError> {
+    let completion = FeedUpdateCompletion::from(request);
+    let data = completion.data();
     let completed_at = Utc::now();
     let mut tx = pool
         .begin()
         .await
         .with_context(|| format!("failed to begin feed update completion for feed_id={feed_id}"))?;
 
-    ensure_current_lease(&mut tx, feed_id, &request.lease_token).await?;
+    ensure_current_lease(&mut tx, feed_id, &data.lease_token).await?;
 
-    let inserted_items = insert_items(&mut tx, feed_id, &request.items, completed_at).await?;
-    let poll_interval_seconds = if request.fetched {
-        resolved_poll_interval_seconds(read_feed_cadence_seconds(&mut *tx, feed_id).await?)
-    } else {
-        let current = read_feed_poll_interval(&mut tx, feed_id).await?;
-        backoff_poll_interval_seconds(current.poll_interval_seconds)
+    let inserted_items = insert_items(&mut tx, feed_id, &data.items, completed_at).await?;
+    let poll_interval_seconds = match &completion {
+        FeedUpdateCompletion::Fetched(_) => {
+            resolved_poll_interval_seconds(read_feed_cadence_seconds(&mut *tx, feed_id).await?)
+        }
+        FeedUpdateCompletion::NotModified(_) => {
+            let current = read_feed_poll_interval(&mut tx, feed_id).await?;
+            backoff_poll_interval_seconds(current.poll_interval_seconds)
+        }
     };
     let last_inserted_at = (inserted_items > 0).then_some(completed_at);
     touch_feed_success_in_tx(
@@ -166,10 +164,10 @@ pub async fn complete_feed_update(
         feed_id,
         FeedSuccessUpdate {
             checked_at: completed_at,
-            title: request.title.as_deref(),
-            site_url: request.site_url.as_deref(),
-            etag: request.etag.as_deref(),
-            last_modified: request.last_modified.as_deref(),
+            title: data.title.as_deref(),
+            site_url: data.site_url.as_deref(),
+            etag: data.etag.as_deref(),
+            last_modified: data.last_modified.as_deref(),
             poll_interval_seconds: Some(poll_interval_seconds),
             last_inserted_at,
         },
@@ -191,14 +189,14 @@ pub async fn complete_feed_update(
         "#,
         next_due_at,
         feed_id,
-        request.lease_token,
+        data.lease_token.as_str(),
     )
     .execute(&mut *tx)
     .await
     .with_context(|| format!("failed to reschedule completed feed update for feed_id={feed_id}"))?;
 
     if result.rows_affected() == 0 {
-        anyhow::bail!("{LEASE_CONFLICT_MESSAGE} for feed_id={feed_id}");
+        return Err(FeedQueueError::LeaseConflict { feed_id });
     }
 
     tx.commit().await.with_context(|| {
@@ -215,7 +213,7 @@ pub async fn fail_feed_update(
     pool: &PgPool,
     feed_id: i64,
     request: FailedFeedUpdateRequest,
-) -> Result<FailedFeedUpdateResult> {
+) -> Result<FailedFeedUpdateResult, FeedQueueError> {
     let checked_at = Utc::now();
     let mut tx = pool
         .begin()
@@ -249,7 +247,7 @@ pub async fn fail_feed_update(
     .with_context(|| format!("failed to reschedule failed feed update for feed_id={feed_id}"))?;
 
     if result.rows_affected() == 0 {
-        anyhow::bail!("{LEASE_CONFLICT_MESSAGE} for feed_id={feed_id}");
+        return Err(FeedQueueError::LeaseConflict { feed_id });
     }
 
     tx.commit()
@@ -274,7 +272,7 @@ async fn ensure_current_lease(
     tx: &mut Transaction<'_, Postgres>,
     feed_id: i64,
     lease_token: &str,
-) -> Result<()> {
+) -> Result<(), FeedQueueError> {
     let row = sqlx::query!(
         r#"
         SELECT feed_id
@@ -292,7 +290,7 @@ async fn ensure_current_lease(
     .with_context(|| format!("failed to verify feed update lease for feed_id={feed_id}"))?;
 
     if row.is_none() {
-        anyhow::bail!("{LEASE_CONFLICT_MESSAGE} for feed_id={feed_id}");
+        return Err(FeedQueueError::LeaseConflict { feed_id });
     }
 
     Ok(())
@@ -302,7 +300,7 @@ async fn touch_feed_success_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     feed_id: i64,
     update: FeedSuccessUpdate<'_>,
-) -> Result<()> {
+) -> Result<(), FeedQueueError> {
     let FeedSuccessUpdate {
         checked_at,
         title,
@@ -341,7 +339,7 @@ async fn touch_feed_success_in_tx(
     .with_context(|| format!("failed to update feed success for feed_id={feed_id}"))?;
 
     if result.rows_affected() == 0 {
-        anyhow::bail!("no feed found with id={feed_id}");
+        return Err(FeedQueueError::FeedNotFound { feed_id });
     }
 
     Ok(())
@@ -352,7 +350,7 @@ async fn touch_feed_failure_in_tx(
     feed_id: i64,
     checked_at: DateTime<Utc>,
     poll_interval_seconds: i64,
-) -> Result<()> {
+) -> Result<(), FeedQueueError> {
     let result = sqlx::query!(
         r#"
         UPDATE feeds
@@ -370,7 +368,7 @@ async fn touch_feed_failure_in_tx(
     .with_context(|| format!("failed to update feed failure for feed_id={feed_id}"))?;
 
     if result.rows_affected() == 0 {
-        anyhow::bail!("no feed found with id={feed_id}");
+        return Err(FeedQueueError::FeedNotFound { feed_id });
     }
 
     Ok(())
@@ -379,7 +377,7 @@ async fn touch_feed_failure_in_tx(
 async fn read_feed_poll_interval(
     tx: &mut Transaction<'_, Postgres>,
     feed_id: i64,
-) -> Result<FeedPollInterval> {
+) -> Result<FeedPollInterval, FeedQueueError> {
     let row = sqlx::query_as!(
         FeedPollInterval,
         r#"
@@ -394,7 +392,7 @@ async fn read_feed_poll_interval(
     .with_context(|| format!("failed to read feed poll interval for feed_id={feed_id}"))?;
 
     let Some(row) = row else {
-        anyhow::bail!("no feed found with id={feed_id}");
+        return Err(FeedQueueError::FeedNotFound { feed_id });
     };
 
     Ok(row)
@@ -671,6 +669,191 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn not_modified_completions_preserve_legacy_items_metadata_and_backoff(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/queue-legacy.xml")
+            .await
+            .unwrap();
+        enqueue_feed_now(&pool, feed.id).await.unwrap();
+        let leased = dequeue_due_feeds(&pool, 100, 300)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.feed_id == feed.id)
+            .unwrap();
+
+        let result = complete_feed_update(
+            &pool,
+            feed.id,
+            CompleteFeedUpdateRequest {
+                lease_token: leased.lease_token,
+                fetched: false,
+                title: Some("Legacy title".into()),
+                site_url: Some("https://example.com".into()),
+                etag: Some("new-etag".into()),
+                last_modified: Some("new-last-modified".into()),
+                items: vec![item_input("legacy-item", Some("Legacy summary"))],
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.inserted_items, 1);
+        let updated = read_feed(&pool, feed.id).await.unwrap();
+        assert_eq!(updated.title.as_deref(), Some("Legacy title"));
+        assert_eq!(updated.site_url.as_deref(), Some("https://example.com"));
+        assert_eq!(updated.etag.as_deref(), Some("new-etag"));
+        assert_eq!(updated.last_modified.as_deref(), Some("new-last-modified"));
+        assert_eq!(
+            updated.poll_interval_seconds,
+            backoff_poll_interval_seconds(feed.poll_interval_seconds)
+        );
+        assert!(updated.last_inserted_at.is_some());
+        let expected_due =
+            updated.last_checked_at.unwrap() + Duration::seconds(updated.poll_interval_seconds);
+        assert_eq!(
+            result.next_due_at.timestamp_micros(),
+            expected_due.timestamp_micros()
+        );
+        let items = read_feed_items_by_feed(&pool, feed.id).await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].external_id, "legacy-item");
+    }
+
+    #[sqlx::test]
+    async fn expired_completion_and_failure_leave_feed_items_and_schedule_unchanged(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/queue-expired-completion.xml")
+            .await
+            .unwrap();
+        enqueue_feed_now(&pool, feed.id).await.unwrap();
+        let leased = dequeue_due_feeds(&pool, 100, 300)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.feed_id == feed.id)
+            .unwrap();
+        sqlx::query("UPDATE feed_update_queue SET lease_expires_at = NOW() - INTERVAL '1 second' WHERE feed_id = $1")
+            .bind(feed.id).execute(&pool).await.unwrap();
+        let before: (DateTime<Utc>, Option<String>, Option<DateTime<Utc>>) = sqlx::query_as(
+            "SELECT due_at, lease_token, lease_expires_at FROM feed_update_queue WHERE feed_id = $1",
+        ).bind(feed.id).fetch_one(&pool).await.unwrap();
+
+        let completion = complete_feed_update(
+            &pool,
+            feed.id,
+            CompleteFeedUpdateRequest {
+                lease_token: leased.lease_token.clone(),
+                fetched: true,
+                title: Some("Must not be saved".into()),
+                site_url: None,
+                etag: None,
+                last_modified: None,
+                items: vec![item_input("must-not-exist", Some("Summary"))],
+            },
+        )
+        .await
+        .unwrap_err();
+        let failure = fail_feed_update(
+            &pool,
+            feed.id,
+            FailedFeedUpdateRequest {
+                lease_token: leased.lease_token,
+                retry_after: Some(Utc::now() + Duration::days(1)),
+                http_status: Some(410),
+                error: Some("gone".into()),
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(completion, FeedQueueError::LeaseConflict { .. }));
+        assert!(matches!(failure, FeedQueueError::LeaseConflict { .. }));
+        assert_eq!(
+            serde_json::to_value(read_feed(&pool, feed.id).await.unwrap()).unwrap(),
+            serde_json::to_value(feed).unwrap()
+        );
+        assert!(
+            read_feed_items_by_feed(&pool, leased.feed_id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let after: (DateTime<Utc>, Option<String>, Option<DateTime<Utc>>) = sqlx::query_as(
+            "SELECT due_at, lease_token, lease_expires_at FROM feed_update_queue WHERE feed_id = $1",
+        ).bind(leased.feed_id).fetch_one(&pool).await.unwrap();
+        assert_eq!(after, before);
+    }
+
+    #[sqlx::test]
+    async fn failed_completion_rolls_back_inserted_items_and_keeps_the_current_lease(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/queue-rollback.xml")
+            .await
+            .unwrap();
+        enqueue_feed_now(&pool, feed.id).await.unwrap();
+        let leased = dequeue_due_feeds(&pool, 100, 300)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.feed_id == feed.id)
+            .unwrap();
+        let before: (DateTime<Utc>, Option<String>, Option<DateTime<Utc>>) = sqlx::query_as(
+            "SELECT due_at, lease_token, lease_expires_at FROM feed_update_queue WHERE feed_id = $1",
+        ).bind(feed.id).fetch_one(&pool).await.unwrap();
+        // The feed update fails after items and details have been inserted in the transaction.
+        sqlx::query("ALTER TABLE feeds ADD CONSTRAINT reject_completion_title CHECK (title IS DISTINCT FROM 'reject')")
+            .execute(&pool).await.unwrap();
+
+        let error = complete_feed_update(
+            &pool,
+            feed.id,
+            CompleteFeedUpdateRequest {
+                lease_token: leased.lease_token.clone(),
+                fetched: true,
+                title: Some("reject".into()),
+                site_url: None,
+                etag: None,
+                last_modified: None,
+                items: vec![item_input("rolled-back", Some("Summary"))],
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(error, FeedQueueError::Storage(_)));
+        assert!(
+            read_feed_items_by_feed(&pool, feed.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            serde_json::to_value(read_feed(&pool, feed.id).await.unwrap()).unwrap(),
+            serde_json::to_value(&feed).unwrap()
+        );
+        let after: (DateTime<Utc>, Option<String>, Option<DateTime<Utc>>) = sqlx::query_as(
+            "SELECT due_at, lease_token, lease_expires_at FROM feed_update_queue WHERE feed_id = $1",
+        ).bind(feed.id).fetch_one(&pool).await.unwrap();
+        assert_eq!(after, before);
+
+        // A corrected retry can still complete using the same lease.
+        let result = complete_feed_update(
+            &pool,
+            feed.id,
+            CompleteFeedUpdateRequest {
+                lease_token: leased.lease_token,
+                fetched: true,
+                title: Some("accepted".into()),
+                site_url: None,
+                etag: None,
+                last_modified: None,
+                items: vec![item_input("rolled-back", Some("Summary"))],
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.inserted_items, 1);
+    }
+
+    #[sqlx::test]
     async fn test_complete_feed_update_without_items(pool: PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/queue-empty.xml")
             .await
@@ -759,7 +942,7 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(is_lease_conflict(&err));
+        assert!(matches!(err, FeedQueueError::LeaseConflict { feed_id } if feed_id == feed.id));
     }
 
     #[sqlx::test]
@@ -853,7 +1036,7 @@ mod tests {
         set_feed_enabled(&pool, feed.id, false).await.unwrap();
 
         let err = enqueue_feed_now(&pool, feed.id).await.unwrap_err();
-        assert!(is_feed_paused(&err));
+        assert!(matches!(err, FeedQueueError::FeedPaused { feed_id } if feed_id == feed.id));
 
         let due = dequeue_due_feeds(&pool, 100, 300).await.unwrap();
         assert!(due.iter().all(|row| row.feed_id != feed.id));

@@ -211,7 +211,7 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
             crate::feed::feed_title_index::FeedTitleIndexEntry,
             crate::feed::feed_title_index::FeedTitleIndexItem,
             daily_summary::DailySummary,
-            items::SearchMode,
+            crate::search::SearchMode,
             rss_centr_core::semantic::ClaimEmbeddingsResponse,
             rss_centr_core::semantic::EmbeddingJob,
             rss_centr_core::semantic::StoreEmbeddingsRequest,
