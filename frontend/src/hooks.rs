@@ -5,7 +5,9 @@ pub fn use_clock(initial: i64) -> Signal<i64> {
     let now = RwSignal::new(initial);
     #[cfg(target_arch = "wasm32")]
     if let Ok(handle) = set_interval_with_handle(
-        move || now.set(chrono::Utc::now().timestamp_millis()),
+        move || {
+            now.try_set(chrono::Utc::now().timestamp_millis());
+        },
         std::time::Duration::from_secs(60),
     ) {
         on_cleanup(move || handle.clear());

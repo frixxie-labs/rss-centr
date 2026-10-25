@@ -7,11 +7,10 @@ use tracing::{Instrument, error, info};
 use super::{
     ARTICLES_PER_BATCH, BATCH_OUTPUT_TOKENS, DailySummary, FINAL_OUTPUT_TOKENS, GeneratedSummary,
     OllamaSummaryGenerator, PostgresSummaryRepository, SummaryError, SummaryGenerator,
-    SummaryRepository, SummaryStoreError, SummaryUsage, budgeted_prompts, build_batch_prompt,
-    build_final_prompt, build_merge_prompt,
+    SummaryModels, SummaryRepository, SummaryStoreError, SummaryUsage, budgeted_prompts,
+    build_batch_prompt, build_final_prompt, build_merge_prompt,
 };
 
-const DEFAULT_MODEL: &str = "gemma4:e4b";
 // Bound the whole job below its lease, including all sequential Ollama calls.
 // A day's articles require multiple sequential calls. The 12B model can take
 // over two minutes per batch; a 14-minute job deadline cannot cover them all.
@@ -27,50 +26,17 @@ pub(crate) struct SummaryState<R = PostgresSummaryRepository, G = OllamaSummaryG
     models: SummaryModels,
 }
 
-#[derive(Clone)]
-struct SummaryModels {
-    batch: String,
-    final_summary: String,
-}
-
-impl SummaryModels {
-    fn from_overrides(
-        legacy: Option<String>,
-        batch: Option<String>,
-        final_summary: Option<String>,
+impl SummaryState {
+    pub(crate) fn new(
+        pool: PgPool,
+        http: reqwest::Client,
+        ollama_url: String,
+        models: SummaryModels,
     ) -> Self {
         Self {
-            batch: batch
-                .or_else(|| legacy.clone())
-                .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
-            final_summary: final_summary
-                .or(legacy)
-                .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
-        }
-    }
-
-    fn label(&self) -> String {
-        if self.batch == self.final_summary {
-            self.final_summary.clone()
-        } else {
-            format!("{} → {}", self.batch, self.final_summary)
-        }
-    }
-}
-
-impl SummaryState {
-    pub fn new(pool: PgPool) -> Self {
-        Self {
             repository: PostgresSummaryRepository::new(pool),
-            generator: OllamaSummaryGenerator::new(
-                reqwest::Client::new(),
-                std::env::var("OLLAMA_URL").unwrap_or_else(|_| "http://desktop:11434".to_string()),
-            ),
-            models: SummaryModels::from_overrides(
-                std::env::var("OLLAMA_MODEL").ok(),
-                std::env::var("OLLAMA_BATCH_MODEL").ok(),
-                std::env::var("OLLAMA_FINAL_MODEL").ok(),
-            ),
+            generator: OllamaSummaryGenerator::new(http, ollama_url),
+            models,
         }
     }
 }
@@ -262,39 +228,70 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn model_selection_defaults_to_gemma_for_both_stages_and_preserves_overrides() {
-        for (legacy, batch, final_summary, expected_batch, expected_final) in [
-            (None, None, None, "gemma4:e4b", "gemma4:e4b"),
-            (Some("single"), None, None, "single", "single"),
-            (None, Some("fast"), None, "fast", "gemma4:e4b"),
-            (None, None, Some("quality"), "gemma4:e4b", "quality"),
-            (Some("single"), Some("fast"), None, "fast", "single"),
-            (Some("single"), None, Some("quality"), "single", "quality"),
-            (
-                Some("single"),
-                Some("fast"),
-                Some("quality"),
-                "fast",
-                "quality",
-            ),
-        ] {
-            let models = SummaryModels::from_overrides(
-                legacy.map(str::to_string),
-                batch.map(str::to_string),
-                final_summary.map(str::to_string),
-            );
-            assert_eq!(models.batch, expected_batch);
-            assert_eq!(models.final_summary, expected_final);
-            assert_eq!(
-                models.label(),
-                if expected_batch == expected_final {
-                    expected_final.to_string()
-                } else {
-                    format!("{expected_batch} → {expected_final}")
-                }
-            );
-        }
+    fn summary_state(pool: PgPool) -> SummaryState {
+        SummaryState::new(
+            pool,
+            reqwest::Client::new(),
+            "http://127.0.0.1:1".into(),
+            SummaryModels::default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn state_uses_the_injected_client_endpoint_and_summary_models() {
+        let app = axum::Router::new()
+            .route("/configured/api/show", axum::routing::post(|headers: axum::http::HeaderMap, Json(request): Json<serde_json::Value>| async move {
+                assert_eq!(headers["x-configured-client"], "summary");
+                assert_eq!(request["model"], "configured-batch");
+                Json(serde_json::json!({"model_info": {"test.context_length": SUMMARY_CONTEXT_TOKENS}}))
+            }))
+            .route("/configured/api/generate", axum::routing::post(|headers: axum::http::HeaderMap, Json(request): Json<serde_json::Value>| async move {
+                assert_eq!(headers["x-configured-client"], "summary");
+                assert_eq!(request["model"], "configured-final");
+                Json(serde_json::json!({"response": "Configured overview", "prompt_eval_count": 100, "eval_count": 20, "done_reason": "stop"}))
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-configured-client", "summary".parse().unwrap());
+        let http = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()
+            .unwrap();
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://postgres:postgres@localhost/rss_centr")
+            .unwrap();
+
+        let state = SummaryState::new(
+            pool,
+            http,
+            format!("http://{address}/configured/"),
+            SummaryModels {
+                batch: "configured-batch".into(),
+                final_summary: "configured-final".into(),
+            },
+        );
+
+        assert_eq!(state.models.label(), "configured-batch → configured-final");
+        let budget = state
+            .generator
+            .context_budget(&state.models.batch)
+            .await
+            .unwrap();
+        let summary = state
+            .generator
+            .generate(
+                &state.models.final_summary,
+                budget,
+                "News".into(),
+                FINAL_OUTPUT_TOKENS,
+                &mut SummaryUsage::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(summary, "Configured overview");
+        server.abort();
     }
 
     #[test]
@@ -360,9 +357,12 @@ mod tests {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://postgres:postgres@localhost/rss_centr")
             .unwrap();
-        let mut state = SummaryState::new(pool);
-        state.generator =
-            OllamaSummaryGenerator::new(reqwest::Client::new(), format!("http://{address}"));
+        let state = SummaryState::new(
+            pool,
+            reqwest::Client::new(),
+            format!("http://{address}"),
+            SummaryModels::default(),
+        );
         (state, server)
     }
 
@@ -721,7 +721,7 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        let mut state = SummaryState::new(pool.clone());
+        let mut state = summary_state(pool.clone());
         let expected_ids: Vec<i64> = sqlx::query_scalar(
             "SELECT id FROM feed_items WHERE feed_id = $1 ORDER BY inserted_at DESC, id DESC",
         )
@@ -740,7 +740,7 @@ mod tests {
             .connect_with((*pool.connect_options()).clone())
             .await
             .unwrap();
-        let mut other_state = SummaryState::new(other_pool.clone());
+        let mut other_state = summary_state(other_pool.clone());
         other_state.generator = state.generator.clone();
         other_state.models = state.models.clone();
         for instance in [state.clone(), other_state.clone()] {
@@ -759,7 +759,7 @@ mod tests {
         // A staggered worker must not generate again immediately after completion.
         let _ = refresh_daily_summary(State(other_state)).await.unwrap();
         assert!(repository.claim_refresh(false).await.unwrap().is_none());
-        let stored = fetch_daily_summary(State(SummaryState::new(pool.clone())))
+        let stored = fetch_daily_summary(State(summary_state(pool.clone())))
             .await
             .unwrap()
             .0;
@@ -854,7 +854,7 @@ mod tests {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
             let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-            let mut state = SummaryState::new(pool.clone());
+            let mut state = summary_state(pool.clone());
             state.generator =
                 OllamaSummaryGenerator::new(reqwest::Client::new(), format!("http://{address}"));
             state.models = SummaryModels {
@@ -894,7 +894,7 @@ mod tests {
 
     #[sqlx::test]
     async fn failed_background_refresh_releases_lease_and_backs_off(pool: PgPool) {
-        let state = SummaryState::new(pool.clone());
+        let state = summary_state(pool.clone());
         let repository = PostgresSummaryRepository::new(pool.clone());
         for _ in 0..2 {
             assert_eq!(
@@ -943,7 +943,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        let (status, Json(body)) = refresh_daily_summary(State(SummaryState::new(pool)))
+        let (status, Json(body)) = refresh_daily_summary(State(summary_state(pool)))
             .await
             .unwrap();
         assert_eq!(status, StatusCode::ACCEPTED);
@@ -962,7 +962,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        let (_, Json(body)) = refresh_daily_summary(State(SummaryState::new(pool)))
+        let (_, Json(body)) = refresh_daily_summary(State(summary_state(pool)))
             .await
             .unwrap();
         assert_eq!(body.next_due_at, lease_expires_at);
@@ -983,7 +983,7 @@ mod tests {
     #[sqlx::test]
     async fn get_reads_latest_persisted_summary_and_handles_empty_database(pool: PgPool) {
         let repository = PostgresSummaryRepository::new(pool.clone());
-        let state = SummaryState::new(pool.clone());
+        let state = summary_state(pool.clone());
         let Err(error) = fetch_daily_summary(State(state)).await else {
             panic!("expected missing summary");
         };
@@ -1019,7 +1019,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let result = fetch_daily_summary(State(SummaryState::new(pool.clone())))
+        let result = fetch_daily_summary(State(summary_state(pool.clone())))
             .await
             .unwrap()
             .0;

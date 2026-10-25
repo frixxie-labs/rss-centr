@@ -1,10 +1,14 @@
+mod timeline;
+
+pub use timeline::{ReceiveOutcome, ReplayOutcome, TimelineState, resume_cursor};
+
 use std::collections::BTreeMap;
 
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use url::form_urlencoded;
 
-use crate::models::{Feed, FeedItem, ReplayDone};
+use crate::models::{Feed, FeedItem};
 
 pub const PAGE_SIZE: usize = 50;
 pub const CURSOR_KEY: &str = "rss:last-event-id";
@@ -191,66 +195,6 @@ pub fn feed_names(feeds: &[Feed]) -> FeedNames {
 
 pub fn feed_name(names: &FeedNames, id: i64) -> String {
     names.get(&id).cloned().unwrap_or_default()
-}
-
-pub fn resume_cursor(items: &[FeedItem], stored: Option<String>) -> Option<String> {
-    items
-        .iter()
-        .map(|i| i.id)
-        .max()
-        .map(|id| id.to_string())
-        .or(stored)
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct TimelineState {
-    pub items: Vec<FeedItem>,
-    pub replaying: bool,
-    pub limited: bool,
-    pub cursor: Option<String>,
-    buffer: Vec<FeedItem>,
-    replay_cursor: Option<String>,
-}
-
-impl TimelineState {
-    pub fn new(items: Vec<FeedItem>) -> Self {
-        let mut state = Self {
-            items: vec![],
-            replaying: true,
-            limited: false,
-            cursor: None,
-            buffer: vec![],
-            replay_cursor: None,
-        };
-        merge_items(&mut state.items, items);
-        state
-    }
-
-    /// Returns whether the visible items changed; replayed items are buffered until the replay ends.
-    pub fn receive(&mut self, item: FeedItem, event_id: String) -> bool {
-        if self.replaying {
-            self.buffer.push(item);
-            self.replay_cursor = Some(event_id);
-            false
-        } else {
-            merge_items(&mut self.items, [item]);
-            self.cursor = Some(event_id);
-            true
-        }
-    }
-
-    pub fn finish_replay(&mut self, marker: ReplayDone) -> bool {
-        let had_items = !self.buffer.is_empty() || marker.replayed > 0;
-        merge_items(&mut self.items, self.buffer.drain(..));
-        self.replaying = false;
-        self.limited = marker.limited;
-        self.cursor = marker
-            .last_event_id
-            .map(|id| id.to_string())
-            .or(self.replay_cursor.take())
-            .or(self.cursor.take());
-        had_items
-    }
 }
 
 pub fn compact_text(value: &str) -> String {
@@ -445,51 +389,6 @@ mod tests {
         assert_eq!(NewsFilters::parse(url.trim_start_matches("/news")), filters);
         let hybrid = NewsFilters::parse("q=rust");
         assert_eq!(hybrid.page_url(), "/news?q=rust");
-    }
-
-    #[test]
-    fn replay_batches_deduplicate_and_replace_details() {
-        let mut state = TimelineState::new((1..=501).map(item).collect());
-        assert_eq!(state.items.len(), 501);
-        assert_eq!(state.items[0].id, 501);
-        let mut updated = item(501);
-        updated.title = "Updated".into();
-        assert!(!state.receive(updated, "501".into()), "replay is buffered");
-        assert!(!state.receive(item(502), "502".into()));
-        assert_eq!(state.items[0].id, 501);
-        assert!(state.finish_replay(ReplayDone {
-            replayed: 2,
-            limited: true,
-            last_event_id: Some(502)
-        }));
-        assert_eq!(state.items.len(), 502);
-        assert_eq!(state.items[0].id, 502);
-        assert_eq!(state.items[1].title, "Updated");
-        assert_eq!(state.cursor.as_deref(), Some("502"));
-        assert!(state.limited);
-        state.replaying = true;
-        state.receive(item(503), "503".into());
-        assert!(state.finish_replay(ReplayDone::default()));
-        assert_eq!(state.cursor.as_deref(), Some("503"));
-    }
-
-    #[test]
-    fn live_items_change_the_visible_list_immediately() {
-        let mut state = TimelineState::new(vec![item(1)]);
-        state.finish_replay(ReplayDone::default());
-        assert!(state.receive(item(2), "2".into()));
-        assert_eq!(ids(&state.items), [2, 1]);
-        assert_eq!(state.cursor.as_deref(), Some("2"));
-    }
-
-    #[test]
-    fn resume_prefers_initial_items_over_stored_cursor() {
-        assert_eq!(
-            resume_cursor(&[item(2), item(5)], Some("999".into())),
-            Some("5".into())
-        );
-        assert_eq!(resume_cursor(&[], Some("999".into())), Some("999".into()));
-        assert_eq!(resume_cursor(&[], None), None);
     }
 
     #[test]

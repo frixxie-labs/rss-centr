@@ -21,9 +21,9 @@ pub fn TopicsView(initial: Result<Vec<Topic>, String>, feeds: FeedNames) -> impl
     let feeds = StoredValue::new(feeds);
     let refresh = Action::new_local(move |_: &()| async move {
         let result = Api::default().topics().await?;
-        topics.set(result);
-        selected.set(None);
-        loaded.set(true);
+        topics.try_set(result);
+        selected.try_set(None);
+        loaded.try_set(true);
         Ok(())
     });
     let loading = refresh.pending();

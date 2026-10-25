@@ -101,8 +101,8 @@ pub fn LoadMore(
         // Owned by this component, so the observer disconnects when it is disposed.
         let observer = StoredValue::new_local(None::<crate::browser::Visible>);
         node.on_load(move |element| {
-            observer.set_value(crate::browser::Visible::observe(&element, move |visible| {
-                in_view.set(visible)
+            observer.try_set_value(crate::browser::Visible::observe(&element, move |visible| {
+                in_view.try_set(visible);
             }));
         });
         // Re-runs after each page, so a sentinel that never leaves the viewport keeps loading.

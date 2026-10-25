@@ -1,22 +1,30 @@
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use metrics_exporter_prometheus::PrometheusBuilder;
+use reqwest::Client;
 use sqlx::PgPool;
 use tokio::{net::TcpListener, sync::broadcast};
 use tracing::{Level, error, info};
 use tracing_subscriber::FmtSubscriber;
 
 use crate::{
+    config::BackendConfig,
     events::{NewFeedItemEvent, NewFeedItemListener},
     handlers::create_router,
     search::SearchState,
+    summary::SummaryState,
 };
 
+mod config;
 pub mod events;
 pub mod feed;
 pub mod handlers;
 pub mod search;
 mod summary;
+
+const SEARCH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 enum LogLevel {
@@ -74,6 +82,7 @@ pub struct Opts {
 #[tokio::main]
 async fn main() -> Result<()> {
     let opts = Opts::parse();
+    let config = BackendConfig::from_lookup(|name| std::env::var(name).ok());
     let level: Level = opts.log_level.into();
     let subscriber = FmtSubscriber::builder()
         .with_max_level(level)
@@ -82,6 +91,16 @@ async fn main() -> Result<()> {
         .finish();
     tracing::subscriber::set_global_default(subscriber)
         .context("failed to install tracing subscriber")?;
+
+    let search_http = Client::builder()
+        .timeout(SEARCH_HTTP_TIMEOUT)
+        .build()
+        .context("failed to build search HTTP client")?;
+    // Summary requests set their own metadata/generation deadlines; do not apply
+    // the search client's overall timeout to these longer-running calls.
+    let summary_http = Client::builder()
+        .build()
+        .context("failed to build summary HTTP client")?;
 
     let metrics_handler = PrometheusBuilder::new()
         .install_recorder()
@@ -111,12 +130,29 @@ async fn main() -> Result<()> {
             .await
     });
 
-    let search_state = SearchState::from_env(pool.clone());
+    let search_state = SearchState::new(
+        pool.clone(),
+        search_http,
+        config.ollama_url.clone(),
+        config.search,
+    );
+    let summary_state = SummaryState::new(
+        pool.clone(),
+        summary_http,
+        config.ollama_url,
+        config.summary_models,
+    );
     let embedding_index = search_state.embeddings.clone();
     let embedding_pool = pool.clone();
     tokio::spawn(async move { embedding_index.run_loader(&embedding_pool).await });
 
-    let app = create_router(pool, search_state, metrics_handler, new_item_tx);
+    let app = create_router(
+        pool,
+        search_state,
+        summary_state,
+        metrics_handler,
+        new_item_tx,
+    );
 
     let listener = TcpListener::bind(&opts.host).await?;
     tokio::select! {

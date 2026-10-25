@@ -18,6 +18,7 @@ use utoipa::OpenApi;
 
 use crate::events::NewFeedItemEvent;
 use crate::search::SearchState;
+use crate::summary::SummaryState;
 
 pub(crate) mod daily_summary;
 mod embeddings;
@@ -58,9 +59,10 @@ pub async fn profile_endpoint(request: Request, next: Next) -> Response {
     response
 }
 
-pub fn create_router(
+pub(crate) fn create_router(
     pool: PgPool,
     search_state: SearchState,
+    summary_state: SummaryState,
     metrics_handler: PrometheusHandle,
     new_item_tx: broadcast::Sender<NewFeedItemEvent>,
 ) -> Router {
@@ -99,7 +101,6 @@ pub fn create_router(
         .route("/items/stream", get(sse::stream_new_items))
         .with_state((pool.clone(), new_item_tx));
 
-    let summary_state = daily_summary::SummaryState::new(pool.clone());
     let daily_summary = Router::new()
         .route("/items/summary", get(daily_summary::fetch_daily_summary))
         .route(

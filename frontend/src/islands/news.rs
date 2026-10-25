@@ -41,23 +41,23 @@ pub fn NewsView(
             }
             #[cfg(target_arch = "wasm32")]
             crate::browser::replace_url(&filters.page_url());
-            loading.set(true);
-            error.set(false);
+            loading.try_set(true);
+            error.try_set(false);
             let result = Api::default().items(&filters, 0).await;
             if generation.try_get_value() != Some(current) {
                 return;
             }
             match result {
                 Ok(result) => {
-                    has_more.set(result.len() >= PAGE_SIZE);
-                    items.set(display_order(result, filters.order()));
+                    has_more.try_set(result.len() >= PAGE_SIZE);
+                    items.try_set(display_order(result, filters.order()));
                 }
                 Err(_) => {
-                    has_more.set(false);
-                    error.set(true);
+                    has_more.try_set(false);
+                    error.try_set(true);
                 }
             }
-            loading.set(false);
+            loading.try_set(false);
         });
     };
 
@@ -89,16 +89,16 @@ pub fn NewsView(
                         let more = items
                             .try_update(|items| append_page(items, page, filters.order()))
                             .unwrap_or(false);
-                        has_more.set(more);
+                        has_more.try_set(more);
                     }
                     // Stop auto-loading so a failing backend is not retried in a loop.
                     Err(_) => {
-                        has_more.set(false);
-                        error.set(true);
+                        has_more.try_set(false);
+                        error.try_set(true);
                     }
                 }
             }
-            loading_more.set(false);
+            loading_more.try_set(false);
         });
     });
 

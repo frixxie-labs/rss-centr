@@ -1,6 +1,9 @@
+mod config;
 mod embedding_index;
 mod items;
 
+pub(crate) use config::SearchConfig;
+pub use config::{DEFAULT_EMBED_KEEP_ALIVE, DEFAULT_EMBED_MODEL, DEFAULT_MIN_SIMILARITY};
 pub use embedding_index::EmbeddingIndex;
 #[cfg(test)]
 pub(crate) use embedding_index::ReconcileStats;
@@ -25,11 +28,6 @@ use rss_centr_core::{
 use sqlx::PgPool;
 use tokio::time::Instant;
 use tracing::info;
-
-pub const DEFAULT_EMBED_MODEL: &str = "embeddinggemma-2";
-pub const DEFAULT_MIN_SIMILARITY: f32 = 0.2;
-/// Keep the embedding model loaded between searches; loading it takes ~2 s.
-pub const DEFAULT_EMBED_KEEP_ALIVE: &str = "1h";
 
 pub type EmbedFuture<'a> = Pin<Box<dyn Future<Output = Result<Vec<f32>>> + Send + 'a>>;
 
@@ -145,33 +143,26 @@ pub struct SearchState {
 }
 
 impl SearchState {
-    pub fn from_env(pool: PgPool) -> Self {
-        let model =
-            std::env::var("OLLAMA_EMBED_MODEL").unwrap_or_else(|_| DEFAULT_EMBED_MODEL.to_string());
-        let min_similarity = std::env::var("SEMANTIC_MIN_SIMILARITY")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(DEFAULT_MIN_SIMILARITY);
-        let env_f32 = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<f32>().ok());
-        let recency = RecencyBoost {
-            weight: env_f32("SEMANTIC_RECENCY_WEIGHT").unwrap_or(RecencyBoost::DEFAULT_WEIGHT),
-            half_life_hours: env_f32("SEMANTIC_RECENCY_HALF_LIFE_HOURS")
-                .unwrap_or(RecencyBoost::DEFAULT_HALF_LIFE_HOURS),
-        };
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
+    pub(crate) fn new(
+        pool: PgPool,
+        http: reqwest::Client,
+        ollama_url: String,
+        config: SearchConfig,
+    ) -> Self {
+        let SearchConfig {
+            model,
+            keep_alive,
+            min_similarity,
+            recency,
+        } = config;
         Self {
             pool,
             embedder: Arc::new(CachingEmbedder::new(
                 Arc::new(OllamaQueryEmbedder {
                     http,
-                    ollama_url: std::env::var("OLLAMA_URL")
-                        .unwrap_or_else(|_| "http://desktop:11434".to_string()),
+                    ollama_url,
                     model: model.clone(),
-                    keep_alive: std::env::var("OLLAMA_EMBED_KEEP_ALIVE")
-                        .unwrap_or_else(|_| DEFAULT_EMBED_KEEP_ALIVE.to_string()),
+                    keep_alive,
                 }),
                 QUERY_CACHE_CAPACITY,
             )),
@@ -334,6 +325,65 @@ mod tests {
     fn cached(capacity: usize) -> (Arc<CountingEmbedder>, CachingEmbedder) {
         let inner = Arc::new(CountingEmbedder::default());
         (inner.clone(), CachingEmbedder::new(inner, capacity))
+    }
+
+    #[tokio::test]
+    async fn state_uses_the_injected_client_endpoint_model_and_ranking_settings() {
+        use axum::{Json, Router, http::HeaderMap, routing::post};
+
+        let app = Router::new().route(
+            "/configured/api/embed",
+            post(
+                |headers: HeaderMap, Json(request): Json<serde_json::Value>| async move {
+                    assert_eq!(headers["x-configured-client"], "search");
+                    assert_eq!(request["model"], "configured-embed-model");
+                    assert_eq!(request["keep_alive"], "30m");
+                    assert_eq!(
+                        request["input"],
+                        serde_json::json!(["task: search result | query: rust"])
+                    );
+                    Json(serde_json::json!({"embeddings": [[3.0, 4.0]]}))
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-configured-client", "search".parse().unwrap());
+        let http = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()
+            .unwrap();
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://postgres:postgres@localhost/rss_centr")
+            .unwrap();
+        let recency = RecencyBoost {
+            weight: 0.75,
+            half_life_hours: 12.0,
+        };
+
+        let state = SearchState::new(
+            pool,
+            http,
+            format!("http://{address}/configured/"),
+            SearchConfig {
+                model: "configured-embed-model".into(),
+                keep_alive: "30m".into(),
+                min_similarity: 0.4,
+                recency,
+            },
+        );
+
+        assert_eq!(state.model, "configured-embed-model");
+        assert_eq!(state.embeddings.model(), state.model);
+        assert_eq!(state.min_similarity, 0.4);
+        assert_eq!(state.recency, recency);
+        assert_eq!(
+            state.embedder.embed_query("rust").await.unwrap(),
+            vec![0.6, 0.8]
+        );
+        server.abort();
     }
 
     #[tokio::test]

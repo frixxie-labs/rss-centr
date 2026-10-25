@@ -29,11 +29,7 @@ fn newest_first(mut feeds: Vec<Feed>) -> Vec<Feed> {
 }
 
 /// Runs the request for `action` and returns the success message.
-async fn perform(
-    api: &Api,
-    action: &SourceAction,
-    feeds: RwSignal<Vec<Feed>>,
-) -> Result<String, String> {
+async fn perform(api: &Api, action: &SourceAction, feeds: &[Feed]) -> Result<String, String> {
     match action {
         SourceAction::Refresh => Ok("Sources refreshed.".into()),
         SourceAction::Add(url) if url.trim().is_empty() => Err("Source URL is required.".into()),
@@ -52,15 +48,18 @@ async fn perform(
         }
         SourceAction::Delete(id) => api.delete_feed(*id).await.map(|_| "Source deleted.".into()),
         SourceAction::Ingest(id) => {
-            let paused = feeds.with_untracked(|f| f.iter().any(|f| f.id == *id && !f.is_enabled));
+            let paused = feeds.iter().any(|feed| feed.id == *id && !feed.is_enabled);
             if paused {
                 return Err("Cannot fetch a paused source. Enable it first.".into());
             }
             api.ingest(*id).await.map(|_| "Fetch queued.".into())
         }
         SourceAction::All => {
-            let ids: Vec<_> =
-                feeds.with_untracked(|f| f.iter().filter(|f| f.is_enabled).map(|f| f.id).collect());
+            let ids: Vec<_> = feeds
+                .iter()
+                .filter(|feed| feed.is_enabled)
+                .map(|feed| feed.id)
+                .collect();
             let results =
                 futures_util::future::join_all(ids.iter().map(|id| api.ingest(*id))).await;
             let failed = results.iter().filter(|r| r.is_err()).count();
@@ -90,12 +89,18 @@ pub fn SourcesView(initial: Result<Vec<Feed>, String>) -> impl IntoView {
     let pending_delete = RwSignal::new(None::<i64>);
     let action = Action::new_local(move |action: &SourceAction| {
         let action = action.clone();
+        // Capture inputs before spawning so the request never reads an arena signal.
+        let current_feeds = feeds.get_untracked();
         async move {
             let api = Api::default();
-            let message = perform(&api, &action, feeds).await?;
+            let message = perform(&api, &action, &current_feeds).await?;
             match action {
-                SourceAction::Add(_) => url.set(String::new()),
-                SourceAction::Delete(_) => pending_delete.set(None),
+                SourceAction::Add(_) => {
+                    url.try_set(String::new());
+                }
+                SourceAction::Delete(_) => {
+                    pending_delete.try_set(None);
+                }
                 _ => {}
             }
             if action.reloads_list() {
@@ -103,8 +108,8 @@ pub fn SourcesView(initial: Result<Vec<Feed>, String>) -> impl IntoView {
                     .feeds()
                     .await
                     .map_err(|error| format!("{message} Could not reload sources: {error}"))?;
-                feeds.set(newest_first(list));
-                loaded.set(true);
+                feeds.try_set(newest_first(list));
+                loaded.try_set(true);
             }
             Ok(message)
         }
@@ -300,5 +305,85 @@ fn SourceRow(
                 </div>
             </Show>
         </article>
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use axum::{Router, extract::Path, http::StatusCode, routing::post};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn invalid_source_actions_are_rejected_before_contacting_the_backend() {
+        let api = Api::new(reqwest::Client::new(), "http://127.0.0.1:1".into());
+        let feeds = vec![Feed {
+            id: 1,
+            is_enabled: false,
+            ..Default::default()
+        }];
+
+        assert_eq!(
+            perform(&api, &SourceAction::Add(" \t ".into()), &feeds).await,
+            Err("Source URL is required.".into())
+        );
+        assert_eq!(
+            perform(&api, &SourceAction::Ingest(1), &feeds).await,
+            Err("Cannot fetch a paused source. Enable it first.".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_all_uses_the_feed_snapshot_and_reports_partial_failures() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let recorded = requests.clone();
+        let app = Router::new().route(
+            "/api/feeds/{id}/ingest",
+            post(move |Path(id): Path<i64>| {
+                let requests = recorded.clone();
+                async move {
+                    requests.lock().unwrap().push(id);
+                    if id == 3 {
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    } else {
+                        StatusCode::ACCEPTED
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let api = Api::new(reqwest::Client::new(), format!("http://{address}"));
+        let feeds = vec![
+            Feed {
+                id: 1,
+                is_enabled: true,
+                ..Default::default()
+            },
+            Feed {
+                id: 2,
+                is_enabled: false,
+                ..Default::default()
+            },
+            Feed {
+                id: 3,
+                is_enabled: true,
+                ..Default::default()
+            },
+        ];
+
+        let result = perform(&api, &SourceAction::All, &feeds).await;
+
+        assert_eq!(
+            result,
+            Err("Queued fetch for 1 of 2 sources. 1 failed.".into())
+        );
+        let mut requested = requests.lock().unwrap().clone();
+        requested.sort_unstable();
+        assert_eq!(requested, [1, 3]);
+        server.abort();
     }
 }

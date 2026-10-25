@@ -1,3 +1,4 @@
+mod config;
 mod error;
 mod ollama;
 mod prompts;
@@ -17,6 +18,7 @@ pub(crate) use prompts::{
     build_final_prompt, build_merge_prompt,
 };
 
+pub(crate) use config::SummaryModels;
 pub(crate) use error::SummaryError;
 pub(crate) use ollama::OllamaSummaryGenerator;
 #[cfg(test)]

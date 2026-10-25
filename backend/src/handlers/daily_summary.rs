@@ -84,9 +84,13 @@ mod tests {
         .await
         .unwrap();
 
-        let status = generate_daily_summary(State(SummaryState::new(pool)))
-            .await
-            .unwrap();
+        let state = SummaryState::new(
+            pool,
+            reqwest::Client::new(),
+            "http://127.0.0.1:1".into(),
+            crate::summary::SummaryModels::default(),
+        );
+        let status = generate_daily_summary(State(state)).await.unwrap();
 
         assert_eq!(status, StatusCode::CONFLICT);
     }
