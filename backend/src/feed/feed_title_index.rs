@@ -279,8 +279,7 @@ fn group_rows(rows: Vec<FeedTitleIndexRow>) -> Result<Vec<FeedTitleIndexEntry>> 
 
     entries.sort_by(|a, b| {
         b.tf_idf
-            .partial_cmp(&a.tf_idf)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&a.tf_idf)
             .then_with(|| b.total_occurrences.cmp(&a.total_occurrences))
             .then_with(|| a.word.cmp(&b.word))
     });
@@ -535,5 +534,24 @@ mod tests {
 
         assert!(five_times > once);
         assert!(five_times < once * 5.0);
+    }
+
+    quickcheck::quickcheck! {
+        fn prop_tf_idf_is_non_negative_and_zero_for_words_in_every_title(
+            occurrences: u32,
+            document_frequency: u32,
+            extra_documents: u32
+        ) -> bool {
+            let (tf, df) = (u64::from(occurrences), u64::from(document_frequency));
+            let total = df + u64::from(extra_documents);
+            compute_tf_idf(tf, df, total) >= 0.0 && compute_tf_idf(tf, df, df) == 0.0
+        }
+
+        fn prop_tf_idf_grows_with_occurrences(occurrences: u32, document_frequency: u32) -> bool {
+            let df = u64::from(document_frequency) + 1;
+            let total = df * 2;
+            let tf = u64::from(occurrences);
+            compute_tf_idf(tf + 1, df, total) > compute_tf_idf(tf, df, total)
+        }
     }
 }
