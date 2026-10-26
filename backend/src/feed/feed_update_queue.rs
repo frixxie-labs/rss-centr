@@ -5,7 +5,7 @@ pub use domain::FeedQueueError;
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use rss_centr_core::feed_update_queue::{
     CompleteFeedUpdateRequest, CompleteFeedUpdateResult, DequeuedFeedUpdate,
     FailedFeedUpdateRequest, FailedFeedUpdateResult, FeedUpdateItemInput,
@@ -17,7 +17,7 @@ use super::feed_item::{
 };
 use super::feed_subscription::FeedSuccessUpdate;
 use super::poll_interval::{
-    backoff_poll_interval_seconds, failure_poll_interval_seconds, resolved_poll_interval_seconds,
+    PollSignal, Schedule, reschedule_after_completion, reschedule_after_failure,
 };
 
 use domain::FeedUpdateCompletion;
@@ -131,10 +131,10 @@ pub async fn complete_feed_update(
     pool: &PgPool,
     feed_id: i64,
     request: CompleteFeedUpdateRequest,
+    completed_at: DateTime<Utc>,
 ) -> Result<CompleteFeedUpdateResult, FeedQueueError> {
     let completion = FeedUpdateCompletion::from(request);
     let data = completion.data();
-    let completed_at = Utc::now();
     let mut tx = pool
         .begin()
         .await
@@ -143,15 +143,20 @@ pub async fn complete_feed_update(
     ensure_current_lease(&mut tx, feed_id, &data.lease_token).await?;
 
     let inserted_items = insert_items(&mut tx, feed_id, &data.items, completed_at).await?;
-    let poll_interval_seconds = match &completion {
-        FeedUpdateCompletion::Fetched(_) => {
-            resolved_poll_interval_seconds(read_feed_cadence_seconds(&mut *tx, feed_id).await?)
-        }
-        FeedUpdateCompletion::NotModified(_) => {
-            let current = read_feed_poll_interval(&mut tx, feed_id).await?;
-            backoff_poll_interval_seconds(current.poll_interval_seconds)
-        }
+    let signal = match &completion {
+        FeedUpdateCompletion::Fetched(_) => PollSignal::Fetched {
+            cadence_seconds: read_feed_cadence_seconds(&mut *tx, feed_id).await?,
+        },
+        FeedUpdateCompletion::NotModified(_) => PollSignal::NotModified {
+            current_interval_seconds: read_feed_poll_interval(&mut tx, feed_id)
+                .await?
+                .poll_interval_seconds,
+        },
     };
+    let Schedule {
+        poll_interval_seconds,
+        next_due_at,
+    } = reschedule_after_completion(signal, completed_at);
     let last_inserted_at = (inserted_items > 0).then_some(completed_at);
     touch_feed_success_in_tx(
         &mut tx,
@@ -168,7 +173,6 @@ pub async fn complete_feed_update(
     )
     .await?;
 
-    let next_due_at = completed_at + Duration::seconds(poll_interval_seconds);
     let result = sqlx::query!(
         r#"
         UPDATE feed_update_queue
@@ -207,8 +211,8 @@ pub async fn fail_feed_update(
     pool: &PgPool,
     feed_id: i64,
     request: FailedFeedUpdateRequest,
+    checked_at: DateTime<Utc>,
 ) -> Result<FailedFeedUpdateResult, FeedQueueError> {
-    let checked_at = Utc::now();
     let mut tx = pool
         .begin()
         .await
@@ -216,11 +220,17 @@ pub async fn fail_feed_update(
 
     ensure_current_lease(&mut tx, feed_id, &request.lease_token).await?;
     let current = read_feed_poll_interval(&mut tx, feed_id).await?;
-    let poll_interval_seconds =
-        failure_poll_interval_seconds(current.poll_interval_seconds, request.http_status);
+    let Schedule {
+        poll_interval_seconds,
+        next_due_at,
+    } = reschedule_after_failure(
+        current.poll_interval_seconds,
+        request.http_status,
+        request.retry_after,
+        checked_at,
+    );
     touch_feed_failure_in_tx(&mut tx, feed_id, checked_at, poll_interval_seconds).await?;
 
-    let next_due_at = failure_next_due_at(checked_at, poll_interval_seconds, request.retry_after);
     let result = sqlx::query!(
         r#"
         UPDATE feed_update_queue
@@ -249,17 +259,6 @@ pub async fn fail_feed_update(
         .with_context(|| format!("failed to commit feed update failure for feed_id={feed_id}"))?;
 
     Ok(FailedFeedUpdateResult { next_due_at })
-}
-
-fn failure_next_due_at(
-    checked_at: DateTime<Utc>,
-    poll_interval_seconds: i64,
-    retry_after: Option<DateTime<Utc>>,
-) -> DateTime<Utc> {
-    let backoff_due_at = checked_at + Duration::seconds(poll_interval_seconds);
-    retry_after.map_or(backoff_due_at, |retry_after| {
-        retry_after.max(backoff_due_at)
-    })
 }
 
 async fn ensure_current_lease(
@@ -464,6 +463,10 @@ mod tests {
     use super::*;
     use crate::feed::feed_item::read_feed_items_by_feed;
     use crate::feed::feed_subscription::{read_feed, set_feed_enabled, upsert_feed_by_url};
+    use crate::feed::poll_interval::{
+        backoff_poll_interval_seconds, failure_poll_interval_seconds,
+    };
+    use chrono::Duration;
 
     #[test]
     fn test_failed_feed_update_request_accepts_older_workers() {
@@ -474,24 +477,6 @@ mod tests {
         assert_eq!(
             serde_json::to_value(request).unwrap(),
             serde_json::json!({"lease_token": "token"})
-        );
-    }
-
-    #[test]
-    fn test_failure_next_due_at_respects_retry_after_without_shortening_backoff() {
-        let now = Utc::now();
-        let backoff_due_at = now + Duration::seconds(600);
-        for retry_after in [
-            None,
-            Some(now - Duration::hours(1)),
-            Some(now + Duration::seconds(120)),
-        ] {
-            assert_eq!(failure_next_due_at(now, 600, retry_after), backoff_due_at);
-        }
-        let retry_after = now + Duration::hours(24);
-        assert_eq!(
-            failure_next_due_at(now, 600, Some(retry_after)),
-            retry_after
         );
     }
 
@@ -517,6 +502,7 @@ mod tests {
                 http_status: None,
                 error: None,
             },
+            Utc::now(),
         )
         .await
         .unwrap();
@@ -614,6 +600,7 @@ mod tests {
                 last_modified: None,
                 items,
             },
+            Utc::now(),
         )
         .await
         .unwrap()
@@ -687,6 +674,7 @@ mod tests {
                 last_modified: Some("new-last-modified".into()),
                 items: vec![item_input("legacy-item", Some("Legacy summary"))],
             },
+            Utc::now(),
         )
         .await
         .unwrap();
@@ -743,6 +731,7 @@ mod tests {
                 last_modified: None,
                 items: vec![item_input("must-not-exist", Some("Summary"))],
             },
+            Utc::now(),
         )
         .await
         .unwrap_err();
@@ -755,6 +744,7 @@ mod tests {
                 http_status: Some(410),
                 error: Some("gone".into()),
             },
+            Utc::now(),
         )
         .await
         .unwrap_err();
@@ -808,6 +798,7 @@ mod tests {
                 last_modified: None,
                 items: vec![item_input("rolled-back", Some("Summary"))],
             },
+            Utc::now(),
         )
         .await
         .unwrap_err();
@@ -841,6 +832,7 @@ mod tests {
                 last_modified: None,
                 items: vec![item_input("rolled-back", Some("Summary"))],
             },
+            Utc::now(),
         )
         .await
         .unwrap();
@@ -889,6 +881,7 @@ mod tests {
                     published_at: None,
                 }],
             },
+            Utc::now(),
         )
         .await
         .unwrap();
@@ -932,6 +925,7 @@ mod tests {
                 last_modified: None,
                 items: Vec::new(),
             },
+            Utc::now(),
         )
         .await
         .unwrap_err();
@@ -961,6 +955,7 @@ mod tests {
                 http_status: None,
                 error: None,
             },
+            Utc::now(),
         )
         .await
         .unwrap();
@@ -998,6 +993,7 @@ mod tests {
                 http_status: Some(410),
                 error: Some("gone".to_string()),
             },
+            Utc::now(),
         )
         .await
         .unwrap();
@@ -1061,6 +1057,7 @@ mod tests {
                 last_modified: None,
                 items: Vec::new(),
             },
+            Utc::now(),
         )
         .await
         .unwrap();

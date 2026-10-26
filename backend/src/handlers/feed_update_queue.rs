@@ -110,7 +110,7 @@ pub async fn complete_feed_update_handler(
     Path(feed_id): Path<i64>,
     Json(body): Json<CompleteFeedUpdateRequest>,
 ) -> Result<Json<CompleteFeedUpdateResult>, HandlerError> {
-    let result = complete_feed_update(&pool, feed_id, body)
+    let result = complete_feed_update(&pool, feed_id, body, chrono::Utc::now())
         .await
         .map_err(map_queue_error)?;
 
@@ -137,7 +137,7 @@ pub async fn fail_feed_update_handler(
     Path(feed_id): Path<i64>,
     Json(body): Json<FailedFeedUpdateRequest>,
 ) -> Result<Json<FailedFeedUpdateResult>, HandlerError> {
-    let result = fail_feed_update(&pool, feed_id, body)
+    let result = fail_feed_update(&pool, feed_id, body, chrono::Utc::now())
         .await
         .map_err(map_queue_error)?;
 
