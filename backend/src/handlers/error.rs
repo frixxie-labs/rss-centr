@@ -48,7 +48,7 @@ impl HandlerError {
             FeedQueueError::LeaseConflict { .. } => Self::conflict(error.to_string()),
             FeedQueueError::FeedNotFound { .. } => Self::not_found(error.to_string()),
             FeedQueueError::FeedPaused { .. } => {
-                Self::internal(format!("{}: {error}", internal_message.into()))
+                Self::conflict("feed is paused; enable it before fetching now")
             }
             FeedQueueError::Storage(error) => {
                 Self::internal(format!("{}: {error}", internal_message.into()))
@@ -128,7 +128,7 @@ fn is_not_found_error(err: &anyhow::Error) -> bool {
         cause
             .downcast_ref::<SqlxError>()
             .is_some_and(|sqlx_err| matches!(sqlx_err, SqlxError::RowNotFound))
-            || cause.to_string().starts_with("no ")
+            || cause.is::<crate::feed::NotFound>()
     })
 }
 
@@ -153,8 +153,8 @@ mod tests {
             ),
             (
                 FeedQueueError::FeedPaused { feed_id: 7 },
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Queue failed: feed is paused for feed_id=7",
+                StatusCode::CONFLICT,
+                "feed is paused; enable it before fetching now",
             ),
             (
                 FeedQueueError::Storage(anyhow::anyhow!("database unavailable")),
@@ -188,6 +188,22 @@ mod tests {
         ));
         assert_eq!(missing.status, StatusCode::NOT_FOUND);
         assert_eq!(missing.message, "missing item");
+    }
+
+    #[test]
+    fn typed_not_found_errors_map_to_not_found() {
+        let error = HandlerError::from_db(
+            crate::feed::NotFound::new("no feed found with id=7").into(),
+            "Failed",
+        );
+        assert_eq!(error.status, StatusCode::NOT_FOUND);
+        assert_eq!(error.message, "no feed found with id=7");
+    }
+
+    #[test]
+    fn untyped_errors_worded_like_not_found_stay_internal() {
+        let error = HandlerError::from_db(anyhow::anyhow!("no route to host"), "Failed");
+        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[test]

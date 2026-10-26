@@ -5,8 +5,8 @@ use rss_centr_core::semantic::{
 use serde::Deserialize;
 use tracing::{instrument, warn};
 
-use crate::feed::item_embedding::{claim_items_needing_embedding, store_item_embeddings};
 use crate::search::SearchState;
+use crate::search::embedding_store::{claim_items_needing_embedding, store_item_embeddings};
 
 use super::error::HandlerError;
 

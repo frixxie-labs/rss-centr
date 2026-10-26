@@ -77,7 +77,7 @@ pub async fn read_feed(pool: &PgPool, id: i64) -> Result<FeedSubscription> {
     .with_context(|| format!("failed to read feed with id={id}"))?;
 
     let Some(row) = row else {
-        anyhow::bail!("no feed found with id={id}");
+        return Err(crate::feed::NotFound::new(format!("no feed found with id={id}")).into());
     };
 
     Ok(row)
@@ -110,7 +110,11 @@ pub async fn list_feeds(pool: &PgPool) -> Result<Vec<FeedSubscription>> {
     Ok(rows)
 }
 
-pub async fn set_feed_enabled(pool: &PgPool, id: i64, is_enabled: bool) -> Result<()> {
+pub async fn set_feed_enabled(
+    executor: impl sqlx::PgExecutor<'_>,
+    id: i64,
+    is_enabled: bool,
+) -> Result<()> {
     let result = sqlx::query!(
         r#"
         UPDATE feeds
@@ -120,12 +124,12 @@ pub async fn set_feed_enabled(pool: &PgPool, id: i64, is_enabled: bool) -> Resul
         is_enabled,
         id,
     )
-    .execute(pool)
+    .execute(executor)
     .await
     .with_context(|| format!("failed to update feed enabled state for id={id}"))?;
 
     if result.rows_affected() == 0 {
-        anyhow::bail!("no feed found with id={id}");
+        return Err(crate::feed::NotFound::new(format!("no feed found with id={id}")).into());
     }
 
     Ok(())
@@ -158,7 +162,7 @@ pub async fn delete_feed(pool: &PgPool, id: i64) -> Result<()> {
     .with_context(|| format!("failed to delete feed with id={id}"))?;
 
     if result.rows_affected() == 0 {
-        anyhow::bail!("no feed found with id={id}");
+        return Err(crate::feed::NotFound::new(format!("no feed found with id={id}")).into());
     }
 
     Ok(())

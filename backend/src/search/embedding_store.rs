@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use rss_centr_core::semantic::{
@@ -7,9 +5,7 @@ use rss_centr_core::semantic::{
 };
 use sqlx::PgPool;
 
-use crate::search::{EmbeddingSource, EmbeddingVersion, StoredEmbedding};
-
-use super::feed_item::FeedItemWithDetail;
+use super::{EmbeddingSource, EmbeddingVersion, StoredEmbedding};
 
 /// Lease up to `limit` items that have no embedding for `model` (missing or
 /// produced by a different model), newest first. Leased items are not handed
@@ -250,39 +246,6 @@ impl EmbeddingSource for PgPool {
         .await
         .with_context(|| format!("failed to read embedding versions for model={model}"))
     }
-}
-
-/// Read items with details, returned in the order of `ids`. Unknown ids are skipped.
-pub async fn read_feed_items_with_detail_by_ids(
-    pool: &PgPool,
-    ids: &[i64],
-) -> Result<Vec<FeedItemWithDetail>> {
-    let rows = sqlx::query_as!(
-        FeedItemWithDetail,
-        r#"
-        SELECT f.id as "id!: i64",
-               f.feed_id as "feed_id!: i64",
-               f.external_id as "external_id!",
-               f.title as "title!",
-               f.url as "url!",
-               f.inserted_at as "inserted_at!: _",
-               d.summary as "summary?",
-               d.content as "content?",
-               d.author as "author?",
-               d.published_at as "published_at?: _"
-        FROM feed_items f
-        LEFT JOIN feed_item_details d ON d.feed_item_id = f.id
-        WHERE f.id = ANY($1)
-        "#,
-        ids,
-    )
-    .fetch_all(pool)
-    .await
-    .with_context(|| format!("failed to read feed items by ids count={}", ids.len()))?;
-
-    let mut by_id: HashMap<i64, FeedItemWithDetail> =
-        rows.into_iter().map(|row| (row.id, row)).collect();
-    Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
 }
 
 #[cfg(test)]
@@ -828,21 +791,5 @@ mod tests {
         assert_eq!(index.similarities(&[1.0, 0.0], None).await, vec![(id, 1.0)]);
         assert_eq!(index.dates([id]).await, dates);
         assert_eq!(index.item_count().await, 1);
-    }
-
-    #[sqlx::test]
-    async fn read_by_ids_preserves_requested_order(pool: PgPool) {
-        let feed = upsert_feed_by_url(&pool, "https://example.com/a.xml")
-            .await
-            .unwrap();
-        let a = item(&pool, feed.id, "a", "summary a").await;
-        let b = item(&pool, feed.id, "b", "summary b").await;
-
-        let items = read_feed_items_with_detail_by_ids(&pool, &[b, i64::MAX, a])
-            .await
-            .unwrap();
-        let ids: Vec<i64> = items.iter().map(|i| i.id).collect();
-        assert_eq!(ids, vec![b, a]);
-        assert_eq!(items[0].summary.as_deref(), Some("summary b"));
     }
 }

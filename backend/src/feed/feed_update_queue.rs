@@ -26,46 +26,40 @@ struct FeedPollInterval {
     poll_interval_seconds: i64,
 }
 
-pub async fn enqueue_feed_now(pool: &PgPool, feed_id: i64) -> Result<(), FeedQueueError> {
-    let feed = sqlx::query!(
+pub async fn enqueue_feed_now(
+    executor: impl sqlx::PgExecutor<'_>,
+    feed_id: i64,
+) -> Result<(), FeedQueueError> {
+    let is_enabled = sqlx::query_scalar!(
         r#"
+        WITH feed AS (
+            SELECT is_enabled
+            FROM feeds
+            WHERE id = $1
+        ), queued AS (
+            INSERT INTO feed_update_queue (feed_id, due_at)
+            SELECT $1, NOW()
+            FROM feed
+            WHERE feed.is_enabled
+            ON CONFLICT (feed_id)
+            DO UPDATE SET due_at = LEAST(feed_update_queue.due_at, excluded.due_at),
+                          updated_at = NOW()
+            RETURNING feed_id
+        )
         SELECT is_enabled as "is_enabled!: bool"
-        FROM feeds
-        WHERE id = $1
+        FROM feed
         "#,
         feed_id,
     )
-    .fetch_optional(pool)
-    .await
-    .with_context(|| format!("failed to check feed status for feed_id={feed_id}"))?;
-
-    let Some(feed) = feed else {
-        return Err(FeedQueueError::FeedNotFound { feed_id });
-    };
-
-    if !feed.is_enabled {
-        return Err(FeedQueueError::FeedPaused { feed_id });
-    }
-
-    let result = sqlx::query!(
-        r#"
-        INSERT INTO feed_update_queue (feed_id, due_at)
-        VALUES ($1, NOW())
-        ON CONFLICT (feed_id)
-        DO UPDATE SET due_at = LEAST(feed_update_queue.due_at, excluded.due_at),
-                      updated_at = NOW()
-        "#,
-        feed_id,
-    )
-    .execute(pool)
+    .fetch_optional(executor)
     .await
     .with_context(|| format!("failed to enqueue feed update for feed_id={feed_id}"))?;
 
-    if result.rows_affected() == 0 {
-        return Err(FeedQueueError::FeedNotFound { feed_id });
+    match is_enabled {
+        None => Err(FeedQueueError::FeedNotFound { feed_id }),
+        Some(false) => Err(FeedQueueError::FeedPaused { feed_id }),
+        Some(true) => Ok(()),
     }
-
-    Ok(())
 }
 
 pub async fn dequeue_due_feeds(

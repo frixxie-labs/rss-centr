@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH feed AS (\n            SELECT is_enabled\n            FROM feeds\n            WHERE id = $1\n        ), queued AS (\n            INSERT INTO feed_update_queue (feed_id, due_at)\n            SELECT $1, NOW()\n            FROM feed\n            WHERE feed.is_enabled\n            ON CONFLICT (feed_id)\n            DO UPDATE SET due_at = LEAST(feed_update_queue.due_at, excluded.due_at),\n                          updated_at = NOW()\n            RETURNING feed_id\n        )\n        SELECT is_enabled as \"is_enabled!: bool\"\n        FROM feed\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "is_enabled!: bool",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "feeds",
+            "name": "is_enabled"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "90b5fc1acef1cc6ed61312bc7f002b9690653cf6b50ec2a7e01b390fea99a704"
+}

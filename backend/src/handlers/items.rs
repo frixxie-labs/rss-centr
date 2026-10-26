@@ -116,7 +116,7 @@ mod tests {
     use super::*;
     use crate::feed::feed_item::{insert_feed_item, insert_feed_item_detail};
     use crate::feed::feed_subscription::upsert_feed_by_url;
-    use crate::feed::item_embedding::store_item_embeddings;
+    use crate::search::embedding_store::store_item_embeddings;
     use crate::search::{EmbedFuture, QueryEmbedder};
     use axum::Router;
     use axum::body::Body;

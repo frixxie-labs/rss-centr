@@ -6,8 +6,8 @@ use serde::Deserialize;
 use tracing::warn;
 use utoipa::ToSchema;
 
+use crate::feed::feed_item::read_feed_items_with_detail_by_ids;
 use crate::feed::feed_item::{FeedItemWithDetail, read_latest_feed_items_with_detail};
-use crate::feed::item_embedding::read_feed_items_with_detail_by_ids;
 
 use super::{SearchCounts, SearchStage, SearchState, SearchTimings};
 
@@ -242,7 +242,7 @@ mod tests {
     use super::*;
     use crate::feed::feed_item::{insert_feed_item, insert_feed_item_detail};
     use crate::feed::feed_subscription::upsert_feed_by_url;
-    use crate::feed::item_embedding::store_item_embeddings;
+    use crate::search::embedding_store::store_item_embeddings;
     use crate::search::{EmbedFuture, EmbeddingIndex, QueryEmbedder};
 
     struct FixedEmbedder;

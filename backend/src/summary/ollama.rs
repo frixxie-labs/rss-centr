@@ -44,11 +44,66 @@ struct GenerateResponse {
     response: String,
     prompt_eval_count: u32,
     eval_count: u32,
-    done_reason: String,
+    done_reason: DoneReason,
     #[serde(default)]
     total_duration: u64,
     #[serde(default)]
     eval_duration: u64,
+}
+
+#[derive(Debug, PartialEq, Deserialize)]
+#[serde(from = "String")]
+enum DoneReason {
+    Stop,
+    Length,
+    Other(String),
+}
+
+impl From<String> for DoneReason {
+    fn from(reason: String) -> Self {
+        match reason.as_str() {
+            "stop" => Self::Stop,
+            "length" => Self::Length,
+            _ => Self::Other(reason),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum Verdict {
+    Accept(String),
+    Retry,
+    Fail(SummaryError),
+}
+
+/// Decide what to do with one generation attempt. `retry_allowance` is the
+/// larger output allowance available for a retry, if any.
+fn classify(
+    generated: &GenerateResponse,
+    num_ctx: u32,
+    allowance: u32,
+    retry_allowance: Option<u32>,
+) -> Verdict {
+    let prompt_tokens = generated.prompt_eval_count;
+    if prompt_tokens.saturating_add(generated.eval_count) > num_ctx
+        || prompt_tokens.saturating_add(allowance) > num_ctx
+    {
+        return Verdict::Fail(SummaryError::ContextOverflow);
+    }
+    match &generated.done_reason {
+        DoneReason::Length
+            if retry_allowance
+                .is_some_and(|retry| prompt_tokens.saturating_add(retry) <= num_ctx) =>
+        {
+            Verdict::Retry
+        }
+        DoneReason::Length => Verdict::Fail(SummaryError::Truncated),
+        DoneReason::Other(_) => Verdict::Fail(SummaryError::Incomplete),
+        DoneReason::Stop => match generated.response.trim() {
+            "" => Verdict::Fail(SummaryError::EmptyResponse),
+            text => Verdict::Accept(text.to_string()),
+        },
+    }
 }
 
 #[derive(Deserialize)]
@@ -104,10 +159,9 @@ impl SummaryGenerator for OllamaSummaryGenerator {
         if !budget.fits(&prompt, num_predict) {
             return Err(InputTooLarge.into());
         }
-        for (attempt, allowance) in [num_predict, num_predict.saturating_mul(2)]
-            .into_iter()
-            .enumerate()
-        {
+        let retry_allowance = num_predict.saturating_mul(2);
+        let retry_fits = budget.fits(&prompt, retry_allowance);
+        for (attempt, allowance) in [num_predict, retry_allowance].into_iter().enumerate() {
             info!(
                 model,
                 estimated_input_tokens = budget.estimated_input_tokens(&prompt),
@@ -151,51 +205,114 @@ impl SummaryGenerator for OllamaSummaryGenerator {
             usage.eval_ms += eval_ms;
             info!(model, prompt_tokens = generated.prompt_eval_count,
                 output_tokens = generated.eval_count, num_ctx = budget.num_ctx,
-                duration_ms, eval_ms, done_reason = %generated.done_reason, "summary token usage");
-            if generated
-                .prompt_eval_count
-                .saturating_add(generated.eval_count)
-                > budget.num_ctx
-                || generated.prompt_eval_count.saturating_add(allowance) > budget.num_ctx
-            {
-                error!(
-                    model,
-                    prompt_tokens = generated.prompt_eval_count,
-                    output_tokens = generated.eval_count,
-                    num_predict = allowance,
-                    num_ctx = budget.num_ctx,
-                    "summary generation exceeded context budget"
-                );
-                return Err(SummaryError::ContextOverflow);
-            }
-            if generated.done_reason == "length" {
-                let retry_allowance = num_predict.saturating_mul(2);
-                let retry = attempt == 0
-                    && budget.fits(&prompt, retry_allowance)
-                    && generated.prompt_eval_count.saturating_add(retry_allowance)
-                        <= budget.num_ctx;
-                warn!(
-                    model,
-                    output_tokens = generated.eval_count,
-                    num_predict = allowance,
-                    retry,
-                    retry_num_predict = retry_allowance,
-                    "summary generation truncated"
-                );
-                if retry {
-                    continue;
+                duration_ms, eval_ms, done_reason = ?generated.done_reason, "summary token usage");
+            let retry = (attempt == 0 && retry_fits).then_some(retry_allowance);
+            match classify(&generated, budget.num_ctx, allowance, retry) {
+                Verdict::Accept(summary) => return Ok(summary),
+                Verdict::Retry => {
+                    warn!(
+                        model,
+                        output_tokens = generated.eval_count,
+                        num_predict = allowance,
+                        retry_num_predict = retry_allowance,
+                        "summary generation truncated, retrying"
+                    );
                 }
-                return Err(SummaryError::Truncated);
+                Verdict::Fail(error) => {
+                    error!(model, prompt_tokens = generated.prompt_eval_count,
+                        output_tokens = generated.eval_count, num_predict = allowance,
+                        num_ctx = budget.num_ctx, done_reason = ?generated.done_reason,
+                        %error, "summary generation failed");
+                    return Err(error);
+                }
             }
-            if generated.done_reason != "stop" {
-                error!(model, done_reason = %generated.done_reason, "summary generation incomplete");
-                return Err(SummaryError::Incomplete);
-            }
-            if generated.response.trim().is_empty() {
-                return Err(SummaryError::EmptyResponse);
-            }
-            return Ok(generated.response.trim().to_string());
         }
         Err(SummaryError::Truncated)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn response(text: &str, prompt: u32, output: u32, done_reason: &str) -> GenerateResponse {
+        serde_json::from_value(serde_json::json!({
+            "response": text,
+            "prompt_eval_count": prompt,
+            "eval_count": output,
+            "done_reason": done_reason,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn done_reason_parses_known_and_unknown_values() {
+        assert_eq!(response("", 0, 0, "stop").done_reason, DoneReason::Stop);
+        assert_eq!(response("", 0, 0, "length").done_reason, DoneReason::Length);
+        assert_eq!(
+            response("", 0, 0, "unload").done_reason,
+            DoneReason::Other("unload".into())
+        );
+    }
+
+    #[test]
+    fn completed_response_is_accepted_trimmed() {
+        let verdict = classify(&response("  summary \n", 100, 50, "stop"), 1000, 200, None);
+        assert!(
+            matches!(verdict, Verdict::Accept(ref text) if text == "summary"),
+            "{verdict:?}"
+        );
+    }
+
+    #[test]
+    fn blank_response_is_empty() {
+        let verdict = classify(&response(" \n", 100, 1, "stop"), 1000, 200, None);
+        assert!(
+            matches!(verdict, Verdict::Fail(SummaryError::EmptyResponse)),
+            "{verdict:?}"
+        );
+    }
+
+    #[test]
+    fn tokens_beyond_context_overflow() {
+        let used = classify(&response("x", 900, 200, "stop"), 1000, 50, None);
+        assert!(
+            matches!(used, Verdict::Fail(SummaryError::ContextOverflow)),
+            "{used:?}"
+        );
+        let reserved = classify(&response("x", 900, 10, "stop"), 1000, 200, None);
+        assert!(
+            matches!(reserved, Verdict::Fail(SummaryError::ContextOverflow)),
+            "{reserved:?}"
+        );
+    }
+
+    #[test]
+    fn truncated_response_retries_when_larger_allowance_fits() {
+        let verdict = classify(&response("x", 100, 200, "length"), 1000, 200, Some(400));
+        assert!(matches!(verdict, Verdict::Retry), "{verdict:?}");
+    }
+
+    #[test]
+    fn truncated_response_fails_without_retry_or_when_retry_overflows() {
+        let no_retry = classify(&response("x", 100, 200, "length"), 1000, 200, None);
+        assert!(
+            matches!(no_retry, Verdict::Fail(SummaryError::Truncated)),
+            "{no_retry:?}"
+        );
+        let too_big = classify(&response("x", 700, 200, "length"), 1000, 200, Some(400));
+        assert!(
+            matches!(too_big, Verdict::Fail(SummaryError::Truncated)),
+            "{too_big:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_done_reason_is_incomplete() {
+        let verdict = classify(&response("x", 100, 50, "unload"), 1000, 200, None);
+        assert!(
+            matches!(verdict, Verdict::Fail(SummaryError::Incomplete)),
+            "{verdict:?}"
+        );
     }
 }

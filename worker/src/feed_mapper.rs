@@ -13,9 +13,6 @@ pub(crate) fn feed_title_and_site_url(feed: &Feed) -> (Option<String>, Option<St
 }
 
 fn entry_to_item(entry: &Entry) -> FeedUpdateItemInput {
-    let now = Utc::now();
-    let (summary, content) = entry_summary_and_content(entry);
-
     FeedUpdateItemInput {
         external_id: entry_external_id(entry),
         title: entry
@@ -29,16 +26,18 @@ fn entry_to_item(entry: &Entry) -> FeedUpdateItemInput {
             .first()
             .map(|link| link.href.clone())
             .unwrap_or_default(),
-        summary: Some(summary),
-        content: Some(content),
-        author: Some(
-            entry
-                .authors
-                .first()
-                .and_then(|author| author.name.clone())
-                .unwrap_or_default(),
-        ),
-        published_at: Some(entry_published_at(entry).unwrap_or(now)),
+        summary: entry.summary.as_ref().map(text_value).and_then(non_empty),
+        content: entry
+            .content
+            .as_ref()
+            .and_then(|content| content.body.as_deref())
+            .and_then(non_empty),
+        author: entry
+            .authors
+            .first()
+            .and_then(|author| author.name.as_deref())
+            .and_then(non_empty),
+        published_at: entry_published_at(entry),
     }
 }
 
@@ -89,22 +88,8 @@ fn normalize_external_id(id: &str) -> String {
     }
 }
 
-fn entry_summary_and_content(entry: &Entry) -> (String, String) {
-    let summary = entry
-        .summary
-        .as_ref()
-        .map(text_value)
-        .unwrap_or("")
-        .to_string();
-
-    let content = entry
-        .content
-        .as_ref()
-        .and_then(|content| content.body.as_deref())
-        .unwrap_or("")
-        .to_string();
-
-    (summary, content)
+fn non_empty(value: &str) -> Option<String> {
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 fn entry_published_at(entry: &Entry) -> Option<DateTime<Utc>> {
@@ -291,16 +276,12 @@ mod tests {
         assert_eq!(item.external_id, "https://example.com/2");
         // No <title>: falls back to a placeholder instead of panicking.
         assert_eq!(item.title, "(no title)");
-        // No <summary>/<content>/<author>: the worker always sends `Some("")`
-        // rather than `None` for missing detail fields. This matters because
-        // the backend's `item_has_detail` check only skips inserting a detail
-        // row when every one of these is `None` -- which this producer never
-        // sends, so that skip path is currently unreachable in production.
-        assert_eq!(item.summary.as_deref(), Some(""));
-        assert_eq!(item.content.as_deref(), Some(""));
-        assert_eq!(item.author.as_deref(), Some(""));
-        // No <published>: falls back to "now" rather than `None`.
-        assert!(item.published_at.is_some());
+        // Missing detail fields are sent as absent, so the backend can skip
+        // the detail row and apply its own defaults.
+        assert_eq!(item.summary, None);
+        assert_eq!(item.content, None);
+        assert_eq!(item.author, None);
+        assert_eq!(item.published_at, None);
     }
 
     // -----------------------------------------------------------------------

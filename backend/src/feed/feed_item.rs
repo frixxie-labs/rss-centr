@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -156,7 +158,7 @@ pub async fn read_feed_item(pool: &PgPool, id: i64) -> Result<FeedItem> {
     .with_context(|| format!("failed to read feed item with id={id}"))?;
 
     let Some(row) = row else {
-        anyhow::bail!("no feed item found with id={id}");
+        return Err(crate::feed::NotFound::new(format!("no feed item found with id={id}")).into());
     };
 
     Ok(row)
@@ -453,7 +455,7 @@ pub async fn delete_feed_item(pool: &PgPool, id: i64) -> Result<()> {
     .with_context(|| format!("failed to delete feed item with id={id}"))?;
 
     if result.rows_affected() == 0 {
-        anyhow::bail!("no feed item found with id={id}");
+        return Err(crate::feed::NotFound::new(format!("no feed item found with id={id}")).into());
     }
 
     Ok(())
@@ -624,7 +626,10 @@ pub async fn read_feed_item_detail(pool: &PgPool, feed_item_id: i64) -> Result<F
     .with_context(|| format!("failed to read feed item detail for feed_item_id={feed_item_id}"))?;
 
     let Some(row) = row else {
-        anyhow::bail!("no feed item detail found for feed_item_id={feed_item_id}");
+        return Err(crate::feed::NotFound::new(format!(
+            "no feed item detail found for feed_item_id={feed_item_id}"
+        ))
+        .into());
     };
 
     Ok(row)
@@ -678,10 +683,46 @@ pub async fn delete_feed_item_detail(pool: &PgPool, feed_item_id: i64) -> Result
     })?;
 
     if result.rows_affected() == 0 {
-        anyhow::bail!("no feed item detail found for feed_item_id={feed_item_id}");
+        return Err(crate::feed::NotFound::new(format!(
+            "no feed item detail found for feed_item_id={feed_item_id}"
+        ))
+        .into());
     }
 
     Ok(())
+}
+
+/// Read items with details, returned in the order of `ids`. Unknown ids are skipped.
+pub async fn read_feed_items_with_detail_by_ids(
+    pool: &PgPool,
+    ids: &[i64],
+) -> Result<Vec<FeedItemWithDetail>> {
+    let rows = sqlx::query_as!(
+        FeedItemWithDetail,
+        r#"
+        SELECT f.id as "id!: i64",
+               f.feed_id as "feed_id!: i64",
+               f.external_id as "external_id!",
+               f.title as "title!",
+               f.url as "url!",
+               f.inserted_at as "inserted_at!: _",
+               d.summary as "summary?",
+               d.content as "content?",
+               d.author as "author?",
+               d.published_at as "published_at?: _"
+        FROM feed_items f
+        LEFT JOIN feed_item_details d ON d.feed_item_id = f.id
+        WHERE f.id = ANY($1)
+        "#,
+        ids,
+    )
+    .fetch_all(pool)
+    .await
+    .with_context(|| format!("failed to read feed items by ids count={}", ids.len()))?;
+
+    let mut by_id: HashMap<i64, FeedItemWithDetail> =
+        rows.into_iter().map(|row| (row.id, row)).collect();
+    Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
 }
 
 #[cfg(test)]
@@ -1569,5 +1610,37 @@ mod tests {
                 "{table}.search_vector should be a GIN-indexed column"
             );
         }
+    }
+
+    #[sqlx::test]
+    async fn read_by_ids_preserves_requested_order(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/a.xml")
+            .await
+            .unwrap();
+        let mut ids = Vec::new();
+        for key in ["a", "b"] {
+            let item = insert_feed_item(&pool, feed.id, key, key, key)
+                .await
+                .unwrap();
+            insert_feed_item_detail(
+                &pool,
+                item.id,
+                &format!("summary {key}"),
+                "",
+                "",
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+            ids.push(item.id);
+        }
+        let [a, b] = ids[..] else { unreachable!() };
+
+        let items = read_feed_items_with_detail_by_ids(&pool, &[b, i64::MAX, a])
+            .await
+            .unwrap();
+        let ids: Vec<i64> = items.iter().map(|i| i.id).collect();
+        assert_eq!(ids, vec![b, a]);
+        assert_eq!(items[0].summary.as_deref(), Some("summary b"));
     }
 }

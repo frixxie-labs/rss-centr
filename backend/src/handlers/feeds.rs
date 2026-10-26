@@ -75,12 +75,15 @@ pub async fn create_feed(
             warn!("failed with error: {e:#}");
             HandlerError::from_db(e, "Failed to store data in database")
         })?;
-    feed_update_queue::enqueue_feed_now(&pool, feed.id)
-        .await
-        .map_err(|e| {
-            warn!("failed with error: {e:#}");
-            HandlerError::from_feed_queue(e, "Failed to enqueue feed update")
-        })?;
+    // Re-adding a paused feed must not silently resume it.
+    if feed.is_enabled {
+        feed_update_queue::enqueue_feed_now(&pool, feed.id)
+            .await
+            .map_err(|e| {
+                warn!("failed with error: {e:#}");
+                HandlerError::from_feed_queue(e, "Failed to enqueue feed update")
+            })?;
+    }
     Ok(Json(feed))
 }
 
@@ -121,6 +124,7 @@ pub async fn fetch_feed_by_id(
     responses(
         (status = 200, description = "Feed updated", body = String),
         (status = 400, description = "Invalid input"),
+        (status = 404, description = "Feed not found"),
         (status = 500, description = "Internal server error"),
     ),
     tag = "feeds"
@@ -132,15 +136,17 @@ pub async fn update_feed_enabled(
     Json(body): Json<UpdateFeedEnabled>,
 ) -> Result<String, HandlerError> {
     let pool = app_state;
-    feed_subscription::set_feed_enabled(&pool, feed_id, body.is_enabled)
+    let db_error = |e: anyhow::Error| {
+        warn!("failed with error: {e:#}");
+        HandlerError::from_db(e, "Failed to update feed")
+    };
+    let mut tx = pool.begin().await.map_err(|e| db_error(e.into()))?;
+    feed_subscription::set_feed_enabled(&mut *tx, feed_id, body.is_enabled)
         .await
-        .map_err(|e| {
-            warn!("failed with error: {e:#}");
-            HandlerError::from_db(e, "Failed to update feed")
-        })?;
+        .map_err(db_error)?;
 
     if body.is_enabled {
-        feed_update_queue::enqueue_feed_now(&pool, feed_id)
+        feed_update_queue::enqueue_feed_now(&mut *tx, feed_id)
             .await
             .map_err(|e| {
                 warn!("failed with error: {e:#}");
@@ -148,6 +154,7 @@ pub async fn update_feed_enabled(
             })?;
     }
 
+    tx.commit().await.map_err(|e| db_error(e.into()))?;
     Ok("OK".to_string())
 }
 
@@ -175,9 +182,6 @@ pub async fn queue_ingest_feed(
         .await
         .map_err(|e| {
             warn!("failed with error: {e:#}");
-            if matches!(e, feed_update_queue::FeedQueueError::FeedPaused { .. }) {
-                return HandlerError::conflict("feed is paused; enable it before fetching now");
-            }
             HandlerError::from_feed_queue(e, "Failed to enqueue feed update")
         })?;
 
@@ -249,7 +253,9 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn creating_an_existing_paused_feed_preserves_its_enqueue_error_response(pool: PgPool) {
+    async fn creating_an_existing_paused_feed_returns_it_without_unpausing_or_queueing(
+        pool: PgPool,
+    ) {
         let url = "https://example.com/paused-create.xml";
         let feed = feed_subscription::upsert_feed_by_url(&pool, url)
             .await
@@ -258,17 +264,52 @@ mod tests {
             .await
             .unwrap();
 
-        let error = create_feed(State(pool), Json(NewFeed { url: url.into() }))
+        let Json(created) = create_feed(State(pool.clone()), Json(NewFeed { url: url.into() }))
             .await
-            .unwrap_err();
+            .unwrap();
 
-        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(
-            error.message,
-            format!(
-                "Failed to enqueue feed update: feed is paused for feed_id={}",
-                feed.id
-            )
+        assert_eq!(created.id, feed.id);
+        assert!(!created.is_enabled);
+        let queued = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM feed_update_queue WHERE feed_id = $1",
+            feed.id
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(queued, Some(0));
+    }
+
+    #[sqlx::test]
+    async fn enabling_a_feed_marks_it_enabled_and_queues_it(pool: PgPool) {
+        let feed = feed_subscription::upsert_feed_by_url(&pool, "https://example.com/e.xml")
+            .await
+            .unwrap();
+        feed_subscription::set_feed_enabled(&pool, feed.id, false)
+            .await
+            .unwrap();
+
+        update_feed_enabled(
+            State(pool.clone()),
+            Path(feed.id),
+            Json(UpdateFeedEnabled { is_enabled: true }),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            feed_subscription::read_feed(&pool, feed.id)
+                .await
+                .unwrap()
+                .is_enabled
         );
+        let queued = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM feed_update_queue WHERE feed_id = $1",
+            feed.id
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(queued, Some(1));
     }
 }

@@ -1,5 +1,6 @@
 mod config;
 mod embedding_index;
+pub mod embedding_store;
 mod items;
 
 pub(crate) use config::SearchConfig;
