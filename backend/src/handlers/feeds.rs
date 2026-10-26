@@ -5,7 +5,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use tracing::{instrument, warn};
+use tracing::instrument;
 use utoipa::ToSchema;
 
 use crate::{
@@ -41,10 +41,9 @@ pub async fn fetch_feeds(
     State(app_state): FeedState,
 ) -> Result<Json<Vec<FeedSubscription>>, HandlerError> {
     let pool = app_state;
-    let feeds = feed_subscription::list_feeds(&pool).await.map_err(|e| {
-        warn!("failed with error: {e:#}");
-        HandlerError::from_db(e, "Failed to fetch data from database")
-    })?;
+    let feeds = feed_subscription::list_feeds(&pool)
+        .await
+        .map_err(|e| HandlerError::from_db(e, "Failed to fetch data from database"))?;
     Ok(Json(feeds))
 }
 
@@ -71,18 +70,12 @@ pub async fn create_feed(
 
     let feed = feed_subscription::upsert_feed_by_url(&pool, body.url.trim())
         .await
-        .map_err(|e| {
-            warn!("failed with error: {e:#}");
-            HandlerError::from_db(e, "Failed to store data in database")
-        })?;
+        .map_err(|e| HandlerError::from_db(e, "Failed to store data in database"))?;
     // Re-adding a paused feed must not silently resume it.
     if feed.is_enabled {
         feed_update_queue::enqueue_feed_now(&pool, feed.id)
             .await
-            .map_err(|e| {
-                warn!("failed with error: {e:#}");
-                HandlerError::from_feed_queue(e, "Failed to enqueue feed update")
-            })?;
+            .map_err(|e| HandlerError::from_feed_queue(e, "Failed to enqueue feed update"))?;
     }
     Ok(Json(feed))
 }
@@ -107,10 +100,7 @@ pub async fn fetch_feed_by_id(
     let pool = app_state;
     let feed = feed_subscription::read_feed(&pool, feed_id)
         .await
-        .map_err(|e| {
-            warn!("failed with error: {e:#}");
-            HandlerError::from_db(e, "Failed to fetch data from database")
-        })?;
+        .map_err(|e| HandlerError::from_db(e, "Failed to fetch data from database"))?;
     Ok(Json(feed))
 }
 
@@ -136,10 +126,7 @@ pub async fn update_feed_enabled(
     Json(body): Json<UpdateFeedEnabled>,
 ) -> Result<String, HandlerError> {
     let pool = app_state;
-    let db_error = |e: anyhow::Error| {
-        warn!("failed with error: {e:#}");
-        HandlerError::from_db(e, "Failed to update feed")
-    };
+    let db_error = |e: anyhow::Error| HandlerError::from_db(e, "Failed to update feed");
     let mut tx = pool.begin().await.map_err(|e| db_error(e.into()))?;
     feed_subscription::set_feed_enabled(&mut *tx, feed_id, body.is_enabled)
         .await
@@ -148,10 +135,7 @@ pub async fn update_feed_enabled(
     if body.is_enabled {
         feed_update_queue::enqueue_feed_now(&mut *tx, feed_id)
             .await
-            .map_err(|e| {
-                warn!("failed with error: {e:#}");
-                HandlerError::from_feed_queue(e, "Failed to enqueue feed update")
-            })?;
+            .map_err(|e| HandlerError::from_feed_queue(e, "Failed to enqueue feed update"))?;
     }
 
     tx.commit().await.map_err(|e| db_error(e.into()))?;
@@ -180,10 +164,7 @@ pub async fn queue_ingest_feed(
 
     feed_update_queue::enqueue_feed_now(&pool, feed_id)
         .await
-        .map_err(|e| {
-            warn!("failed with error: {e:#}");
-            HandlerError::from_feed_queue(e, "Failed to enqueue feed update")
-        })?;
+        .map_err(|e| HandlerError::from_feed_queue(e, "Failed to enqueue feed update"))?;
 
     Ok((StatusCode::ACCEPTED, "queued"))
 }
@@ -208,10 +189,7 @@ pub async fn delete_feed(
     let pool = app_state;
     feed_subscription::delete_feed(&pool, feed_id)
         .await
-        .map_err(|e| {
-            warn!("failed with error: {e:#}");
-            HandlerError::from_db(e, "Failed to delete feed")
-        })?;
+        .map_err(|e| HandlerError::from_db(e, "Failed to delete feed"))?;
     Ok("OK".to_string())
 }
 

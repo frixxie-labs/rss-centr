@@ -3,7 +3,7 @@ use rss_centr_core::semantic::{
     ClaimEmbeddingsResponse, StoreEmbeddingsRequest, StoreEmbeddingsResult,
 };
 use serde::Deserialize;
-use tracing::{instrument, warn};
+use tracing::instrument;
 
 use crate::search::SearchState;
 use crate::search::embedding_store::{claim_items_needing_embedding, store_item_embeddings};
@@ -50,10 +50,7 @@ pub async fn claim_embeddings(
 
     let jobs = claim_items_needing_embedding(&state.pool, &state.model, limit, lease_seconds)
         .await
-        .map_err(|e| {
-            warn!("failed with error: {e:#}");
-            HandlerError::from_db(e, "Failed to claim items for embedding")
-        })?;
+        .map_err(|e| HandlerError::from_db(e, "Failed to claim items for embedding"))?;
     Ok(Json(ClaimEmbeddingsResponse {
         model: state.model.clone(),
         jobs,
@@ -95,10 +92,7 @@ pub async fn store_embeddings(
 
     let stored = store_item_embeddings(&state.pool, &state.model, &request.embeddings)
         .await
-        .map_err(|e| {
-            warn!("failed with error: {e:#}");
-            HandlerError::from_db(e, "Failed to store embeddings")
-        })?;
+        .map_err(|e| HandlerError::from_db(e, "Failed to store embeddings"))?;
     Ok(Json(StoreEmbeddingsResult { stored }))
 }
 

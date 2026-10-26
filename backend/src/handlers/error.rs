@@ -30,7 +30,9 @@ impl HandlerError {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, message.into())
     }
 
+    /// Log a storage error and map it to not found or an internal error.
     pub fn from_db(err: anyhow::Error, internal_message: impl Into<String>) -> Self {
+        tracing::warn!("failed with error: {err:#}");
         if is_not_found_error(&err) {
             return Self::not_found(err.to_string());
         }
@@ -44,6 +46,7 @@ impl HandlerError {
     ) -> Self {
         use crate::feed::feed_update_queue::FeedQueueError;
 
+        tracing::warn!("failed with error: {error:#}");
         match error {
             FeedQueueError::LeaseConflict { .. } => Self::conflict(error.to_string()),
             FeedQueueError::FeedNotFound { .. } => Self::not_found(error.to_string()),
@@ -69,7 +72,6 @@ impl From<crate::search::SearchError> for HandlerError {
     fn from(error: crate::search::SearchError) -> Self {
         match error {
             crate::search::SearchError::Storage(error) => {
-                tracing::warn!("failed with error: {error:#}");
                 Self::from_db(error, "Failed to fetch data from database")
             }
             crate::search::SearchError::EmbeddingUnavailable => Self::new(

@@ -1,6 +1,6 @@
 use axum::{Json, extract::State};
 use sqlx::PgPool;
-use tracing::{instrument, warn};
+use tracing::instrument;
 
 use crate::{
     feed::feed_title_index::{FeedTitleIndexEntry, FeedTitleIndexRepository},
@@ -14,10 +14,10 @@ pub async fn fetch_feed_title_index(
     State(app_state): FeedState,
 ) -> Result<Json<Vec<FeedTitleIndexEntry>>, HandlerError> {
     let pool = app_state;
-    let index = pool.read_feed_title_index().await.map_err(|e| {
-        warn!("failed with error: {e:#}");
-        HandlerError::from_db(e, "Failed to read title index")
-    })?;
+    let index = pool
+        .read_feed_title_index()
+        .await
+        .map_err(|e| HandlerError::from_db(e, "Failed to read title index"))?;
     Ok(Json(index))
 }
 
@@ -35,9 +35,9 @@ pub async fn fetch_recent_feed_title_index(
     State(app_state): FeedState,
 ) -> Result<Json<Vec<FeedTitleIndexEntry>>, HandlerError> {
     let pool = app_state;
-    let index = pool.read_recent_feed_title_index().await.map_err(|e| {
-        warn!("failed with error: {e:#}");
-        HandlerError::from_db(e, "Failed to read recent title index")
-    })?;
+    let index = pool
+        .read_recent_feed_title_index()
+        .await
+        .map_err(|e| HandlerError::from_db(e, "Failed to read recent title index"))?;
     Ok(Json(index))
 }

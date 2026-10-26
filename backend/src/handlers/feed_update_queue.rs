@@ -9,7 +9,7 @@ use rss_centr_core::feed_update_queue::{
 };
 use serde::Deserialize;
 use sqlx::PgPool;
-use tracing::{instrument, warn};
+use tracing::instrument;
 use utoipa::ToSchema;
 
 use crate::feed::feed_update_queue::{
@@ -82,10 +82,7 @@ pub async fn dequeue_feed_updates(
 
     let feeds = dequeue_due_feeds(&pool, limit, lease_seconds)
         .await
-        .map_err(|e| {
-            warn!("failed with error: {e:#}");
-            HandlerError::from_db(e, "Failed to dequeue feed updates")
-        })?;
+        .map_err(|e| HandlerError::from_db(e, "Failed to dequeue feed updates"))?;
 
     Ok(Json(feeds))
 }
@@ -145,7 +142,6 @@ pub async fn fail_feed_update_handler(
 }
 
 fn map_queue_error(err: FeedQueueError) -> HandlerError {
-    warn!("failed with error: {err:#}");
     HandlerError::from_feed_queue(err, "Failed to update feed queue")
 }
 
