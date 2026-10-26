@@ -208,7 +208,7 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
             rss_centr_core::summary_refresh::SummaryRefreshResponse,
             crate::feed::feed_item::FeedItem,
             crate::feed::feed_item::FeedItemWithDetail,
-            crate::feed::feed_item::FeedItemDetail,
+            crate::feed::feed_item_detail::FeedItemDetail,
             crate::feed::feed_title_index::FeedTitleIndexEntry,
             crate::feed::feed_title_index::FeedTitleIndexItem,
             daily_summary::DailySummary,

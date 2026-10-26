@@ -240,7 +240,8 @@ mod tests {
     use sqlx::PgPool;
 
     use super::*;
-    use crate::feed::feed_item::{insert_feed_item, insert_feed_item_detail};
+    use crate::feed::feed_item::insert_feed_item;
+    use crate::feed::feed_item_detail::insert_feed_item_detail;
     use crate::feed::feed_subscription::upsert_feed_by_url;
     use crate::search::embedding_store::store_item_embeddings;
     use crate::search::{EmbedFuture, EmbeddingIndex, QueryEmbedder};

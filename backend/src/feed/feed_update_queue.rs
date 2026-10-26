@@ -12,9 +12,9 @@ use rss_centr_core::feed_update_queue::{
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
-use super::feed_item::{
-    insert_feed_item_details_dedup_batch, insert_feed_items_dedup_batch, read_feed_cadence_seconds,
-};
+use super::cadence::read_feed_cadence_seconds;
+use super::feed_item::insert_feed_items_dedup_batch;
+use super::feed_item_detail::insert_feed_item_details_dedup_batch;
 use super::feed_subscription::FeedSuccessUpdate;
 use super::poll_interval::{
     PollSignal, Schedule, reschedule_after_completion, reschedule_after_failure,

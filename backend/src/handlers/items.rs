@@ -2,8 +2,10 @@ use axum::{Json, extract::Path, extract::Query, extract::State};
 use sqlx::PgPool;
 use tracing::{instrument, warn};
 
-use crate::feed::feed_item::{FeedItem, FeedItemDetail, FeedItemWithDetail};
-use crate::feed::feed_item::{read_feed_item, read_feed_item_detail, read_feed_items_by_feed};
+use crate::feed::feed_item::{
+    FeedItem, FeedItemWithDetail, read_feed_item, read_feed_items_by_feed,
+};
+use crate::feed::feed_item_detail::{FeedItemDetail, read_feed_item_detail};
 use crate::search::{LatestItemsQuery, SearchMode, SearchState, search_items};
 
 use super::error::HandlerError;
@@ -114,7 +116,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::feed::feed_item::{insert_feed_item, insert_feed_item_detail};
+    use crate::feed::feed_item::insert_feed_item;
+    use crate::feed::feed_item_detail::insert_feed_item_detail;
     use crate::feed::feed_subscription::upsert_feed_by_url;
     use crate::search::embedding_store::store_item_embeddings;
     use crate::search::{EmbedFuture, QueryEmbedder};

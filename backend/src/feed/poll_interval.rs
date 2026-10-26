@@ -61,7 +61,7 @@ pub(crate) fn reschedule_after_failure(
 const MAX_POLL_INTERVAL_SECONDS: i64 = 6_000;
 
 /// Clamps an observed cadence (median seconds between items, see
-/// `feed_item::read_feed_cadence_seconds`) into a sane poll interval. Falls
+/// `cadence::read_feed_cadence_seconds`) into a sane poll interval. Falls
 /// back to the slowest interval when there isn't yet a reliable cadence
 /// signal, so newly-added feeds start out polled conservatively.
 pub(crate) fn resolved_poll_interval_seconds(interval_seconds: Option<i64>) -> i64 {
