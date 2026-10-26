@@ -71,11 +71,10 @@ async fn state_uses_the_injected_client_endpoint_and_summary_models() {
             budget,
             "News".into(),
             FINAL_OUTPUT_TOKENS,
-            &mut SummaryUsage::default(),
         )
         .await
         .unwrap();
-    assert_eq!(summary, "Configured overview");
+    assert_eq!(summary.text, "Configured overview");
     server.abort();
 }
 
@@ -218,12 +217,11 @@ async fn generation_checks_actual_usage_and_rejects_incomplete_responses() {
                 },
                 "News".to_string(),
                 700,
-                &mut SummaryUsage::default(),
             )
             .await;
         assert_eq!(result.is_ok(), success);
         if success {
-            assert_eq!(result.unwrap(), "News");
+            assert_eq!(result.unwrap().text, "News");
         }
         // Rejected before making any request, independently of Ollama's response.
         assert!(
@@ -235,8 +233,7 @@ async fn generation_checks_actual_usage_and_rejects_incomplete_responses() {
                         num_ctx: SUMMARY_CONTEXT_TOKENS,
                     },
                     "oversized ".repeat(SUMMARY_CONTEXT_TOKENS as usize),
-                    700,
-                    &mut SummaryUsage::default()
+                    700
                 )
                 .await
                 .is_err()
@@ -277,11 +274,14 @@ async fn truncated_generation_retries_once_with_more_headroom() {
                 },
                 "News".to_string(),
                 num_predict,
-                &mut SummaryUsage::default(),
             )
             .await
             .unwrap();
-        assert_eq!(result, "Complete notes (Source).");
+        assert_eq!(result.text, "Complete notes (Source).");
+        assert_eq!(
+            result.usage.llm_calls, 2,
+            "the truncated attempt counts too"
+        );
         server.abort();
     }
 }
@@ -314,7 +314,6 @@ async fn repeated_truncation_rejects_partial_output() {
             },
             "News".to_string(),
             num_predict,
-            &mut SummaryUsage::default(),
         )
         .await
         .unwrap_err();
@@ -349,7 +348,6 @@ async fn truncation_retry_requires_estimated_and_actual_context_headroom() {
                 },
                 prompt,
                 num_predict,
-                &mut SummaryUsage::default(),
             )
             .await
             .unwrap_err();
@@ -388,7 +386,6 @@ async fn context_overflow_and_other_incomplete_responses_do_not_retry() {
                 },
                 "News".to_string(),
                 BATCH_OUTPUT_TOKENS,
-                &mut SummaryUsage::default(),
             )
             .await
             .unwrap_err();
@@ -421,7 +418,6 @@ async fn longer_summaries_have_headroom_but_truncated_output_still_fails() {
                     },
                     "News".to_string(),
                     num_predict,
-                    &mut SummaryUsage::default(),
                 )
                 .await;
             assert_eq!(result.is_ok(), done_reason == "stop");

@@ -38,8 +38,7 @@ pub(crate) trait SummaryGenerator: Send + Sync {
         budget: ContextBudget,
         prompt: String,
         num_predict: u32,
-        usage: &mut SummaryUsage,
-    ) -> impl Future<Output = Result<String, SummaryError>> + Send;
+    ) -> impl Future<Output = Result<Generated, SummaryError>> + Send;
 }
 
 #[derive(Clone, Serialize, FromRow, ToSchema)]
@@ -58,13 +57,46 @@ pub struct DailySummary {
     pub eval_ms: Option<i64>,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SummaryUsage {
     pub(crate) llm_calls: i32,
     pub(crate) prompt_tokens: i64,
     pub(crate) output_tokens: i64,
     pub(crate) llm_ms: i64,
     pub(crate) eval_ms: i64,
+}
+
+impl std::ops::Add for SummaryUsage {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Self {
+            llm_calls: self.llm_calls + other.llm_calls,
+            prompt_tokens: self.prompt_tokens + other.prompt_tokens,
+            output_tokens: self.output_tokens + other.output_tokens,
+            llm_ms: self.llm_ms + other.llm_ms,
+            eval_ms: self.eval_ms + other.eval_ms,
+        }
+    }
+}
+
+impl std::ops::AddAssign for SummaryUsage {
+    fn add_assign(&mut self, other: Self) {
+        *self = *self + other;
+    }
+}
+
+impl std::iter::Sum for SummaryUsage {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::default(), std::ops::Add::add)
+    }
+}
+
+/// Generated text and the model usage it took, including retries.
+#[derive(Debug)]
+pub(crate) struct Generated {
+    pub(crate) text: String,
+    pub(crate) usage: SummaryUsage,
 }
 
 pub(crate) struct GeneratedSummary {

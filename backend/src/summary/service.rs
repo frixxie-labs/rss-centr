@@ -125,24 +125,28 @@ async fn generate_summary<R: SummaryRepository, G: SummaryGenerator>(
         batches = article_prompts.len(),
         "summary generation plan"
     );
-    let mut notes = generate_notes(state, batch_budget, article_prompts, &mut usage).await?;
+    let (mut notes, notes_usage) = generate_notes(state, batch_budget, article_prompts).await?;
+    usage += notes_usage;
     let summary = loop {
         match plan_merge_round(&notes, batch_budget, final_budget)? {
             MergeRound::Final(prompt) => {
                 info!(batches = notes.len(), "generating final news summary");
-                break state
+                let generated = state
                     .generator
                     .generate(
                         &state.models.final_summary,
                         final_budget,
                         prompt,
                         FINAL_OUTPUT_TOKENS,
-                        &mut usage,
                     )
                     .await?;
+                usage += generated.usage;
+                break generated.text;
             }
             MergeRound::Merge(prompts) => {
-                notes = generate_notes(state, batch_budget, prompts, &mut usage).await?;
+                let (merged, merge_usage) = generate_notes(state, batch_budget, prompts).await?;
+                notes = merged;
+                usage += merge_usage;
             }
         }
     };
@@ -176,28 +180,23 @@ async fn generate_summary<R: SummaryRepository, G: SummaryGenerator>(
     Ok(result)
 }
 
-/// Generates one batch of story notes per prompt, in order.
+/// Generates one batch of story notes per prompt, in order, with their total usage.
 async fn generate_notes<R, G: SummaryGenerator>(
     state: &SummaryState<R, G>,
     budget: ContextBudget,
     prompts: Vec<String>,
-    usage: &mut SummaryUsage,
-) -> Result<Vec<String>, SummaryError> {
-    let mut notes = Vec::with_capacity(prompts.len());
+) -> Result<(Vec<String>, SummaryUsage), SummaryError> {
+    let mut batches = Vec::with_capacity(prompts.len());
     for (index, prompt) in prompts.into_iter().enumerate() {
         info!(batch = index + 1, "generating summary notes batch");
-        notes.push(
+        batches.push(
             state
                 .generator
-                .generate(
-                    &state.models.batch,
-                    budget,
-                    prompt,
-                    BATCH_OUTPUT_TOKENS,
-                    usage,
-                )
+                .generate(&state.models.batch, budget, prompt, BATCH_OUTPUT_TOKENS)
                 .await?,
         );
     }
-    Ok(notes)
+    let usage = batches.iter().map(|batch| batch.usage).sum();
+    let notes = batches.into_iter().map(|batch| batch.text).collect();
+    Ok((notes, usage))
 }

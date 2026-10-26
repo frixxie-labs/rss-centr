@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use crate::summary::{ContextBudget, SummaryArticle};
+use crate::summary::{ContextBudget, Generated, SummaryArticle};
 
 type Events = Arc<Mutex<Vec<&'static str>>>;
 
@@ -105,8 +105,7 @@ impl SummaryGenerator for RecordingGenerator {
         _budget: ContextBudget,
         _prompt: String,
         _num_predict: u32,
-        usage: &mut SummaryUsage,
-    ) -> Result<String, SummaryError> {
+    ) -> Result<Generated, SummaryError> {
         let stage = match model {
             "batch" => "batch",
             "final" => "final",
@@ -116,15 +115,18 @@ impl SummaryGenerator for RecordingGenerator {
         match self.scenario {
             Scenario::FailedBatch => Err(SummaryError::Truncated),
             Scenario::Pending => std::future::pending().await,
-            Scenario::Success | Scenario::MissingFinalModel => {
-                usage.llm_calls += 1;
-                Ok(if model == "batch" {
+            Scenario::Success | Scenario::MissingFinalModel => Ok(Generated {
+                text: if model == "batch" {
                     "Notes"
                 } else {
                     "Overview"
                 }
-                .into())
-            }
+                .into(),
+                usage: SummaryUsage {
+                    llm_calls: 1,
+                    ..SummaryUsage::default()
+                },
+            }),
         }
     }
 }

@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
 use super::{
-    ContextBudget, InputTooLarge, SUMMARY_CONTEXT_TOKENS, SUMMARY_SYSTEM_PROMPT, SummaryError,
-    SummaryGenerator, SummaryUsage,
+    ContextBudget, Generated, InputTooLarge, SUMMARY_CONTEXT_TOKENS, SUMMARY_SYSTEM_PROMPT,
+    SummaryError, SummaryGenerator, SummaryUsage,
 };
 
 pub(super) const OLLAMA_REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -154,8 +154,8 @@ impl SummaryGenerator for OllamaSummaryGenerator {
         budget: ContextBudget,
         prompt: String,
         num_predict: u32,
-        usage: &mut SummaryUsage,
-    ) -> Result<String, SummaryError> {
+    ) -> Result<Generated, SummaryError> {
+        let mut usage = SummaryUsage::default();
         if !budget.fits(&prompt, num_predict) {
             return Err(InputTooLarge.into());
         }
@@ -198,17 +198,19 @@ impl SummaryGenerator for OllamaSummaryGenerator {
             })?;
             let duration_ms = (generated.total_duration / 1_000_000) as i64;
             let eval_ms = (generated.eval_duration / 1_000_000) as i64;
-            usage.llm_calls += 1;
-            usage.prompt_tokens += i64::from(generated.prompt_eval_count);
-            usage.output_tokens += i64::from(generated.eval_count);
-            usage.llm_ms += duration_ms;
-            usage.eval_ms += eval_ms;
+            usage += SummaryUsage {
+                llm_calls: 1,
+                prompt_tokens: i64::from(generated.prompt_eval_count),
+                output_tokens: i64::from(generated.eval_count),
+                llm_ms: duration_ms,
+                eval_ms,
+            };
             info!(model, prompt_tokens = generated.prompt_eval_count,
                 output_tokens = generated.eval_count, num_ctx = budget.num_ctx,
                 duration_ms, eval_ms, done_reason = ?generated.done_reason, "summary token usage");
             let retry = (attempt == 0 && retry_fits).then_some(retry_allowance);
             match classify(&generated, budget.num_ctx, allowance, retry) {
-                Verdict::Accept(summary) => return Ok(summary),
+                Verdict::Accept(text) => return Ok(Generated { text, usage }),
                 Verdict::Retry => {
                     warn!(
                         model,
