@@ -41,6 +41,69 @@ impl std::fmt::Display for FeedFetchFailure {
 
 impl std::error::Error for FeedFetchFailure {}
 
+/// Why fetching a feed failed.
+#[derive(Debug)]
+pub(crate) enum FetchError {
+    /// The publisher refused the request. `source` is the HTTP error, unless
+    /// the response had a success status (a bot challenge).
+    Rejected {
+        failure: FeedFetchFailure,
+        source: Option<reqwest::Error>,
+    },
+    /// Transport, body or parse errors.
+    Other(anyhow::Error),
+}
+
+impl FetchError {
+    pub(crate) fn http_status(&self) -> Option<u16> {
+        match self {
+            Self::Rejected { failure, .. } => Some(failure.status.as_u16()),
+            Self::Other(error) => error
+                .downcast_ref::<reqwest::Error>()
+                .and_then(reqwest::Error::status)
+                .map(|status| status.as_u16()),
+        }
+    }
+
+    pub(crate) fn retry_after(&self) -> Option<DateTime<Utc>> {
+        match self {
+            Self::Rejected { failure, .. } => failure.retry_after,
+            Self::Other(_) => None,
+        }
+    }
+
+    pub(crate) fn blocked_by_bot_protection(&self) -> bool {
+        matches!(
+            self,
+            Self::Rejected { failure, .. } if failure.reason == FetchFailureReason::BotProtection
+        )
+    }
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rejected {
+                failure,
+                source: Some(source),
+            } => write!(f, "{failure}: {source}"),
+            Self::Rejected {
+                failure,
+                source: None,
+            } => failure.fmt(f),
+            Self::Other(error) => write!(f, "{error:#}"),
+        }
+    }
+}
+
+impl std::error::Error for FetchError {}
+
+impl From<anyhow::Error> for FetchError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::Other(error)
+    }
+}
+
 pub(crate) enum FetchOutcome {
     NotModified {
         etag: Option<String>,
@@ -74,8 +137,10 @@ const BOT_CHALLENGE_HEADERS: [&str; 2] = ["x-vercel-mitigated", "cf-mitigated"];
 
 /// Fetches and parses feeds, abstracted so the runner can be tested.
 pub(crate) trait FeedSource: Send + Sync + 'static {
-    fn fetch(&self, feed: &DequeuedFeedUpdate)
-    -> impl Future<Output = Result<FetchOutcome>> + Send;
+    fn fetch(
+        &self,
+        feed: &DequeuedFeedUpdate,
+    ) -> impl Future<Output = Result<FetchOutcome, FetchError>> + Send;
 }
 
 pub(crate) struct HttpFeedSource {
@@ -93,7 +158,7 @@ impl HttpFeedSource {
 }
 
 impl FeedSource for HttpFeedSource {
-    async fn fetch(&self, feed: &DequeuedFeedUpdate) -> Result<FetchOutcome> {
+    async fn fetch(&self, feed: &DequeuedFeedUpdate) -> Result<FetchOutcome, FetchError> {
         fetch_feed(&self.http, feed, self.max_bytes).await
     }
 }
@@ -102,7 +167,7 @@ pub(crate) async fn fetch_feed(
     http: &reqwest::Client,
     feed: &DequeuedFeedUpdate,
     max_bytes: usize,
-) -> Result<FetchOutcome> {
+) -> Result<FetchOutcome, FetchError> {
     let started_at = Instant::now();
     let outcome = fetch_feed_inner(http, feed, max_bytes).await;
     let elapsed = started_at.elapsed();
@@ -126,7 +191,7 @@ async fn fetch_feed_inner(
     http: &reqwest::Client,
     feed: &DequeuedFeedUpdate,
     max_bytes: usize,
-) -> Result<FetchOutcome> {
+) -> Result<FetchOutcome, FetchError> {
     let mut request = http.get(feed.url.as_str());
     if let Some(etag) = feed.etag.as_deref() {
         request = request.header(header::IF_NONE_MATCH, etag);
@@ -151,10 +216,10 @@ async fn fetch_feed_inner(
             });
         }
         ResponseClass::Failed(failure) => {
-            if let Err(error) = response.error_for_status_ref() {
-                return Err(anyhow::Error::new(error).context(failure));
-            }
-            return Err(failure.into());
+            return Err(FetchError::Rejected {
+                failure,
+                source: response.error_for_status_ref().err(),
+            });
         }
         ResponseClass::Feed => {}
     }
@@ -316,14 +381,18 @@ mod tests {
         }
     }
 
-    async fn fetch_local_response(status: &str, headers: &str, body: &str) -> Result<FetchOutcome> {
+    async fn fetch_local_response(
+        status: &str,
+        headers: &str,
+        body: &str,
+    ) -> Result<FetchOutcome, FetchError> {
         fetch_local(LocalResponse::new(status, headers, body))
             .await
             .0
     }
 
     /// Serves one canned response; returns the outcome and the raw request.
-    async fn fetch_local(local: LocalResponse<'_>) -> (Result<FetchOutcome>, String) {
+    async fn fetch_local(local: LocalResponse<'_>) -> (Result<FetchOutcome, FetchError>, String) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
@@ -405,7 +474,9 @@ mod tests {
             Err(error) => error,
             Ok(_) => panic!("expected the challenge to fail"),
         };
-        let failure = error.downcast_ref::<FeedFetchFailure>().unwrap();
+        let FetchError::Rejected { failure, .. } = &error else {
+            panic!("expected a rejected fetch: {error}");
+        };
         assert_eq!(failure.reason, FetchFailureReason::BotProtection);
         assert_eq!(failure.status, StatusCode::FORBIDDEN);
     }
@@ -416,7 +487,9 @@ mod tests {
             Err(error) => error,
             Ok(_) => panic!("expected a 300 response to fail"),
         };
-        let failure = error.downcast_ref::<FeedFetchFailure>().unwrap();
+        let FetchError::Rejected { failure, .. } = &error else {
+            panic!("expected a rejected fetch: {error}");
+        };
         assert_eq!(failure.status, StatusCode::MULTIPLE_CHOICES);
         assert_eq!(failure.reason, FetchFailureReason::HttpStatus);
     }
@@ -437,14 +510,17 @@ mod tests {
                     .to_string()
                     .contains("Blocked by publisher's bot protection")
             );
-            let failure = error.downcast_ref::<FeedFetchFailure>().unwrap();
+            let FetchError::Rejected { failure, .. } = &error else {
+                panic!("expected a rejected fetch: {error}");
+            };
             assert_eq!(failure.reason, FetchFailureReason::BotProtection);
             assert!(failure.retry_after.is_some());
             if status.starts_with("429") {
-                assert_eq!(
-                    error.downcast_ref::<reqwest::Error>().unwrap().status(),
-                    Some(StatusCode::TOO_MANY_REQUESTS)
-                );
+                assert!(matches!(
+                    &error,
+                    FetchError::Rejected { source: Some(source), .. }
+                        if source.status() == Some(StatusCode::TOO_MANY_REQUESTS)
+                ));
             }
         }
     }
@@ -463,7 +539,9 @@ mod tests {
                 Err(error) => error,
                 Ok(_) => panic!("expected HTTP failure"),
             };
-            let failure = error.downcast_ref::<FeedFetchFailure>().unwrap();
+            let FetchError::Rejected { failure, .. } = &error else {
+                panic!("expected a rejected fetch: {error}");
+            };
             assert_eq!(failure.reason, FetchFailureReason::HttpStatus);
             assert_eq!(
                 failure.retry_after,

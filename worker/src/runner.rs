@@ -11,7 +11,7 @@ use tokio::task::JoinSet;
 use tokio::time::{Instant, sleep_until};
 use tracing::{error, info, warn};
 
-use crate::feed_fetcher::{FeedFetchFailure, FeedSource, FetchFailureReason, FetchOutcome};
+use crate::feed_fetcher::{FeedSource, FetchError, FetchOutcome};
 use crate::feed_mapper::{feed_title_and_site_url, feed_to_items};
 use crate::http_util::truncate_chars;
 use crate::queue_client::FeedQueue;
@@ -131,89 +131,53 @@ async fn process_feed(
     let lease_token = feed.lease_token.clone();
 
     match source.fetch(&feed).await {
-        Ok(FetchOutcome::NotModified {
-            etag,
-            last_modified,
-        }) => {
-            let result = queue
-                .complete(
+        Ok(outcome) => {
+            let request = completion_request(lease_token, &outcome);
+            let fetched = request.fetched;
+            let fetched_items = request.items.len();
+            let result = queue.complete(feed_id, request).await?;
+            if fetched {
+                record_feed_processed("fetched");
+                counter!("rss_centr_worker_feed_items_inserted_total")
+                    .increment(result.inserted_items as u64);
+                info!(
                     feed_id,
-                    CompleteFeedUpdateRequest {
-                        lease_token,
-                        fetched: false,
-                        title: None,
-                        site_url: None,
-                        etag,
-                        last_modified,
-                        items: Vec::new(),
-                    },
-                )
-                .await?;
-            record_feed_processed("not_modified");
-            info!(
-                feed_id,
-                inserted_items = result.inserted_items,
-                next_due_at = %result.next_due_at,
-                "feed not modified"
-            );
-        }
-        Ok(FetchOutcome::Fetched {
-            feed,
-            etag,
-            last_modified,
-        }) => {
-            let items = feed_to_items(&feed);
-            let item_count = items.len();
-            let (title, site_url) = feed_title_and_site_url(&feed);
-            let result = queue
-                .complete(
+                    fetched_items,
+                    inserted_items = result.inserted_items,
+                    next_due_at = %result.next_due_at,
+                    "feed update completed"
+                );
+            } else {
+                record_feed_processed("not_modified");
+                info!(
                     feed_id,
-                    CompleteFeedUpdateRequest {
-                        lease_token,
-                        fetched: true,
-                        title,
-                        site_url,
-                        etag,
-                        last_modified,
-                        items,
-                    },
-                )
-                .await?;
-            record_feed_processed("fetched");
-            counter!("rss_centr_worker_feed_items_inserted_total")
-                .increment(result.inserted_items as u64);
-            info!(
-                feed_id,
-                fetched_items = item_count,
-                inserted_items = result.inserted_items,
-                next_due_at = %result.next_due_at,
-                "feed update completed"
-            );
+                    inserted_items = result.inserted_items,
+                    next_due_at = %result.next_due_at,
+                    "feed not modified"
+                );
+            }
         }
         Err(fetch_error) => {
             record_feed_processed("failed");
             let request = failure_request(lease_token, &fetch_error);
             let retry_after = request.retry_after;
             let http_status = request.http_status;
-            let blocked_by_bot_protection = fetch_error
-                .downcast_ref::<FeedFetchFailure>()
-                .is_some_and(|failure| failure.reason == FetchFailureReason::BotProtection);
             match queue.failed(feed_id, request).await {
                 Ok(result) => {
                     warn!(
                         feed_id,
                         next_due_at = %result.next_due_at,
-                        blocked_by_bot_protection,
+                        blocked_by_bot_protection = fetch_error.blocked_by_bot_protection(),
                         http_status,
                         retry_after = ?retry_after,
-                        error = format!("{fetch_error:#}"),
+                        error = %fetch_error,
                         "feed update rescheduled after fetch failure"
                     );
                 }
                 Err(fail_error) => {
                     error!(
                         feed_id,
-                        fetch_error = format!("{fetch_error:#}"),
+                        fetch_error = %fetch_error,
                         fail_error = format!("{fail_error:#}"),
                         "failed to record feed update failure"
                     );
@@ -226,19 +190,45 @@ async fn process_feed(
     Ok(())
 }
 
-fn failure_request(lease_token: String, fetch_error: &anyhow::Error) -> FailedFeedUpdateRequest {
-    let failure = fetch_error.downcast_ref::<FeedFetchFailure>();
-    let http_status = failure.map(|failure| failure.status.as_u16()).or_else(|| {
-        fetch_error
-            .downcast_ref::<reqwest::Error>()
-            .and_then(reqwest::Error::status)
-            .map(|status| status.as_u16())
-    });
-    let error = format!("{fetch_error:#}");
+fn completion_request(lease_token: String, outcome: &FetchOutcome) -> CompleteFeedUpdateRequest {
+    match outcome {
+        FetchOutcome::NotModified {
+            etag,
+            last_modified,
+        } => CompleteFeedUpdateRequest {
+            lease_token,
+            fetched: false,
+            title: None,
+            site_url: None,
+            etag: etag.clone(),
+            last_modified: last_modified.clone(),
+            items: Vec::new(),
+        },
+        FetchOutcome::Fetched {
+            feed,
+            etag,
+            last_modified,
+        } => {
+            let (title, site_url) = feed_title_and_site_url(feed);
+            CompleteFeedUpdateRequest {
+                lease_token,
+                fetched: true,
+                title,
+                site_url,
+                etag: etag.clone(),
+                last_modified: last_modified.clone(),
+                items: feed_to_items(feed),
+            }
+        }
+    }
+}
+
+fn failure_request(lease_token: String, fetch_error: &FetchError) -> FailedFeedUpdateRequest {
+    let error = fetch_error.to_string();
     FailedFeedUpdateRequest {
         lease_token,
-        retry_after: failure.and_then(|failure| failure.retry_after),
-        http_status,
+        retry_after: fetch_error.retry_after(),
+        http_status: fetch_error.http_status(),
         error: Some(truncate_chars(&error, MAX_FAILURE_ERROR_CHARS).to_string()),
     }
 }
@@ -255,6 +245,7 @@ mod tests {
     use rss_centr_core::feed_update_queue::{CompleteFeedUpdateResult, FailedFeedUpdateResult};
 
     use super::*;
+    use crate::feed_fetcher::{FeedFetchFailure, FetchFailureReason};
 
     fn feed(feed_id: i64) -> DequeuedFeedUpdate {
         DequeuedFeedUpdate {
@@ -330,7 +321,7 @@ mod tests {
     }
 
     impl FeedSource for FakeSource {
-        async fn fetch(&self, feed: &DequeuedFeedUpdate) -> Result<FetchOutcome> {
+        async fn fetch(&self, feed: &DequeuedFeedUpdate) -> Result<FetchOutcome, FetchError> {
             tokio::time::sleep(self.delay).await;
             self.fetches.fetch_add(1, Ordering::SeqCst);
             if feed.feed_id % 2 == 0 {
@@ -339,12 +330,14 @@ mod tests {
                     last_modified: None,
                 })
             } else {
-                Err(anyhow!(FeedFetchFailure {
-                    status: StatusCode::GONE,
-                    reason: FetchFailureReason::HttpStatus,
-                    retry_after: None,
+                Err(FetchError::Rejected {
+                    failure: FeedFetchFailure {
+                        status: StatusCode::GONE,
+                        reason: FetchFailureReason::HttpStatus,
+                        retry_after: None,
+                    },
+                    source: None,
                 })
-                .context("fetching feed"))
             }
         }
     }
@@ -380,13 +373,47 @@ mod tests {
         assert_eq!(failed[0].1.lease_token, "lease-3");
         assert_eq!(failed[0].1.http_status, Some(410));
         let error = failed[0].1.error.as_deref().unwrap();
-        assert!(error.contains("fetching feed"), "{error}");
         assert!(error.contains("HTTP 410"), "{error}");
     }
 
     #[test]
+    fn completion_request_carries_validators_and_only_fetched_feeds_carry_content() {
+        let feed = crate::feed_parser::parse_feed(
+            br#"<rss version="2.0"><channel><title>Feed</title><link>https://example.com</link><item><title>a</title><guid>1</guid></item></channel></rss>"#,
+        )
+        .unwrap();
+        let fetched = completion_request(
+            "lease".to_string(),
+            &FetchOutcome::Fetched {
+                feed: Box::new(feed),
+                etag: Some("e".to_string()),
+                last_modified: Some("m".to_string()),
+            },
+        );
+        assert!(fetched.fetched);
+        assert_eq!(fetched.lease_token, "lease");
+        assert_eq!(fetched.title.as_deref(), Some("Feed"));
+        assert_eq!(fetched.items.len(), 1);
+        assert_eq!(
+            (fetched.etag.as_deref(), fetched.last_modified.as_deref()),
+            (Some("e"), Some("m"))
+        );
+
+        let not_modified = completion_request(
+            "lease".to_string(),
+            &FetchOutcome::NotModified {
+                etag: Some("e".to_string()),
+                last_modified: None,
+            },
+        );
+        assert!(!not_modified.fetched);
+        assert!(not_modified.title.is_none() && not_modified.items.is_empty());
+        assert_eq!(not_modified.etag.as_deref(), Some("e"));
+    }
+
+    #[test]
     fn failure_request_truncates_long_errors() {
-        let error = anyhow!("x".repeat(MAX_FAILURE_ERROR_CHARS + 50));
+        let error = FetchError::Other(anyhow!("x".repeat(MAX_FAILURE_ERROR_CHARS + 50)));
         let request = failure_request("t".to_string(), &error);
         assert_eq!(request.http_status, None);
         assert_eq!(
