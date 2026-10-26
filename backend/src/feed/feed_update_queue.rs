@@ -5,7 +5,7 @@ pub use domain::FeedQueueError;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rss_centr_core::feed_update_queue::{
-    CompleteFeedUpdateRequest, CompleteFeedUpdateResult, DequeuedFeedUpdate,
+    CompleteFeedUpdateRequest, CompleteFeedUpdateResult, CompletionKind, DequeuedFeedUpdate,
     FailedFeedUpdateRequest, FailedFeedUpdateResult, FeedUpdateItemInput,
 };
 use sqlx::{PgPool, Postgres, Transaction};
@@ -18,7 +18,7 @@ use super::poll_interval::{
     PollSignal, Schedule, reschedule_after_completion, reschedule_after_failure,
 };
 
-use domain::{DetailColumns, FeedUpdateCompletion, ItemColumns};
+use domain::{DetailColumns, ItemColumns};
 
 struct FeedPollInterval {
     poll_interval_seconds: i64,
@@ -131,21 +131,19 @@ pub async fn complete_feed_update(
     request: CompleteFeedUpdateRequest,
     completed_at: DateTime<Utc>,
 ) -> Result<CompleteFeedUpdateResult, FeedQueueError> {
-    let completion = FeedUpdateCompletion::from(request);
-    let data = completion.data();
     let mut tx = pool
         .begin()
         .await
         .with_context(|| format!("failed to begin feed update completion for feed_id={feed_id}"))?;
 
-    ensure_current_lease(&mut tx, feed_id, &data.lease_token).await?;
+    ensure_current_lease(&mut tx, feed_id, &request.lease_token).await?;
 
-    let inserted_items = insert_items(&mut tx, feed_id, &data.items, completed_at).await?;
-    let signal = match &completion {
-        FeedUpdateCompletion::Fetched(_) => PollSignal::Fetched {
+    let inserted_items = insert_items(&mut tx, feed_id, &request.items, completed_at).await?;
+    let signal = match request.kind {
+        CompletionKind::Fetched => PollSignal::Fetched {
             cadence_seconds: read_feed_cadence_seconds(&mut *tx, feed_id).await?,
         },
-        FeedUpdateCompletion::NotModified(_) => PollSignal::NotModified {
+        CompletionKind::NotModified => PollSignal::NotModified {
             current_interval_seconds: read_feed_poll_interval(&mut tx, feed_id)
                 .await?
                 .poll_interval_seconds,
@@ -161,10 +159,10 @@ pub async fn complete_feed_update(
         feed_id,
         FeedSuccessUpdate {
             checked_at: completed_at,
-            title: data.title.as_deref(),
-            site_url: data.site_url.as_deref(),
-            etag: data.etag.as_deref(),
-            last_modified: data.last_modified.as_deref(),
+            title: request.title.as_deref(),
+            site_url: request.site_url.as_deref(),
+            etag: request.etag.as_deref(),
+            last_modified: request.last_modified.as_deref(),
             poll_interval_seconds: Some(poll_interval_seconds),
             last_inserted_at,
         },
@@ -174,7 +172,7 @@ pub async fn complete_feed_update(
     release_lease(
         &mut tx,
         feed_id,
-        &data.lease_token,
+        &request.lease_token,
         next_due_at,
         Attempts::Reset,
     )
@@ -574,7 +572,7 @@ mod tests {
             feed_id,
             CompleteFeedUpdateRequest {
                 lease_token: leased.lease_token,
-                fetched: true,
+                kind: CompletionKind::Fetched,
                 title: None,
                 site_url: None,
                 etag: None,
@@ -648,7 +646,7 @@ mod tests {
             feed.id,
             CompleteFeedUpdateRequest {
                 lease_token: leased.lease_token,
-                fetched: false,
+                kind: CompletionKind::NotModified,
                 title: Some("Legacy title".into()),
                 site_url: Some("https://example.com".into()),
                 etag: Some("new-etag".into()),
@@ -705,7 +703,7 @@ mod tests {
             feed.id,
             CompleteFeedUpdateRequest {
                 lease_token: leased.lease_token.clone(),
-                fetched: true,
+                kind: CompletionKind::Fetched,
                 title: Some("Must not be saved".into()),
                 site_url: None,
                 etag: None,
@@ -772,7 +770,7 @@ mod tests {
             feed.id,
             CompleteFeedUpdateRequest {
                 lease_token: leased.lease_token.clone(),
-                fetched: true,
+                kind: CompletionKind::Fetched,
                 title: Some("reject".into()),
                 site_url: None,
                 etag: None,
@@ -806,7 +804,7 @@ mod tests {
             feed.id,
             CompleteFeedUpdateRequest {
                 lease_token: leased.lease_token,
-                fetched: true,
+                kind: CompletionKind::Fetched,
                 title: Some("accepted".into()),
                 site_url: None,
                 etag: None,
@@ -847,7 +845,7 @@ mod tests {
             feed.id,
             CompleteFeedUpdateRequest {
                 lease_token: leased.lease_token,
-                fetched: true,
+                kind: CompletionKind::Fetched,
                 title: Some("Example Feed".to_string()),
                 site_url: Some("https://example.com".to_string()),
                 etag: Some("\"etag\"".to_string()),
@@ -899,7 +897,7 @@ mod tests {
             feed.id,
             CompleteFeedUpdateRequest {
                 lease_token: format!("{}-stale", leased.lease_token),
-                fetched: false,
+                kind: CompletionKind::NotModified,
                 title: None,
                 site_url: None,
                 etag: None,
@@ -1001,7 +999,7 @@ mod tests {
             feed.id,
             CompleteFeedUpdateRequest {
                 lease_token,
-                fetched: true,
+                kind: CompletionKind::Fetched,
                 title: None,
                 site_url: None,
                 etag: None,
@@ -1094,7 +1092,7 @@ mod tests {
             feed.id,
             CompleteFeedUpdateRequest {
                 lease_token: leased.lease_token,
-                fetched: true,
+                kind: CompletionKind::Fetched,
                 title: Some("Example Feed".to_string()),
                 site_url: None,
                 etag: None,

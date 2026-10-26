@@ -30,14 +30,43 @@ pub struct FeedUpdateItemInput {
     pub published_at: Option<DateTime<Utc>>,
 }
 
+/// What a completed feed update found. Serialized as a boolean (`true` for
+/// [`Self::Fetched`]) so the wire format stays a plain `fetched` flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "bool", into = "bool")]
+pub enum CompletionKind {
+    /// The feed body was fetched and parsed.
+    Fetched,
+    /// The publisher reported the feed unchanged.
+    NotModified,
+}
+
+impl From<bool> for CompletionKind {
+    fn from(fetched: bool) -> Self {
+        if fetched {
+            Self::Fetched
+        } else {
+            Self::NotModified
+        }
+    }
+}
+
+impl From<CompletionKind> for bool {
+    fn from(kind: CompletionKind) -> Self {
+        kind == CompletionKind::Fetched
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CompleteFeedUpdateRequest {
     pub lease_token: String,
-    /// Whether the feed body was actually fetched and parsed (`true`), as
-    /// opposed to the origin server responding that the feed is unchanged
-    /// (`false`, e.g. HTTP 304 Not Modified). Drives whether metadata/cadence
-    /// are refreshed or the poll interval is backed off.
-    pub fetched: bool,
+    /// Sent as the boolean `fetched`: whether the feed body was actually
+    /// fetched and parsed (`true`), as opposed to the origin server responding
+    /// that the feed is unchanged (`false`, e.g. HTTP 304 Not Modified). Drives
+    /// whether metadata/cadence are refreshed or the poll interval is backed off.
+    #[serde(rename = "fetched")]
+    #[schema(value_type = bool)]
+    pub kind: CompletionKind,
     pub title: Option<String>,
     pub site_url: Option<String>,
     pub etag: Option<String>,
@@ -68,4 +97,30 @@ pub struct CompleteFeedUpdateResult {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct FailedFeedUpdateResult {
     pub next_due_at: DateTime<Utc>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completion_kind_keeps_the_boolean_fetched_wire_flag() {
+        for (kind, fetched) in [
+            (CompletionKind::Fetched, true),
+            (CompletionKind::NotModified, false),
+        ] {
+            let wire = serde_json::json!({
+                "lease_token": "lease",
+                "fetched": fetched,
+                "title": null,
+                "site_url": null,
+                "etag": null,
+                "last_modified": null,
+                "items": [],
+            });
+            let request: CompleteFeedUpdateRequest = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(request.kind, kind);
+            assert_eq!(serde_json::to_value(&request).unwrap(), wire);
+        }
+    }
 }

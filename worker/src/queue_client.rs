@@ -167,7 +167,7 @@ mod tests {
     fn request() -> CompleteFeedUpdateRequest {
         CompleteFeedUpdateRequest {
             lease_token: "token".to_string(),
-            fetched: true,
+            kind: rss_centr_core::feed_update_queue::CompletionKind::Fetched,
             title: None,
             site_url: None,
             etag: None,

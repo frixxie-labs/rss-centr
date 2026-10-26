@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::Result;
 use metrics::{counter, gauge};
 use rss_centr_core::feed_update_queue::{
-    CompleteFeedUpdateRequest, DequeuedFeedUpdate, FailedFeedUpdateRequest,
+    CompleteFeedUpdateRequest, CompletionKind, DequeuedFeedUpdate, FailedFeedUpdateRequest,
 };
 use tokio::sync::watch;
 use tokio::task::JoinSet;
@@ -133,10 +133,10 @@ async fn process_feed(
     match source.fetch(&feed).await {
         Ok(outcome) => {
             let request = completion_request(lease_token, &outcome);
-            let fetched = request.fetched;
+            let kind = request.kind;
             let fetched_items = request.items.len();
             let result = queue.complete(feed_id, request).await?;
-            if fetched {
+            if kind == CompletionKind::Fetched {
                 record_feed_processed("fetched");
                 counter!("rss_centr_worker_feed_items_inserted_total")
                     .increment(result.inserted_items as u64);
@@ -197,7 +197,7 @@ fn completion_request(lease_token: String, outcome: &FetchOutcome) -> CompleteFe
             last_modified,
         } => CompleteFeedUpdateRequest {
             lease_token,
-            fetched: false,
+            kind: CompletionKind::NotModified,
             title: None,
             site_url: None,
             etag: etag.clone(),
@@ -212,7 +212,7 @@ fn completion_request(lease_token: String, outcome: &FetchOutcome) -> CompleteFe
             let (title, site_url) = feed_title_and_site_url(feed);
             CompleteFeedUpdateRequest {
                 lease_token,
-                fetched: true,
+                kind: CompletionKind::Fetched,
                 title,
                 site_url,
                 etag: etag.clone(),
@@ -363,7 +363,7 @@ mod tests {
         let completed = queue.completed.lock().unwrap();
         assert_eq!(completed.len(), 1);
         assert_eq!(completed[0].0, 2);
-        assert!(!completed[0].1.fetched);
+        assert_eq!(completed[0].1.kind, CompletionKind::NotModified);
         assert_eq!(completed[0].1.lease_token, "lease-2");
         assert_eq!(completed[0].1.etag.as_deref(), Some("e"));
 
@@ -390,7 +390,7 @@ mod tests {
                 last_modified: Some("m".to_string()),
             },
         );
-        assert!(fetched.fetched);
+        assert_eq!(fetched.kind, CompletionKind::Fetched);
         assert_eq!(fetched.lease_token, "lease");
         assert_eq!(fetched.title.as_deref(), Some("Feed"));
         assert_eq!(fetched.items.len(), 1);
@@ -406,7 +406,7 @@ mod tests {
                 last_modified: None,
             },
         );
-        assert!(!not_modified.fetched);
+        assert_eq!(not_modified.kind, CompletionKind::NotModified);
         assert!(not_modified.title.is_none() && not_modified.items.is_empty());
         assert_eq!(not_modified.etag.as_deref(), Some("e"));
     }

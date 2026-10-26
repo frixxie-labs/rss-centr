@@ -241,3 +241,16 @@ pub async fn get_openapi() -> String {
         "{}".to_string()
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completion_request_schema_keeps_the_boolean_fetched_flag() {
+        let doc = serde_json::to_value(ApiDoc::openapi()).unwrap();
+        let fetched =
+            &doc["components"]["schemas"]["CompleteFeedUpdateRequest"]["properties"]["fetched"];
+        assert_eq!(fetched["type"], "boolean", "{fetched}");
+    }
+}

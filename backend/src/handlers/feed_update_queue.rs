@@ -171,7 +171,7 @@ mod tests {
             .collect();
         serde_json::to_vec(&CompleteFeedUpdateRequest {
             lease_token: "not-the-current-lease".to_string(),
-            fetched: true,
+            kind: rss_centr_core::feed_update_queue::CompletionKind::Fetched,
             title: None,
             site_url: None,
             etag: None,
