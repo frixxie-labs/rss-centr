@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT attempts FROM feed_update_queue WHERE feed_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "attempts",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "feed_update_queue",
+            "name": "attempts"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8edc42fdc3fb9fc6819664f4b62e68b0390b6868b22538f0527b6170fab4afb6"
+}

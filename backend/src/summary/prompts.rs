@@ -69,9 +69,8 @@ pub(crate) fn budgeted_prompts<T>(
     let mut prompts = Vec::new();
     let mut rest = items;
     while !rest.is_empty() {
-        let (len, prompt) =
-            largest_fitting_prefix(rest, &build, budget, num_predict, max_items)
-                .ok_or(InputTooLarge)?;
+        let (len, prompt) = largest_fitting_prefix(rest, &build, budget, num_predict, max_items)
+            .ok_or(InputTooLarge)?;
         prompts.push(prompt);
         rest = &rest[len..];
     }

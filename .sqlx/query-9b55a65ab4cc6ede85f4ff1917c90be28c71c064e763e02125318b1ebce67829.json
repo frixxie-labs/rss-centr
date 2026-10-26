@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE feed_update_queue\n        SET due_at = $1,\n            leased_at = NULL,\n            lease_expires_at = NULL,\n            lease_token = NULL,\n            attempts = CASE WHEN $4 THEN 0 ELSE attempts END,\n            updated_at = NOW()\n        WHERE feed_id = $2\n          AND lease_token = $3\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Int8",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9b55a65ab4cc6ede85f4ff1917c90be28c71c064e763e02125318b1ebce67829"
+}

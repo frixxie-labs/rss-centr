@@ -2,8 +2,6 @@ mod domain;
 
 pub use domain::FeedQueueError;
 
-use std::collections::{HashMap, HashSet};
-
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rss_centr_core::feed_update_queue::{
@@ -20,7 +18,7 @@ use super::poll_interval::{
     PollSignal, Schedule, reschedule_after_completion, reschedule_after_failure,
 };
 
-use domain::FeedUpdateCompletion;
+use domain::{DetailColumns, FeedUpdateCompletion, ItemColumns};
 
 struct FeedPollInterval {
     poll_interval_seconds: i64,
@@ -173,29 +171,14 @@ pub async fn complete_feed_update(
     )
     .await?;
 
-    let result = sqlx::query!(
-        r#"
-        UPDATE feed_update_queue
-        SET due_at = $1,
-            leased_at = NULL,
-            lease_expires_at = NULL,
-            lease_token = NULL,
-            attempts = 0,
-            updated_at = NOW()
-        WHERE feed_id = $2
-          AND lease_token = $3
-        "#,
-        next_due_at,
+    release_lease(
+        &mut tx,
         feed_id,
-        data.lease_token.as_str(),
+        &data.lease_token,
+        next_due_at,
+        Attempts::Reset,
     )
-    .execute(&mut *tx)
-    .await
-    .with_context(|| format!("failed to reschedule completed feed update for feed_id={feed_id}"))?;
-
-    if result.rows_affected() == 0 {
-        return Err(FeedQueueError::LeaseConflict { feed_id });
-    }
+    .await?;
 
     tx.commit().await.with_context(|| {
         format!("failed to commit feed update completion for feed_id={feed_id}")
@@ -231,6 +214,37 @@ pub async fn fail_feed_update(
     );
     touch_feed_failure_in_tx(&mut tx, feed_id, checked_at, poll_interval_seconds).await?;
 
+    release_lease(
+        &mut tx,
+        feed_id,
+        &request.lease_token,
+        next_due_at,
+        Attempts::Keep,
+    )
+    .await?;
+
+    tx.commit()
+        .await
+        .with_context(|| format!("failed to commit feed update failure for feed_id={feed_id}"))?;
+
+    Ok(FailedFeedUpdateResult { next_due_at })
+}
+
+/// Whether releasing a lease resets the failed-attempt counter.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Attempts {
+    Reset,
+    Keep,
+}
+
+/// Release the lease held with `lease_token` and schedule the next update.
+async fn release_lease(
+    tx: &mut Transaction<'_, Postgres>,
+    feed_id: i64,
+    lease_token: &str,
+    next_due_at: DateTime<Utc>,
+    attempts: Attempts,
+) -> Result<(), FeedQueueError> {
     let result = sqlx::query!(
         r#"
         UPDATE feed_update_queue
@@ -238,27 +252,24 @@ pub async fn fail_feed_update(
             leased_at = NULL,
             lease_expires_at = NULL,
             lease_token = NULL,
+            attempts = CASE WHEN $4 THEN 0 ELSE attempts END,
             updated_at = NOW()
         WHERE feed_id = $2
           AND lease_token = $3
         "#,
         next_due_at,
         feed_id,
-        request.lease_token,
+        lease_token,
+        attempts == Attempts::Reset,
     )
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
-    .with_context(|| format!("failed to reschedule failed feed update for feed_id={feed_id}"))?;
+    .with_context(|| format!("failed to reschedule feed update for feed_id={feed_id}"))?;
 
     if result.rows_affected() == 0 {
         return Err(FeedQueueError::LeaseConflict { feed_id });
     }
-
-    tx.commit()
-        .await
-        .with_context(|| format!("failed to commit feed update failure for feed_id={feed_id}"))?;
-
-    Ok(FailedFeedUpdateResult { next_due_at })
+    Ok(())
 }
 
 async fn ensure_current_lease(
@@ -391,13 +402,6 @@ async fn read_feed_poll_interval(
     Ok(row)
 }
 
-fn item_has_detail(item: &FeedUpdateItemInput) -> bool {
-    item.summary.is_some()
-        || item.content.is_some()
-        || item.author.is_some()
-        || item.published_at.is_some()
-}
-
 /// Insert the new items and their details with one statement each. The first
 /// occurrence of a repeated `external_id` wins. Returns the inserted count.
 async fn insert_items(
@@ -406,51 +410,28 @@ async fn insert_items(
     items: &[FeedUpdateItemInput],
     completed_at: DateTime<Utc>,
 ) -> Result<i64> {
-    let mut seen = HashSet::new();
-    let unique: Vec<&FeedUpdateItemInput> = items
-        .iter()
-        .filter(|item| seen.insert(item.external_id.as_str()))
-        .collect();
-    if unique.is_empty() {
+    let columns = ItemColumns::new(items);
+    if columns.is_empty() {
         return Ok(0);
     }
+    let inserted = insert_feed_items_dedup_batch(
+        &mut **tx,
+        feed_id,
+        &columns.external_ids,
+        &columns.titles,
+        &columns.urls,
+    )
+    .await?;
 
-    let external_ids: Vec<String> = unique.iter().map(|i| i.external_id.clone()).collect();
-    let titles: Vec<String> = unique.iter().map(|i| i.title.clone()).collect();
-    let urls: Vec<String> = unique.iter().map(|i| i.url.clone()).collect();
-    let inserted =
-        insert_feed_items_dedup_batch(&mut **tx, feed_id, &external_ids, &titles, &urls).await?;
-
-    let by_external_id: HashMap<&str, &FeedUpdateItemInput> = unique
-        .iter()
-        .map(|item| (item.external_id.as_str(), *item))
-        .collect();
-    let with_detail: Vec<(i64, &FeedUpdateItemInput)> = inserted
-        .iter()
-        .filter_map(|(id, external_id)| {
-            by_external_id
-                .get(external_id.as_str())
-                .filter(|item| item_has_detail(item))
-                .map(|item| (*id, *item))
-        })
-        .collect();
-    if !with_detail.is_empty() {
-        let field = |f: fn(&FeedUpdateItemInput) -> &Option<String>| -> Vec<String> {
-            with_detail
-                .iter()
-                .map(|(_, item)| f(item).clone().unwrap_or_default())
-                .collect()
-        };
+    let details = DetailColumns::new(items, &inserted, completed_at);
+    if !details.is_empty() {
         insert_feed_item_details_dedup_batch(
             &mut **tx,
-            &with_detail.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-            &field(|i| &i.summary),
-            &field(|i| &i.content),
-            &field(|i| &i.author),
-            &with_detail
-                .iter()
-                .map(|(_, item)| item.published_at.unwrap_or(completed_at))
-                .collect::<Vec<_>>(),
+            &details.feed_item_ids,
+            &details.summaries,
+            &details.contents,
+            &details.authors,
+            &details.published_at,
         )
         .await?;
     }
@@ -969,6 +950,69 @@ mod tests {
 
         let due_again = dequeue_due_feeds(&pool, 100, 300).await.unwrap();
         assert!(due_again.iter().all(|row| row.feed_id != feed.id));
+    }
+
+    #[sqlx::test]
+    async fn failures_count_attempts_and_completion_resets_them(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/queue-attempts.xml")
+            .await
+            .unwrap();
+        let attempts = || async {
+            sqlx::query_scalar!(
+                "SELECT attempts FROM feed_update_queue WHERE feed_id = $1",
+                feed.id
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+        let lease = || async {
+            enqueue_feed_now(&pool, feed.id).await.unwrap();
+            dequeue_due_feeds(&pool, 100, 300)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|row| row.feed_id == feed.id)
+                .unwrap()
+                .lease_token
+        };
+
+        for _ in 0..2 {
+            let lease_token = lease().await;
+            fail_feed_update(
+                &pool,
+                feed.id,
+                FailedFeedUpdateRequest {
+                    lease_token,
+                    retry_after: None,
+                    http_status: None,
+                    error: None,
+                },
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(attempts().await, 2);
+
+        let lease_token = lease().await;
+        complete_feed_update(
+            &pool,
+            feed.id,
+            CompleteFeedUpdateRequest {
+                lease_token,
+                fetched: true,
+                title: None,
+                site_url: None,
+                etag: None,
+                last_modified: None,
+                items: vec![],
+            },
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(attempts().await, 0);
     }
 
     #[sqlx::test]
