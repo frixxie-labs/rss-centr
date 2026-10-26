@@ -11,7 +11,7 @@ use tokio::task::JoinSet;
 use tokio::time::{Instant, sleep_until};
 use tracing::{error, info, warn};
 
-use crate::feed_fetcher::{FeedFetchFailure, FeedSource, FetchOutcome};
+use crate::feed_fetcher::{FeedFetchFailure, FeedSource, FetchFailureReason, FetchOutcome};
 use crate::feed_mapper::{feed_title_and_site_url, feed_to_items};
 use crate::http_util::truncate_chars;
 use crate::queue_client::FeedQueue;
@@ -197,7 +197,7 @@ async fn process_feed(
             let http_status = request.http_status;
             let blocked_by_bot_protection = fetch_error
                 .downcast_ref::<FeedFetchFailure>()
-                .is_some_and(|failure| failure.blocked_by_bot_protection);
+                .is_some_and(|failure| failure.reason == FetchFailureReason::BotProtection);
             match queue.failed(feed_id, request).await {
                 Ok(result) => {
                     warn!(
@@ -341,7 +341,7 @@ mod tests {
             } else {
                 Err(anyhow!(FeedFetchFailure {
                     status: StatusCode::GONE,
-                    blocked_by_bot_protection: false,
+                    reason: FetchFailureReason::HttpStatus,
                     retry_after: None,
                 })
                 .context("fetching feed"))

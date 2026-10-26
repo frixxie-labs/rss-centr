@@ -9,23 +9,32 @@ use tokio::time::Instant;
 
 use crate::telemetry::record_feed_fetch_duration;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FetchFailureReason {
+    /// The publisher answered with a bot challenge, whatever the status code.
+    BotProtection,
+    /// The publisher answered with a non-success status.
+    HttpStatus,
+}
+
 #[derive(Debug)]
 pub(crate) struct FeedFetchFailure {
     pub(crate) status: StatusCode,
-    pub(crate) blocked_by_bot_protection: bool,
+    pub(crate) reason: FetchFailureReason,
     pub(crate) retry_after: Option<DateTime<Utc>>,
 }
 
 impl std::fmt::Display for FeedFetchFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.blocked_by_bot_protection {
-            write!(
+        match self.reason {
+            FetchFailureReason::BotProtection => write!(
                 f,
                 "Blocked by publisher's bot protection (HTTP {})",
                 self.status
-            )
-        } else {
-            write!(f, "non-success status fetching feed (HTTP {})", self.status)
+            ),
+            FetchFailureReason::HttpStatus => {
+                write!(f, "non-success status fetching feed (HTTP {})", self.status)
+            }
         }
     }
 }
@@ -141,11 +150,17 @@ async fn fetch_feed_inner(
         });
     }
 
-    let blocked_by_bot_protection = is_bot_challenge(response.headers());
-    if blocked_by_bot_protection || !response.status().is_success() {
+    let reason = if is_bot_challenge(response.headers()) {
+        Some(FetchFailureReason::BotProtection)
+    } else if !response.status().is_success() {
+        Some(FetchFailureReason::HttpStatus)
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
         let failure = FeedFetchFailure {
             status: response.status(),
-            blocked_by_bot_protection,
+            reason,
             retry_after: parse_retry_after(response.headers().get(header::RETRY_AFTER), Utc::now()),
         };
         if let Err(error) = response.error_for_status_ref() {
@@ -369,7 +384,7 @@ mod tests {
             Ok(_) => panic!("expected the challenge to fail"),
         };
         let failure = error.downcast_ref::<FeedFetchFailure>().unwrap();
-        assert!(failure.blocked_by_bot_protection);
+        assert_eq!(failure.reason, FetchFailureReason::BotProtection);
         assert_eq!(failure.status, StatusCode::FORBIDDEN);
     }
 
@@ -381,7 +396,7 @@ mod tests {
         };
         let failure = error.downcast_ref::<FeedFetchFailure>().unwrap();
         assert_eq!(failure.status, StatusCode::MULTIPLE_CHOICES);
-        assert!(!failure.blocked_by_bot_protection);
+        assert_eq!(failure.reason, FetchFailureReason::HttpStatus);
     }
 
     #[tokio::test]
@@ -401,7 +416,7 @@ mod tests {
                     .contains("Blocked by publisher's bot protection")
             );
             let failure = error.downcast_ref::<FeedFetchFailure>().unwrap();
-            assert!(failure.blocked_by_bot_protection);
+            assert_eq!(failure.reason, FetchFailureReason::BotProtection);
             assert!(failure.retry_after.is_some());
             if status.starts_with("429") {
                 assert_eq!(
@@ -427,7 +442,7 @@ mod tests {
                 Ok(_) => panic!("expected HTTP failure"),
             };
             let failure = error.downcast_ref::<FeedFetchFailure>().unwrap();
-            assert!(!failure.blocked_by_bot_protection);
+            assert_eq!(failure.reason, FetchFailureReason::HttpStatus);
             assert_eq!(
                 failure.retry_after,
                 Some(
