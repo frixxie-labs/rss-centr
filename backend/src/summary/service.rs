@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
@@ -5,10 +6,10 @@ use sqlx::PgPool;
 use tracing::{Instrument, error, info};
 
 use super::{
-    ARTICLES_PER_BATCH, BATCH_OUTPUT_TOKENS, DailySummary, FINAL_OUTPUT_TOKENS, GeneratedSummary,
-    OllamaSummaryGenerator, PostgresSummaryRepository, SummaryError, SummaryGenerator,
-    SummaryModels, SummaryRepository, SummaryStoreError, SummaryUsage, budgeted_prompts,
-    build_batch_prompt, build_final_prompt, build_merge_prompt,
+    ARTICLES_PER_BATCH, BATCH_OUTPUT_TOKENS, ContextBudget, DailySummary, FINAL_OUTPUT_TOKENS,
+    GeneratedSummary, MergeRound, OllamaSummaryGenerator, PostgresSummaryRepository, SummaryError,
+    SummaryGenerator, SummaryModels, SummaryRepository, SummaryStoreError, SummaryUsage,
+    budgeted_prompts, build_batch_prompt, plan_merge_round,
 };
 
 // Bound the whole job below its lease, including all sequential Ollama calls.
@@ -110,84 +111,46 @@ async fn generate_summary<R: SummaryRepository, G: SummaryGenerator>(
             .context_budget(&state.models.final_summary)
             .await?
     };
-    let summary = {
-        let mut batch_summaries = Vec::new();
-        let prompts = budgeted_prompts(
-            &articles,
-            build_batch_prompt,
-            batch_budget,
-            BATCH_OUTPUT_TOKENS,
-            ARTICLES_PER_BATCH,
-        )?;
-        info!(
-            articles = articles.len(),
-            batches = prompts.len(),
-            "summary generation plan"
-        );
-        for (index, prompt) in prompts.into_iter().enumerate() {
-            info!(batch = index + 1, "generating summary article batch");
-            batch_summaries.push(
-                state
+    let article_prompts = budgeted_prompts(
+        &articles,
+        build_batch_prompt,
+        batch_budget,
+        BATCH_OUTPUT_TOKENS,
+        ARTICLES_PER_BATCH,
+    )?;
+    info!(
+        articles = articles.len(),
+        batches = article_prompts.len(),
+        "summary generation plan"
+    );
+    let mut notes = generate_notes(state, batch_budget, article_prompts, &mut usage).await?;
+    let summary = loop {
+        match plan_merge_round(&notes, batch_budget, final_budget)? {
+            MergeRound::Final(prompt) => {
+                info!(batches = notes.len(), "generating final news summary");
+                break state
                     .generator
                     .generate(
-                        &state.models.batch,
-                        batch_budget,
+                        &state.models.final_summary,
+                        final_budget,
                         prompt,
-                        BATCH_OUTPUT_TOKENS,
+                        FINAL_OUTPUT_TOKENS,
                         &mut usage,
                     )
-                    .await?,
-            );
-        }
-        while batch_summaries.len() > 16
-            || !final_budget.fits(&build_final_prompt(&batch_summaries), FINAL_OUTPUT_TOKENS)
-        {
-            let mut merged = Vec::new();
-            let prompts = budgeted_prompts(
-                &batch_summaries,
-                build_merge_prompt,
-                batch_budget,
-                BATCH_OUTPUT_TOKENS,
-                8,
-            )?;
-            if prompts.len() >= batch_summaries.len() {
-                return Err(SummaryError::MergeBudgetTooSmall);
+                    .await?;
             }
-            for prompt in prompts {
-                merged.push(
-                    state
-                        .generator
-                        .generate(
-                            &state.models.batch,
-                            batch_budget,
-                            prompt,
-                            BATCH_OUTPUT_TOKENS,
-                            &mut usage,
-                        )
-                        .await?,
-                );
+            MergeRound::Merge(prompts) => {
+                notes = generate_notes(state, batch_budget, prompts, &mut usage).await?;
             }
-            batch_summaries = merged;
         }
-        info!(
-            batches = batch_summaries.len(),
-            "generating final news summary"
-        );
-        state
-            .generator
-            .generate(
-                &state.models.final_summary,
-                final_budget,
-                build_final_prompt(&batch_summaries),
-                FINAL_OUTPUT_TOKENS,
-                &mut usage,
-            )
-            .await?
     };
 
-    let mut feed_ids: Vec<i64> = articles.iter().map(|article| article.feed_id).collect();
-    feed_ids.sort_unstable();
-    feed_ids.dedup();
+    let feed_ids: Vec<i64> = articles
+        .iter()
+        .map(|article| article.feed_id)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let feed_item_ids: Vec<i64> = articles.iter().map(|article| article.id).collect();
     let generated = GeneratedSummary {
         summary,
@@ -209,6 +172,32 @@ async fn generate_summary<R: SummaryRepository, G: SummaryGenerator>(
         "summary generation usage"
     );
     Ok(result)
+}
+
+/// Generates one batch of story notes per prompt, in order.
+async fn generate_notes<R, G: SummaryGenerator>(
+    state: &SummaryState<R, G>,
+    budget: ContextBudget,
+    prompts: Vec<String>,
+    usage: &mut SummaryUsage,
+) -> Result<Vec<String>, SummaryError> {
+    let mut notes = Vec::with_capacity(prompts.len());
+    for (index, prompt) in prompts.into_iter().enumerate() {
+        info!(batch = index + 1, "generating summary notes batch");
+        notes.push(
+            state
+                .generator
+                .generate(
+                    &state.models.batch,
+                    budget,
+                    prompt,
+                    BATCH_OUTPUT_TOKENS,
+                    usage,
+                )
+                .await?,
+        );
+    }
+    Ok(notes)
 }
 
 #[cfg(test)]
