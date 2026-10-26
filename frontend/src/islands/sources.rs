@@ -244,8 +244,8 @@ fn SourceRow(
                         feed.with(|f| {
                             format!(
                                 "Last checked: {} | Last success: {}",
-                                absolute_date(f.last_checked_at.as_deref()),
-                                absolute_date(f.last_success_at.as_deref()),
+                                absolute_date(f.last_checked_at),
+                                absolute_date(f.last_success_at),
                             )
                         })
                     }}

@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -7,11 +8,11 @@ pub struct FeedItem {
     pub external_id: String,
     pub title: String,
     pub url: String,
-    pub inserted_at: String,
+    pub inserted_at: DateTime<Utc>,
     pub summary: Option<String>,
     pub content: Option<String>,
     pub author: Option<String>,
-    pub published_at: Option<String>,
+    pub published_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -19,7 +20,7 @@ pub struct ItemDetail {
     pub summary: String,
     pub content: String,
     pub author: String,
-    pub published_at: String,
+    pub published_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -28,7 +29,7 @@ pub struct DailySummary {
     pub summary: String,
     pub feed_ids: Vec<i64>,
     pub feed_item_ids: Vec<i64>,
-    pub generated_at: String,
+    pub generated_at: DateTime<Utc>,
     pub model: String,
 }
 
@@ -40,9 +41,9 @@ pub struct Feed {
     pub site_url: Option<String>,
     pub poll_interval_seconds: i64,
     pub is_enabled: bool,
-    pub last_checked_at: Option<String>,
-    pub last_success_at: Option<String>,
-    pub last_inserted_at: Option<String>,
+    pub last_checked_at: Option<DateTime<Utc>>,
+    pub last_success_at: Option<DateTime<Utc>>,
+    pub last_inserted_at: Option<DateTime<Utc>>,
     pub failure_count: i64,
 }
 

@@ -31,17 +31,14 @@ pub fn ItemCard(
     let host = hostname(&item.url);
     let author = item.author.filter(|a| !a.is_empty());
     let published = item.published_at.map(|date| {
-        let title = absolute_date(Some(&date));
-        let label = date.clone();
         view! {
             <span>"·"</span>
-            <time datetime=date title=title class="text-fuji-gray">
-                {move || format!("published {}", time_ago(&label, now.get()))}
+            <time datetime=machine_date(date) title=absolute_date(Some(date)) class="text-fuji-gray">
+                {move || format!("published {}", time_ago(date, now.get()))}
             </time>
         }
     });
     let inserted = item.inserted_at;
-    let inserted_label = inserted.clone();
     view! {
         <a
             href=item.url
@@ -81,7 +78,7 @@ pub fn ItemCard(
                         }
                     })}
                 <span>"·"</span>
-                <time datetime=inserted>{move || time_ago(&inserted_label, now.get())}</time>
+                <time datetime=machine_date(inserted)>{move || time_ago(inserted, now.get())}</time>
             </div>
         </a>
     }

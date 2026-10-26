@@ -7,11 +7,11 @@ mod timeline;
 
 pub use filters::{NewsFilters, Order, SearchMode, topic_url};
 pub use format::{
-    absolute_date, compact_text, hostname, poll_interval, preview, time_ago, truncate,
+    absolute_date, compact_text, hostname, machine_date, poll_interval, preview, time_ago, truncate,
 };
 pub use items::{
     FeedNames, PREVIEW_CHARS, append_page, display_order, effective_date, feed_name, feed_names,
-    merge_items, slim_item, sort_newest, timestamp,
+    merge_items, slim_item, sort_newest,
 };
 pub use timeline::{ReceiveOutcome, ReplayOutcome, TimelineState, resume_cursor};
 

@@ -114,7 +114,7 @@ mod tests {
     fn item(id: i64) -> FeedItem {
         FeedItem {
             id,
-            inserted_at: "2025-01-01T00:00:00Z".into(),
+            inserted_at: "2025-01-01T00:00:00Z".parse().unwrap(),
             ..Default::default()
         }
     }

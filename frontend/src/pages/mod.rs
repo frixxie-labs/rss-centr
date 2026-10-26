@@ -35,7 +35,7 @@ pub fn Summary() -> impl IntoView {
                                 <p class="mt-3 text-xs text-katana-gray">
                                     {format!(
                                         "Generated {} using {} · {} sources",
-                                        absolute_date(Some(&summary.generated_at)),
+                                        absolute_date(Some(summary.generated_at)),
                                         summary.model,
                                         summary.feed_ids.len(),
                                     )}

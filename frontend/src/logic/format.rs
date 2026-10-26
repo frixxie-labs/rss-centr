@@ -1,6 +1,5 @@
-use chrono::DateTime;
+use chrono::{DateTime, SecondsFormat, Utc};
 
-use super::items::timestamp;
 use crate::models::FeedItem;
 
 pub fn compact_text(value: &str) -> String {
@@ -56,8 +55,9 @@ pub fn hostname(value: &str) -> String {
         .unwrap_or_default()
 }
 
-pub fn time_ago(value: &str, now: i64) -> String {
-    let seconds = (now - timestamp(value)) / 1000;
+/// `now` is in milliseconds since the Unix epoch.
+pub fn time_ago(value: DateTime<Utc>, now: i64) -> String {
+    let seconds = (now - value.timestamp_millis()) / 1000;
     match seconds {
         ..60 => "just now".into(),
         60..3600 => format!("{}m ago", seconds / 60),
@@ -68,17 +68,16 @@ pub fn time_ago(value: &str, now: i64) -> String {
 }
 
 // Explicit UTC formatting is stable across server and browser during hydration.
-pub fn absolute_date(value: Option<&str>) -> String {
-    match value {
-        None => "Never".into(),
-        Some(s) => DateTime::parse_from_rfc3339(s)
-            .map(|d| {
-                d.with_timezone(&chrono::Utc)
-                    .format("%Y-%m-%d %H:%M UTC")
-                    .to_string()
-            })
-            .unwrap_or_else(|_| "Unknown".into()),
-    }
+pub fn absolute_date(value: Option<DateTime<Utc>>) -> String {
+    value.map_or_else(
+        || "Never".into(),
+        |date| date.format("%Y-%m-%d %H:%M UTC").to_string(),
+    )
+}
+
+/// The `datetime` attribute of a `<time>` element, in the backend's wire format.
+pub fn machine_date(value: DateTime<Utc>) -> String {
+    value.to_rfc3339_opts(SecondsFormat::AutoSi, true)
 }
 
 pub fn poll_interval(seconds: i64) -> String {
@@ -112,12 +111,31 @@ mod tests {
 
     #[test]
     fn relative_dates_and_poll_intervals() {
-        let now = timestamp("2025-01-01T01:00:00Z");
-        assert_eq!(time_ago("2025-01-01T00:59:30Z", now), "just now");
-        assert_eq!(time_ago("2025-01-01T00:00:00Z", now), "1h ago");
+        let now = "2025-01-01T01:00:00Z"
+            .parse::<DateTime<Utc>>()
+            .unwrap()
+            .timestamp_millis();
+        assert_eq!(
+            time_ago("2025-01-01T00:59:30Z".parse().unwrap(), now),
+            "just now"
+        );
+        assert_eq!(
+            time_ago("2025-01-01T00:00:00Z".parse().unwrap(), now),
+            "1h ago"
+        );
         assert_eq!(poll_interval(30), "30s");
         assert_eq!(poll_interval(90), "1m 30s");
         assert_eq!(poll_interval(3660), "1h 1m");
+    }
+
+    #[test]
+    fn dates_render_in_utc_and_keep_the_backend_wire_format() {
+        let date: DateTime<Utc> = "2025-01-01T02:03:04+01:00".parse().unwrap();
+        assert_eq!(absolute_date(Some(date)), "2025-01-01 01:03 UTC");
+        assert_eq!(absolute_date(None), "Never");
+        assert_eq!(machine_date(date), "2025-01-01T01:03:04Z");
+        let wire = serde_json::to_string(&date).unwrap();
+        assert_eq!(wire, format!("\"{}\"", machine_date(date)));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -125,6 +143,13 @@ mod tests {
         use super::*;
 
         quickcheck::quickcheck! {
+            fn prop_machine_dates_parse_back_to_the_same_instant(millis: i64) -> bool {
+                let Some(date) = DateTime::from_timestamp_millis(millis % 10_000_000_000_000) else {
+                    return true;
+                };
+                machine_date(date).parse::<DateTime<Utc>>() == Ok(date)
+            }
+
             fn prop_truncate_respects_the_limit_and_keeps_short_text(value: String, max: u8) -> bool {
                 let max = usize::from(max) + 1;
                 let truncated = truncate(&value, max);

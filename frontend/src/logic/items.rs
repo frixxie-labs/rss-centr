@@ -1,24 +1,16 @@
 use std::collections::{BTreeMap, HashSet};
 
-use chrono::DateTime;
+use chrono::{DateTime, Utc};
 
 use super::format::{preview, truncate};
 use super::{Order, PAGE_SIZE};
 use crate::models::{Feed, FeedItem};
 
-pub fn timestamp(value: &str) -> i64 {
-    DateTime::parse_from_rfc3339(value)
-        .map(|d| d.timestamp_millis())
-        .unwrap_or_default()
-}
-
-pub fn effective_date(item: &FeedItem) -> i64 {
-    let inserted = timestamp(&item.inserted_at);
+/// The publish date, unless missing or later than when the item was first seen.
+pub fn effective_date(item: &FeedItem) -> DateTime<Utc> {
     item.published_at
-        .as_deref()
-        .map(timestamp)
-        .unwrap_or(inserted)
-        .min(inserted)
+        .unwrap_or(item.inserted_at)
+        .min(item.inserted_at)
 }
 
 pub fn sort_newest(mut items: Vec<FeedItem>) -> Vec<FeedItem> {
@@ -84,7 +76,7 @@ mod tests {
     fn item(id: i64) -> FeedItem {
         FeedItem {
             id,
-            inserted_at: "2025-01-01T00:00:00Z".into(),
+            inserted_at: "2025-01-01T00:00:00Z".parse().unwrap(),
             ..Default::default()
         }
     }
@@ -96,10 +88,10 @@ mod tests {
     #[test]
     fn publication_is_capped_at_insertion_and_ties_use_id() {
         let mut future = item(1);
-        future.published_at = Some("2030-01-01T00:00:00Z".into());
+        future.published_at = Some("2030-01-01T00:00:00Z".parse().unwrap());
         assert_eq!(effective_date(&future), effective_date(&item(2)));
         let mut older = item(3);
-        older.published_at = Some("2024-01-01T00:00:00Z".into());
+        older.published_at = Some("2024-01-01T00:00:00Z".parse().unwrap());
         assert_eq!(ids(&sort_newest(vec![future, older, item(2)])), [2, 1, 3]);
     }
 
@@ -181,7 +173,11 @@ mod tests {
 
         /// Items with small ids (so merges overlap) and dates a few days apart.
         fn dated_items(specs: &[(u8, u8, Option<u8>)]) -> Vec<FeedItem> {
-            let date = |day: u8| format!("2025-01-{:02}T00:00:00Z", day % 28 + 1);
+            let date = |day: u8| {
+                format!("2025-01-{:02}T00:00:00Z", day % 28 + 1)
+                    .parse()
+                    .unwrap()
+            };
             specs
                 .iter()
                 .map(|(id, inserted, published)| FeedItem {
