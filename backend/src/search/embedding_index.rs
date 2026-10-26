@@ -110,12 +110,6 @@ impl IndexedItems {
             .map(|&position| &self.items[position])
     }
 
-    fn get_mut(&mut self, id: i64) -> Option<&mut IndexedItem> {
-        self.positions
-            .get(&id)
-            .map(|&position| &mut self.items[position])
-    }
-
     fn retain(&mut self, mut keep: impl FnMut(&IndexedItem) -> bool) {
         self.items.retain(|item| keep(item));
         self.positions = self
@@ -133,13 +127,65 @@ impl IndexedItems {
     fn len(&self) -> usize {
         self.items.len()
     }
+
+    /// Ids whose embedding is missing from the index or older than `versions`.
+    fn outdated(&self, versions: &HashMap<i64, EmbeddingVersion>) -> Vec<i64> {
+        versions
+            .values()
+            .filter(|version| {
+                self.get(version.id)
+                    .is_none_or(|item| item.embedded_at != version.embedded_at)
+            })
+            .map(|version| version.id)
+            .collect()
+    }
+
+    /// Drop items without a version and take feed and date from the others.
+    /// Returns the number of dropped items.
+    fn apply_versions(&mut self, versions: &HashMap<i64, EmbeddingVersion>) -> usize {
+        let before = self.len();
+        self.retain(|item| versions.contains_key(&item.id));
+        for item in &mut self.items {
+            let version = &versions[&item.id];
+            item.feed_id = version.feed_id;
+            item.date = version.date;
+        }
+        before - self.len()
+    }
+}
+
+impl Extend<StoredEmbedding> for IndexedItems {
+    fn extend<T: IntoIterator<Item = StoredEmbedding>>(&mut self, rows: T) {
+        rows.into_iter().for_each(|row| self.upsert(row));
+    }
+}
+
+/// Whether the index has been fully loaded, and up to which `embedded_at`.
+#[derive(Default, Clone, Copy)]
+enum LoadState {
+    #[default]
+    Unloaded,
+    /// `newest` is the latest `embedded_at` seen, if any.
+    Loaded { newest: Option<DateTime<Utc>> },
+}
+
+impl LoadState {
+    /// Record rows embedded up to `newest`. An unloaded index stays unloaded,
+    /// so the next refresh still reads everything.
+    fn seen(self, newest: Option<DateTime<Utc>>) -> Self {
+        match self {
+            Self::Unloaded => Self::Unloaded,
+            Self::Loaded { newest: previous } => Self::Loaded {
+                newest: previous.max(newest),
+            },
+        }
+    }
 }
 
 #[derive(Default)]
 struct IndexState {
     items: IndexedItems,
-    newest: Option<DateTime<Utc>>,
-    loaded_at: Option<Instant>,
+    load: LoadState,
 }
 
 /// In-memory copy of one model's embeddings, quantized to a quarter of their size.
@@ -167,24 +213,18 @@ impl EmbeddingIndex {
     /// The first call loads everything; concurrent callers wait for it.
     pub(crate) async fn refresh(&self, source: &impl EmbeddingSource) -> Result<()> {
         let _guard = self.refresh.lock().await;
-        let (since, loaded) = {
-            let state = self.state.read().await;
-            let since = state
-                .newest
-                .map(|t| t - chrono::Duration::from_std(REFRESH_OVERLAP).unwrap_or_default());
-            (since, state.loaded_at.is_some())
-        };
-        if !loaded {
+        let load = self.state.read().await.load;
+        let LoadState::Loaded { newest } = load else {
             return self.load_all(source).await;
-        }
+        };
+        let since =
+            newest.map(|t| t - chrono::Duration::from_std(REFRESH_OVERLAP).unwrap_or_default());
 
         let rows = source.read_embeddings(&self.model, since).await?;
         let newest = rows.iter().map(|r| r.embedded_at).max();
         let mut state = self.state.write().await;
-        for row in rows {
-            state.items.upsert(row);
-        }
-        state.newest = state.newest.max(newest);
+        state.items.extend(rows);
+        state.load = state.load.seen(newest);
         Ok(())
     }
 
@@ -194,13 +234,11 @@ impl EmbeddingIndex {
         let rows = source.read_embeddings(&self.model, None).await?;
         let newest = rows.iter().map(|r| r.embedded_at).max();
         let mut items = IndexedItems::default();
-        for row in rows {
-            items.upsert(row);
-        }
-        let mut state = self.state.write().await;
-        state.items = items;
-        state.newest = newest;
-        state.loaded_at = Some(Instant::now());
+        items.extend(rows);
+        *self.state.write().await = IndexState {
+            items,
+            load: LoadState::Loaded { newest },
+        };
         Ok(())
     }
 
@@ -213,19 +251,7 @@ impl EmbeddingIndex {
             .into_iter()
             .map(|version| (version.id, version))
             .collect();
-        let missing: Vec<i64> = {
-            let state = self.state.read().await;
-            versions
-                .values()
-                .filter(|version| {
-                    state
-                        .items
-                        .get(version.id)
-                        .is_none_or(|item| item.embedded_at != version.embedded_at)
-                })
-                .map(|version| version.id)
-                .collect()
-        };
+        let missing = self.state.read().await.items.outdated(&versions);
         let rows = if missing.is_empty() {
             Vec::new()
         } else {
@@ -233,21 +259,11 @@ impl EmbeddingIndex {
         };
 
         let mut state = self.state.write().await;
-        let before = state.items.len();
-        state.items.retain(|item| versions.contains_key(&item.id));
-        let removed = before - state.items.len();
-        for version in versions.values() {
-            if let Some(item) = state.items.get_mut(version.id) {
-                item.feed_id = version.feed_id;
-                item.date = version.date;
-            }
-        }
+        let removed = state.items.apply_versions(&versions);
         let fetched = rows.len();
         let newest = rows.iter().map(|r| r.embedded_at).max();
-        for row in rows {
-            state.items.upsert(row);
-        }
-        state.newest = state.newest.max(newest);
+        state.items.extend(rows);
+        state.load = state.load.seen(newest);
         Ok(ReconcileStats { removed, fetched })
     }
 

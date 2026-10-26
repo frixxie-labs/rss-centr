@@ -318,3 +318,67 @@ async fn cancelled_refresh_preserves_the_index_and_releases_the_refresh_lock() {
     assert_eq!(index.item_count().await, 2);
     assert!(source.steps.lock().unwrap().is_empty());
 }
+
+/// An operation on [`IndexedItems`]; small ids make repeats likely.
+#[derive(Debug, Clone)]
+enum Op {
+    Upsert(u8, i8),
+    Drop(u8),
+}
+
+impl quickcheck::Arbitrary for Op {
+    fn arbitrary(g: &mut quickcheck::Gen) -> Self {
+        if bool::arbitrary(g) {
+            Self::Upsert(u8::arbitrary(g) % 16, i8::arbitrary(g))
+        } else {
+            Self::Drop(u8::arbitrary(g) % 16)
+        }
+    }
+}
+
+fn apply(ops: &[Op]) -> IndexedItems {
+    let mut items = IndexedItems::default();
+    for op in ops {
+        match *op {
+            Op::Upsert(id, x) => items.upsert(row(i64::from(id), &[f32::from(x), 1.0])),
+            Op::Drop(id) => items.retain(|item| item.id != i64::from(id)),
+        }
+    }
+    items
+}
+
+quickcheck::quickcheck! {
+    fn prop_positions_always_point_at_their_item(ops: Vec<Op>) -> bool {
+        let items = apply(&ops);
+        items.positions.len() == items.items.len()
+            && items.positions.iter().all(|(id, position)| items.items[*position].id == *id)
+    }
+
+    fn prop_reconcile_converges_to_the_stored_versions(ops: Vec<Op>, stored: Vec<(u8, bool)>) -> bool {
+        let mut items = apply(&ops);
+        let versions: HashMap<i64, EmbeddingVersion> = stored
+            .iter()
+            .map(|(id, newer)| {
+                let id = i64::from(id % 16);
+                let embedded_at = if *newer { DateTime::UNIX_EPOCH + chrono::Duration::hours(1) } else { DateTime::UNIX_EPOCH };
+                (id, EmbeddingVersion { feed_id: 2, embedded_at, ..version(id) })
+            })
+            .collect();
+
+        let outdated = items.outdated(&versions);
+        items.apply_versions(&versions);
+        items.extend(outdated.iter().map(|id| StoredEmbedding {
+            feed_id: versions[id].feed_id,
+            embedded_at: versions[id].embedded_at,
+            ..row(*id, &[1.0])
+        }));
+
+        let mut ids: Vec<i64> = items.iter().map(|item| item.id).collect();
+        let mut expected: Vec<i64> = versions.keys().copied().collect();
+        ids.sort_unstable();
+        expected.sort_unstable();
+        ids == expected
+            && items.iter().all(|item| item.feed_id == 2 && item.embedded_at == versions[&item.id].embedded_at)
+            && items.outdated(&versions).is_empty()
+    }
+}
