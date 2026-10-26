@@ -67,22 +67,29 @@ pub(crate) fn budgeted_prompts<T>(
     max_items: usize,
 ) -> Result<Vec<String>, InputTooLarge> {
     let mut prompts = Vec::new();
-    let mut start = 0;
-    while start < items.len() {
-        let mut end = start;
-        let mut accepted = None;
-        while end < items.len() && end - start < max_items {
-            let candidate = build(&items[start..=end]);
-            if !budget.fits(&candidate, num_predict) {
-                break;
-            }
-            accepted = Some(candidate);
-            end += 1;
-        }
-        prompts.push(accepted.ok_or(InputTooLarge)?);
-        start = end;
+    let mut rest = items;
+    while !rest.is_empty() {
+        let (len, prompt) =
+            largest_fitting_prefix(rest, &build, budget, num_predict, max_items)
+                .ok_or(InputTooLarge)?;
+        prompts.push(prompt);
+        rest = &rest[len..];
     }
     Ok(prompts)
+}
+
+/// The longest prefix of at most `max_items` items whose prompt fits, with its prompt.
+fn largest_fitting_prefix<T>(
+    items: &[T],
+    build: impl Fn(&[T]) -> String,
+    budget: ContextBudget,
+    num_predict: u32,
+    max_items: usize,
+) -> Option<(usize, String)> {
+    (1..=items.len().min(max_items))
+        .map(|len| (len, build(&items[..len])))
+        .take_while(|(_, prompt)| budget.fits(prompt, num_predict))
+        .last()
 }
 
 /// The next step for a set of story notes.
@@ -397,5 +404,56 @@ mod tests {
                 .iter()
                 .all(|prompt| budget.fits(prompt, BATCH_OUTPUT_TOKENS))
         );
+    }
+
+    /// Items are `(id, size)`; the prompt lists the ids and pads to the total size.
+    fn sized_prompt(items: &[(usize, u16)]) -> String {
+        let ids: Vec<String> = items.iter().map(|(id, _)| id.to_string()).collect();
+        let size: usize = items.iter().map(|(_, size)| usize::from(*size)).sum();
+        format!("{}|{}", ids.join(","), "x".repeat(size))
+    }
+
+    fn prompt_ids(prompt: &str) -> Vec<usize> {
+        let (ids, _) = prompt.split_once('|').unwrap();
+        ids.split(',').map(|id| id.parse().unwrap()).collect()
+    }
+
+    quickcheck::quickcheck! {
+        fn prop_budgeted_prompts_are_maximal_ordered_chunks_within_budget(
+            sizes: Vec<u16>,
+            num_ctx: u16,
+            max_items: u8
+        ) -> bool {
+            let items: Vec<(usize, u16)> = sizes.iter().map(|size| size % 4096).enumerate().collect();
+            let budget = ContextBudget { num_ctx: u32::from(num_ctx) };
+            let max_items = usize::from(max_items % 10) + 1;
+            let fits = |chunk: &[(usize, u16)]| budget.fits(&sized_prompt(chunk), 0);
+            match budgeted_prompts(&items, sized_prompt, budget, 0, max_items) {
+                Err(InputTooLarge) => items.iter().any(|item| !fits(std::slice::from_ref(item))),
+                Ok(prompts) => {
+                    let chunks: Vec<Vec<usize>> = prompts.iter().map(|p| prompt_ids(p)).collect();
+                    let covered: Vec<usize> = chunks.concat();
+                    covered == (0..items.len()).collect::<Vec<_>>()
+                        && prompts.iter().all(|prompt| budget.fits(prompt, 0))
+                        && chunks.iter().all(|chunk| chunk.len() <= max_items)
+                        && chunks.iter().all(|chunk| {
+                            let (first, last) = (chunk[0], chunk[chunk.len() - 1]);
+                            last + 1 == items.len()
+                                || chunk.len() == max_items
+                                || !fits(&items[first..=last + 1])
+                        })
+                }
+            }
+        }
+
+        fn prop_merge_rounds_shrink_the_notes(lengths: Vec<u16>, num_ctx: u16) -> bool {
+            let notes: Vec<String> = lengths.iter().map(|len| "n".repeat(usize::from(len % 2048))).collect();
+            let budget = ContextBudget { num_ctx: u32::from(num_ctx) + SUMMARY_CONTEXT_TOKENS / 2 };
+            match plan_merge_round(&notes, budget, budget) {
+                Ok(MergeRound::Merge(prompts)) => prompts.len() < notes.len(),
+                Ok(MergeRound::Final(_)) => notes.len() <= MAX_FINAL_INPUTS,
+                Err(_) => true,
+            }
+        }
     }
 }
