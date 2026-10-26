@@ -143,30 +143,20 @@ async fn fetch_feed_inner(
     let etag = header_value_to_string(response.headers().get(header::ETAG));
     let last_modified = header_value_to_string(response.headers().get(header::LAST_MODIFIED));
 
-    if response.status() == StatusCode::NOT_MODIFIED {
-        return Ok(FetchOutcome::NotModified {
-            etag,
-            last_modified,
-        });
-    }
-
-    let reason = if is_bot_challenge(response.headers()) {
-        Some(FetchFailureReason::BotProtection)
-    } else if !response.status().is_success() {
-        Some(FetchFailureReason::HttpStatus)
-    } else {
-        None
-    };
-    if let Some(reason) = reason {
-        let failure = FeedFetchFailure {
-            status: response.status(),
-            reason,
-            retry_after: parse_retry_after(response.headers().get(header::RETRY_AFTER), Utc::now()),
-        };
-        if let Err(error) = response.error_for_status_ref() {
-            return Err(anyhow::Error::new(error).context(failure));
+    match classify_response(response.status(), response.headers(), Utc::now()) {
+        ResponseClass::NotModified => {
+            return Ok(FetchOutcome::NotModified {
+                etag,
+                last_modified,
+            });
         }
-        return Err(failure.into());
+        ResponseClass::Failed(failure) => {
+            if let Err(error) = response.error_for_status_ref() {
+                return Err(anyhow::Error::new(error).context(failure));
+            }
+            return Err(failure.into());
+        }
+        ResponseClass::Feed => {}
     }
 
     let bytes = read_body_limited(response, max_bytes)
@@ -180,6 +170,38 @@ async fn fetch_feed_inner(
         etag,
         last_modified,
     })
+}
+
+/// What a response's status and headers say before its body is read.
+#[derive(Debug)]
+enum ResponseClass {
+    NotModified,
+    Failed(FeedFetchFailure),
+    /// The body should hold the feed.
+    Feed,
+}
+
+fn classify_response(
+    status: StatusCode,
+    headers: &header::HeaderMap,
+    now: DateTime<Utc>,
+) -> ResponseClass {
+    let failure = |reason| {
+        ResponseClass::Failed(FeedFetchFailure {
+            status,
+            reason,
+            retry_after: parse_retry_after(headers.get(header::RETRY_AFTER), now),
+        })
+    };
+    if status == StatusCode::NOT_MODIFIED {
+        ResponseClass::NotModified
+    } else if is_bot_challenge(headers) {
+        failure(FetchFailureReason::BotProtection)
+    } else if !status.is_success() {
+        failure(FetchFailureReason::HttpStatus)
+    } else {
+        ResponseClass::Feed
+    }
 }
 
 fn is_bot_challenge(headers: &header::HeaderMap) -> bool {
@@ -488,6 +510,59 @@ mod tests {
             );
         }
         assert_eq!(parse_retry_after(None, now), None);
+    }
+
+    #[test]
+    fn classify_response_checks_not_modified_then_bot_protection_then_status() {
+        let now = DateTime::UNIX_EPOCH;
+        let challenge = header::HeaderMap::from_iter([(
+            header::HeaderName::from_static("cf-mitigated"),
+            header::HeaderValue::from_static("challenge"),
+        )]);
+        let plain = header::HeaderMap::new();
+        for (status, headers, expected) in [
+            (StatusCode::NOT_MODIFIED, &challenge, "not modified"),
+            (StatusCode::OK, &challenge, "bot protection"),
+            (StatusCode::FORBIDDEN, &challenge, "bot protection"),
+            (StatusCode::FORBIDDEN, &plain, "http status"),
+            (StatusCode::MOVED_PERMANENTLY, &plain, "http status"),
+            (StatusCode::OK, &plain, "feed"),
+        ] {
+            let actual = match classify_response(status, headers, now) {
+                ResponseClass::NotModified => "not modified",
+                ResponseClass::Failed(FeedFetchFailure {
+                    reason: FetchFailureReason::BotProtection,
+                    status: failed,
+                    ..
+                }) if failed == status => "bot protection",
+                ResponseClass::Failed(FeedFetchFailure {
+                    reason: FetchFailureReason::HttpStatus,
+                    status: failed,
+                    ..
+                }) if failed == status => "http status",
+                ResponseClass::Failed(_) => "wrong status",
+                ResponseClass::Feed => "feed",
+            };
+            assert_eq!(actual, expected, "{status}");
+        }
+    }
+
+    quickcheck::quickcheck! {
+        fn prop_numeric_retry_after_is_seconds_from_now(seconds: u32, padding: u8) -> bool {
+            let now = DateTime::UNIX_EPOCH;
+            let pad = " ".repeat(usize::from(padding % 3));
+            let value = header::HeaderValue::from_str(&format!("{pad}{seconds}{pad}")).unwrap();
+            parse_retry_after(Some(&value), now)
+                == Some(now + chrono::Duration::seconds(i64::from(seconds)))
+        }
+
+        fn prop_retry_after_without_digits_or_date_is_ignored(text: String) -> bool {
+            let text: String = text.chars().filter(char::is_ascii_alphabetic).collect();
+            let Ok(value) = header::HeaderValue::from_str(&text) else {
+                return true;
+            };
+            parse_retry_after(Some(&value), DateTime::UNIX_EPOCH).is_none()
+        }
     }
 
     #[test]
