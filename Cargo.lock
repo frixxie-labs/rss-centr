@@ -2866,6 +2866,7 @@ dependencies = [
  "leptos_axum",
  "leptos_meta",
  "leptos_router",
+ "quickcheck",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

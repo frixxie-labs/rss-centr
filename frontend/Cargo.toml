@@ -58,6 +58,10 @@ tower = { version = "0.5.3", features = ["util"] }
 http-body-util = "0.1.5"
 async-stream = "0.3.6"
 
+# quickcheck pulls in getrandom, which does not build for wasm32-unknown-unknown.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+quickcheck = "1"
+
 # cargo-leptos settings; anything omitted uses its default.
 [package.metadata.leptos]
 tailwind-input-file = "style/tailwind.css"
