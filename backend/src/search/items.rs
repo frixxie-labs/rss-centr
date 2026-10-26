@@ -36,13 +36,13 @@ pub(crate) struct LatestItemsQuery {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RankedMode {
+pub(crate) enum RankedMode {
     Semantic,
     Hybrid,
 }
 
 impl RankedMode {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Semantic => "semantic",
             Self::Hybrid => "hybrid",
@@ -135,6 +135,25 @@ async fn chronological_items(
     .await?)
 }
 
+/// How a ranked search proceeds once the query embedding is known.
+#[derive(Debug, PartialEq)]
+enum Ranking {
+    /// Rank by similarity to `vector`, nudged by keyword matches in hybrid mode.
+    ByMeaning(Vec<f32>),
+    /// Hybrid search without an embedding falls back to its keyword matches.
+    KeywordsOnly,
+}
+
+impl Ranking {
+    fn new(mode: RankedMode, query_vector: Option<Vec<f32>>) -> Result<Self, SearchError> {
+        match (mode, query_vector) {
+            (_, Some(vector)) => Ok(Self::ByMeaning(vector)),
+            (RankedMode::Semantic, None) => Err(SearchError::EmbeddingUnavailable),
+            (RankedMode::Hybrid, None) => Ok(Self::KeywordsOnly),
+        }
+    }
+}
+
 async fn ranked_items(
     state: &SearchState,
     query: &LatestItemsQuery,
@@ -145,43 +164,35 @@ async fn ranked_items(
     // Ranking is not incremental: rank up to the end of the page, then skip the offset.
     let offset = query.offset.unwrap_or(0) as usize;
     let limit = query.limit.map_or(DEFAULT_SEARCH_LIMIT, |l| l as usize) + offset;
-    let mut timings = SearchTimings::new(mode.name());
-    let mut counts = SearchCounts::default();
-    let query_vector = match timings
+    let mut timings = SearchTimings::new(mode);
+    let query_vector = timings
         .time(SearchStage::Embed, state.embedder.embed_query(text))
         .await
-    {
-        Ok(vector) => Some(vector),
-        Err(e) => {
-            warn!("failed to embed search query: {e:#}");
-            None
-        }
-    };
-    if mode == RankedMode::Semantic && query_vector.is_none() {
-        return Err(SearchError::EmbeddingUnavailable);
-    }
+        .inspect_err(|e| warn!("failed to embed search query: {e:#}"))
+        .ok();
+    let ranking = Ranking::new(mode, query_vector)?;
 
-    let keyword_items = if mode == RankedMode::Hybrid {
-        timings
-            .time(
-                SearchStage::Keyword,
-                read_latest_feed_items_with_detail(
-                    &state.pool,
-                    Some(KEYWORD_CANDIDATES.max(limit) as i64),
-                    query.feed_id,
-                    Some(text),
-                    None,
-                ),
-            )
-            .await?
-    } else {
-        Vec::new()
+    let keyword_items = match mode {
+        RankedMode::Hybrid => {
+            timings
+                .time(
+                    SearchStage::Keyword,
+                    read_latest_feed_items_with_detail(
+                        &state.pool,
+                        Some(KEYWORD_CANDIDATES.max(limit) as i64),
+                        query.feed_id,
+                        Some(text),
+                        None,
+                    ),
+                )
+                .await?
+        }
+        RankedMode::Semantic => Vec::new(),
     };
     let keyword_ids: Vec<i64> = keyword_items.iter().map(|item| item.id).collect();
-    counts.keyword_matches = keyword_ids.len();
 
-    let ids = match query_vector {
-        Some(vector) => {
+    let (ids, indexed, scored) = match ranking {
+        Ranking::ByMeaning(vector) => {
             let index = &state.embeddings;
             timings
                 .time(SearchStage::Refresh, index.refresh(&state.pool))
@@ -192,9 +203,7 @@ async fn ranked_items(
                     index.similarities(&vector, query.feed_id),
                 )
                 .await;
-            counts.indexed = index.item_count().await;
-            counts.scored = similarities.len();
-            timings
+            let ids = timings
                 .time(SearchStage::Rank, async {
                     let mut dates = index.dates(similarities.iter().map(|(id, _)| *id)).await;
                     dates.extend(
@@ -214,9 +223,10 @@ async fn ranked_items(
                         },
                     )
                 })
-                .await
+                .await;
+            (ids, index.item_count().await, similarities.len())
         }
-        None => keyword_ids.into_iter().take(limit).collect(),
+        Ranking::KeywordsOnly => (keyword_ids.iter().copied().take(limit).collect(), 0, 0),
     };
 
     let ids: Vec<i64> = ids.into_iter().skip(offset).collect();
@@ -226,8 +236,12 @@ async fn ranked_items(
             read_feed_items_with_detail_by_ids(&state.pool, &ids),
         )
         .await?;
-    counts.results = items.len();
-    timings.finish(counts);
+    timings.finish(SearchCounts {
+        indexed,
+        scored,
+        keyword_matches: keyword_ids.len(),
+        results: items.len(),
+    });
     Ok(items)
 }
 
@@ -245,6 +259,27 @@ mod tests {
     use crate::feed::feed_subscription::upsert_feed_by_url;
     use crate::search::embedding_store::store_item_embeddings;
     use crate::search::{EmbedFuture, EmbeddingIndex, QueryEmbedder};
+
+    #[test]
+    fn ranking_needs_an_embedding_except_for_hybrid_keyword_fallback() {
+        let vector = vec![1.0];
+        assert_eq!(
+            Ranking::new(RankedMode::Semantic, Some(vector.clone())).unwrap(),
+            Ranking::ByMeaning(vector.clone())
+        );
+        assert_eq!(
+            Ranking::new(RankedMode::Hybrid, Some(vector.clone())).unwrap(),
+            Ranking::ByMeaning(vector)
+        );
+        assert_eq!(
+            Ranking::new(RankedMode::Hybrid, None).unwrap(),
+            Ranking::KeywordsOnly
+        );
+        assert!(matches!(
+            Ranking::new(RankedMode::Semantic, None),
+            Err(SearchError::EmbeddingUnavailable)
+        ));
+    }
 
     struct FixedEmbedder;
 
