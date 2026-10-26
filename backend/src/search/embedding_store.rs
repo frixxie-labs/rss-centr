@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Utc};
 use rss_centr_core::semantic::{
     EmbeddingJob, ItemEmbedding, content_hash, embedding_input, normalize,
@@ -76,20 +76,24 @@ pub async fn store_item_embeddings(
 ) -> Result<u64> {
     // Store everything in one statement: the database is a network hop away,
     // so per-item round-trips dominate the cost.
-    let mut ids = Vec::with_capacity(embeddings.len());
-    let mut hashes = Vec::with_capacity(embeddings.len());
-    let mut vectors = Vec::with_capacity(embeddings.len());
-    for item in embeddings {
-        let Some(vector) = normalize(&item.embedding) else {
-            bail!(
-                "invalid embedding for feed_item_id={}: empty or degenerate vector",
-                item.feed_item_id
-            );
-        };
-        ids.push(item.feed_item_id);
-        hashes.push(item.content_hash.clone());
-        vectors.push(encode_embedding(&vector));
-    }
+    let vectors = embeddings
+        .iter()
+        .map(|item| {
+            normalize(&item.embedding)
+                .map(|vector| encode_embedding(&vector))
+                .ok_or_else(|| {
+                    anyhow!(
+                        "invalid embedding for feed_item_id={}: empty or degenerate vector",
+                        item.feed_item_id
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let ids: Vec<i64> = embeddings.iter().map(|item| item.feed_item_id).collect();
+    let hashes: Vec<String> = embeddings
+        .iter()
+        .map(|item| item.content_hash.clone())
+        .collect();
 
     let stored = sqlx::query_scalar!(
         r#"
@@ -143,6 +147,26 @@ pub fn decode_embedding(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+struct EmbeddingRow {
+    id: i64,
+    feed_id: i64,
+    date: DateTime<Utc>,
+    embedding: Vec<u8>,
+    embedded_at: DateTime<Utc>,
+}
+
+impl From<EmbeddingRow> for StoredEmbedding {
+    fn from(row: EmbeddingRow) -> Self {
+        Self {
+            id: row.id,
+            feed_id: row.feed_id,
+            date: row.date,
+            embedding: decode_embedding(&row.embedding),
+            embedded_at: row.embedded_at,
+        }
+    }
+}
+
 impl EmbeddingSource for PgPool {
     /// Read embeddings for `model`, optionally only those stored after `since`.
     async fn read_embeddings(
@@ -150,7 +174,8 @@ impl EmbeddingSource for PgPool {
         model: &str,
         since: Option<DateTime<Utc>>,
     ) -> Result<Vec<StoredEmbedding>> {
-        let rows = sqlx::query!(
+        let rows = sqlx::query_as!(
+            EmbeddingRow,
             r#"
         SELECT e.feed_item_id as "id!: i64",
                f.feed_id as "feed_id!: i64",
@@ -170,16 +195,7 @@ impl EmbeddingSource for PgPool {
         .await
         .with_context(|| format!("failed to read embeddings for model={model} since={since:?}"))?;
 
-        Ok(rows
-            .into_iter()
-            .map(|row| StoredEmbedding {
-                id: row.id,
-                feed_id: row.feed_id,
-                date: row.date,
-                embedding: decode_embedding(&row.embedding),
-                embedded_at: row.embedded_at,
-            })
-            .collect())
+        Ok(rows.into_iter().map(StoredEmbedding::from).collect())
     }
 
     /// Read embeddings for `model` of the given items.
@@ -188,7 +204,8 @@ impl EmbeddingSource for PgPool {
         model: &str,
         ids: &[i64],
     ) -> Result<Vec<StoredEmbedding>> {
-        let rows = sqlx::query!(
+        let rows = sqlx::query_as!(
+            EmbeddingRow,
             r#"
         SELECT e.feed_item_id as "id!: i64",
                f.feed_id as "feed_id!: i64",
@@ -213,16 +230,7 @@ impl EmbeddingSource for PgPool {
             )
         })?;
 
-        Ok(rows
-            .into_iter()
-            .map(|row| StoredEmbedding {
-                id: row.id,
-                feed_id: row.feed_id,
-                date: row.date,
-                embedding: decode_embedding(&row.embedding),
-                embedded_at: row.embedded_at,
-            })
-            .collect())
+        Ok(rows.into_iter().map(StoredEmbedding::from).collect())
     }
 
     /// Read the stored embeddings for `model` without their vectors, which make
@@ -478,5 +486,12 @@ mod tests {
         let bytes = encode_embedding(&[1.0, -0.5]);
         assert_eq!(bytes, vec![0x3f, 0x80, 0, 0, 0xbf, 0, 0, 0]);
         assert_eq!(decode_embedding(&bytes), vec![1.0, -0.5]);
+    }
+
+    quickcheck::quickcheck! {
+        fn prop_embedding_bytes_round_trip_bit_exactly(vector: Vec<f32>) -> bool {
+            let decoded = decode_embedding(&encode_embedding(&vector));
+            decoded.iter().map(|v| v.to_bits()).eq(vector.iter().map(|v| v.to_bits()))
+        }
     }
 }
