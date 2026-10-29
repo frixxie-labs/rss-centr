@@ -26,7 +26,7 @@ leptos_router = { version = "0.8.17", features = ["ssr"] }
 leptos_axum = "0.8.10"
 axum = "0.8.9"
 reqwest = { version = "0.12.28", default-features = false, features = ["stream"] }
-tokio = { version = "1.54.0", features = ["full"] }
+tokio = { version = "1.54.1", features = ["full"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 tower-http = { version = "0.7.1", features = ["trace", "compression-br", "compression-gzip"] }
 
