@@ -11,9 +11,9 @@ use super::items::RankedMode;
 pub enum SearchStage {
     /// Embedding the query (instant for cached queries).
     Embed,
-    /// Pulling embeddings stored since the last search into the index.
+    /// Loading the embedding centroids (only until they are first loaded).
     Refresh,
-    /// Scoring every indexed item against the query.
+    /// The nearest-neighbour query.
     Scan,
     /// The keyword query of hybrid search.
     Keyword,
@@ -48,9 +48,9 @@ impl SearchStage {
 /// Counts logged with a search's timings.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SearchCounts {
-    /// Embeddings in the in-memory index.
+    /// Embeddings of the model, as of the last centroid load.
     pub indexed: usize,
-    /// Items scored by similarity, after the feed filter.
+    /// Candidates scored by similarity, after the feed filter.
     pub scored: usize,
     /// Items matching the keywords (hybrid search).
     pub keyword_matches: usize,

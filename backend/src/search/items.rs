@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::{error::Error, fmt};
 
 use chrono::{DateTime, Utc};
-use rss_centr_core::semantic::{hybrid_rank, item_date};
+use rss_centr_core::semantic::{hybrid_rank, item_date, mean_similarity};
 use serde::Deserialize;
 use tracing::warn;
 use utoipa::ToSchema;
@@ -9,12 +10,16 @@ use utoipa::ToSchema;
 use crate::feed::feed_item::read_feed_items_with_detail_by_ids;
 use crate::feed::feed_item::{FeedItemWithDetail, read_latest_feed_items_with_detail};
 
+use super::embedding_store::nearest_embeddings;
 use super::{SearchCounts, SearchStage, SearchState, SearchTimings};
 
 /// Default page size for ranked (semantic/hybrid) searches.
 const DEFAULT_SEARCH_LIMIT: usize = 50;
 /// Maximum number of keyword matches considered in a hybrid search.
 const KEYWORD_CANDIDATES: usize = 500;
+/// Minimum number of nearest neighbours ranked in a semantic or hybrid search.
+/// More than a page, so recency can lift slightly less similar items.
+const SEMANTIC_CANDIDATES: usize = 200;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
@@ -193,26 +198,45 @@ async fn ranked_items(
 
     let (ids, indexed, scored) = match ranking {
         Ranking::ByMeaning(vector) => {
-            let index = &state.embeddings;
-            timings
-                .time(SearchStage::Refresh, index.refresh(&state.pool))
+            let centroids = timings
+                .time(SearchStage::Refresh, state.centroids.get(&state.pool))
                 .await?;
-            let similarities = timings
+            let candidates = timings
                 .time(
                     SearchStage::Scan,
-                    index.similarities(&vector, query.feed_id),
+                    nearest_embeddings(
+                        &state.pool,
+                        &state.model,
+                        &vector,
+                        query.feed_id,
+                        SEMANTIC_CANDIDATES.max(limit) as i64,
+                        &keyword_ids,
+                    ),
                 )
-                .await;
+                .await?;
             let ids = timings
                 .time(SearchStage::Rank, async {
-                    let mut dates = index.dates(similarities.iter().map(|(id, _)| *id)).await;
-                    dates.extend(
-                        keyword_items
+                    let similarities: Vec<(i64, f32)> = candidates
+                        .iter()
+                        .map(|candidate| (candidate.id, candidate.similarity))
+                        .collect();
+                    // Embeddings stored since the centroids were loaded may be
+                    // the only ones of this model.
+                    let mean = centroids
+                        .mean_similarity(&vector, query.feed_id)
+                        .or_else(|| mean_similarity(similarities.iter().map(|(_, s)| *s)))
+                        .unwrap_or(0.0);
+                    let dates: HashMap<i64, DateTime<Utc>> =
+                        candidates
                             .iter()
-                            .map(|item| (item.id, item_date(item.published_at, item.inserted_at))),
-                    );
+                            .map(|candidate| (candidate.id, candidate.date))
+                            .chain(keyword_items.iter().map(|item| {
+                                (item.id, item_date(item.published_at, item.inserted_at))
+                            }))
+                            .collect();
                     hybrid_rank(
                         &similarities,
+                        mean,
                         &keyword_ids,
                         state.min_similarity,
                         limit,
@@ -224,7 +248,7 @@ async fn ranked_items(
                     )
                 })
                 .await;
-            (ids, index.item_count().await, similarities.len())
+            (ids, centroids.count(), candidates.len())
         }
         Ranking::KeywordsOnly => (keyword_ids.iter().copied().take(limit).collect(), 0, 0),
     };
@@ -258,7 +282,7 @@ mod tests {
     use crate::feed::feed_item_detail::insert_feed_item_detail;
     use crate::feed::feed_subscription::upsert_feed_by_url;
     use crate::search::embedding_store::store_item_embeddings;
-    use crate::search::{EmbedFuture, EmbeddingIndex, QueryEmbedder};
+    use crate::search::{EmbedFuture, EmbeddingCentroids, QueryEmbedder};
 
     #[test]
     fn ranking_needs_an_embedding_except_for_hybrid_keyword_fallback() {
@@ -380,7 +404,7 @@ mod tests {
             pool,
             embedder: Arc::new(FixedEmbedder),
             model: "test-model".into(),
-            embeddings: Arc::new(EmbeddingIndex::new("test-model")),
+            centroids: Arc::new(EmbeddingCentroids::new("test-model")),
             min_similarity: 0.3,
             recency: RecencyBoost {
                 weight: 0.5,

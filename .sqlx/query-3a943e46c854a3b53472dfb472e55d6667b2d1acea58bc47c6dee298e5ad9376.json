@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT f.feed_id as \"feed_id!\",\n               SUM(e.embedding)::REAL[] as \"sum!\",\n               COUNT(*) as \"count!\"\n        FROM feed_item_embeddings e\n        INNER JOIN feed_items f ON f.id = e.feed_item_id\n        WHERE e.model = $1\n        GROUP BY f.feed_id, vector_dims(e.embedding)\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "feed_id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "feed_items",
+            "name": "feed_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "sum!",
+        "type_info": "Float4Array",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "3a943e46c854a3b53472dfb472e55d6667b2d1acea58bc47c6dee298e5ad9376"
+}

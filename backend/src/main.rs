@@ -142,9 +142,9 @@ async fn main() -> Result<()> {
         config.ollama_url,
         config.summary_models,
     );
-    let embedding_index = search_state.embeddings.clone();
-    let embedding_pool = pool.clone();
-    tokio::spawn(async move { embedding_index.run_loader(&embedding_pool).await });
+    let centroids = search_state.centroids.clone();
+    let centroid_pool = pool.clone();
+    tokio::spawn(async move { centroids.run_loader(&centroid_pool).await });
 
     let app = create_router(
         pool,

@@ -1,18 +1,16 @@
+mod centroids;
 mod config;
 mod embedder;
-mod embedding_index;
 pub mod embedding_store;
 mod items;
 mod timings;
 
+pub(crate) use centroids::FeedCentroid;
+pub use centroids::{Centroids, EmbeddingCentroids};
 pub(crate) use config::SearchConfig;
 pub use config::{DEFAULT_EMBED_KEEP_ALIVE, DEFAULT_EMBED_MODEL, DEFAULT_MIN_SIMILARITY};
 use embedder::OllamaQueryEmbedder;
 pub use embedder::{CachingEmbedder, EmbedFuture, QUERY_CACHE_CAPACITY, QueryEmbedder};
-pub use embedding_index::EmbeddingIndex;
-#[cfg(test)]
-pub(crate) use embedding_index::ReconcileStats;
-pub(crate) use embedding_index::{EmbeddingSource, EmbeddingVersion, StoredEmbedding};
 pub(crate) use items::{LatestItemsQuery, SearchError, SearchMode, search_items};
 pub use timings::{SearchCounts, SearchStage, SearchTimings};
 
@@ -27,7 +25,7 @@ pub struct SearchState {
     pub pool: PgPool,
     pub embedder: Arc<dyn QueryEmbedder>,
     pub model: String,
-    pub embeddings: Arc<EmbeddingIndex>,
+    pub centroids: Arc<EmbeddingCentroids>,
     pub min_similarity: f32,
     pub recency: RecencyBoost,
 }
@@ -56,7 +54,7 @@ impl SearchState {
                 )),
                 QUERY_CACHE_CAPACITY,
             )),
-            embeddings: Arc::new(EmbeddingIndex::new(model.clone())),
+            centroids: Arc::new(EmbeddingCentroids::new(model.clone())),
             model,
             min_similarity,
             recency,
@@ -123,7 +121,7 @@ mod tests {
         );
 
         assert_eq!(state.model, "configured-embed-model");
-        assert_eq!(state.embeddings.model(), state.model);
+        assert_eq!(state.centroids.model(), state.model);
         assert_eq!(state.min_similarity, 0.4);
         assert_eq!(state.recency, recency);
         assert_eq!(

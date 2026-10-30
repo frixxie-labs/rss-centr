@@ -1,11 +1,14 @@
+use std::collections::BTreeSet;
+
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Utc};
+use pgvector::Vector;
 use rss_centr_core::semantic::{
     EmbeddingJob, ItemEmbedding, content_hash, embedding_input, normalize,
 };
 use sqlx::PgPool;
 
-use super::{EmbeddingSource, EmbeddingVersion, StoredEmbedding};
+use super::FeedCentroid;
 
 /// Lease up to `limit` items that have no embedding for `model` (missing or
 /// produced by a different model), newest first. Leased items are not handed
@@ -68,6 +71,7 @@ pub async fn claim_items_needing_embedding(
 
 /// Upsert embeddings for `model` and release their leases. Vectors are
 /// normalized before storage; items that no longer exist are skipped.
+/// Ensures the model has a nearest-neighbour index for each stored dimension.
 /// Returns the number of embeddings stored.
 pub async fn store_item_embeddings(
     pool: &PgPool,
@@ -79,14 +83,12 @@ pub async fn store_item_embeddings(
     let vectors = embeddings
         .iter()
         .map(|item| {
-            normalize(&item.embedding)
-                .map(|vector| encode_embedding(&vector))
-                .ok_or_else(|| {
-                    anyhow!(
-                        "invalid embedding for feed_item_id={}: empty or degenerate vector",
-                        item.feed_item_id
-                    )
-                })
+            normalize(&item.embedding).map(Vector::from).ok_or_else(|| {
+                anyhow!(
+                    "invalid embedding for feed_item_id={}: empty or degenerate vector",
+                    item.feed_item_id
+                )
+            })
         })
         .collect::<Result<Vec<_>>>()?;
     let ids: Vec<i64> = embeddings.iter().map(|item| item.feed_item_id).collect();
@@ -94,12 +96,16 @@ pub async fn store_item_embeddings(
         .iter()
         .map(|item| item.content_hash.clone())
         .collect();
+    let dimensions: BTreeSet<i32> = vectors
+        .iter()
+        .map(|vector| vector.as_slice().len() as i32)
+        .collect();
 
     let stored = sqlx::query_scalar!(
         r#"
         WITH input AS (
             SELECT DISTINCT ON (feed_item_id) *
-            FROM UNNEST($2::BIGINT[], $3::TEXT[], $4::BYTEA[]) WITH ORDINALITY
+            FROM UNNEST($2::BIGINT[], $3::TEXT[], $4::vector[]) WITH ORDINALITY
                 AS t(feed_item_id, content_hash, embedding, ord)
             ORDER BY feed_item_id, ord DESC
         ),
@@ -124,140 +130,86 @@ pub async fn store_item_embeddings(
         model,
         &ids,
         &hashes,
-        &vectors,
+        &vectors as &[Vector],
     )
     .fetch_one(pool)
     .await
     .with_context(|| format!("failed to store {} embeddings", ids.len()))?;
+
+    for dimension in dimensions {
+        sqlx::query!(
+            "SELECT ensure_feed_item_embedding_index($1, $2)",
+            model,
+            dimension
+        )
+        .execute(pool)
+        .await
+        .with_context(|| {
+            format!("failed to create embedding index for model={model} dimension={dimension}")
+        })?;
+    }
     Ok(stored as u64)
 }
 
-/// Pack a vector as big-endian f32 bytes, the layout of Postgres `float4send`.
-pub fn encode_embedding(vector: &[f32]) -> Vec<u8> {
-    vector.iter().flat_map(|v| v.to_be_bytes()).collect()
+/// A search candidate and its cosine similarity to the query.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ScoredEmbedding {
+    pub(crate) id: i64,
+    pub(crate) similarity: f32,
+    /// Effective publication date, see [`rss_centr_core::semantic::item_date`].
+    pub(crate) date: DateTime<Utc>,
 }
 
-/// Inverse of [`encode_embedding`]. Trailing partial values are ignored.
-pub fn decode_embedding(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|chunk| f32::from_be_bytes(*chunk))
-        .collect()
+/// The `limit` items of `model` most similar to the unit vector `query`
+/// (approximate once the model has an HNSW index), optionally within one
+/// feed, plus the items in `include` that have an embedding.
+pub(crate) async fn nearest_embeddings(
+    pool: &PgPool,
+    model: &str,
+    query: &[f32],
+    feed_id: Option<i64>,
+    limit: i64,
+    include: &[i64],
+) -> Result<Vec<ScoredEmbedding>> {
+    let limit = i32::try_from(limit).unwrap_or(i32::MAX);
+    sqlx::query_as!(
+        ScoredEmbedding,
+        r#"
+        SELECT id as "id!", similarity as "similarity!", date as "date!"
+        FROM nearest_feed_item_embeddings($1, $2::vector, $3, $4, $5)
+        "#,
+        model,
+        Vector::from(query.to_vec()) as Vector,
+        feed_id,
+        limit,
+        include,
+    )
+    .fetch_all(pool)
+    .await
+    .with_context(|| {
+        format!("failed to search embeddings for model={model} feed_id={feed_id:?} limit={limit}")
+    })
 }
 
-struct EmbeddingRow {
-    id: i64,
-    feed_id: i64,
-    date: DateTime<Utc>,
-    embedding: Vec<u8>,
-    embedded_at: DateTime<Utc>,
-}
-
-impl From<EmbeddingRow> for StoredEmbedding {
-    fn from(row: EmbeddingRow) -> Self {
-        Self {
-            id: row.id,
-            feed_id: row.feed_id,
-            date: row.date,
-            embedding: decode_embedding(&row.embedding),
-            embedded_at: row.embedded_at,
-        }
-    }
-}
-
-impl EmbeddingSource for PgPool {
-    /// Read embeddings for `model`, optionally only those stored after `since`.
-    async fn read_embeddings(
-        &self,
-        model: &str,
-        since: Option<DateTime<Utc>>,
-    ) -> Result<Vec<StoredEmbedding>> {
-        let rows = sqlx::query_as!(
-            EmbeddingRow,
-            r#"
-        SELECT e.feed_item_id as "id!: i64",
-               f.feed_id as "feed_id!: i64",
-               LEAST(d.published_at, f.inserted_at) as "date!: DateTime<Utc>",
-               e.embedding as "embedding!",
-               e.embedded_at as "embedded_at!"
+/// Sum and count the embeddings of `model` per feed and dimension.
+pub(crate) async fn read_feed_centroids(pool: &PgPool, model: &str) -> Result<Vec<FeedCentroid>> {
+    sqlx::query_as!(
+        FeedCentroid,
+        r#"
+        SELECT f.feed_id as "feed_id!",
+               SUM(e.embedding)::REAL[] as "sum!",
+               COUNT(*) as "count!"
         FROM feed_item_embeddings e
         INNER JOIN feed_items f ON f.id = e.feed_item_id
-        LEFT JOIN feed_item_details d ON d.feed_item_id = f.id
         WHERE e.model = $1
-          AND ($2::TIMESTAMPTZ IS NULL OR e.embedded_at > $2)
+        GROUP BY f.feed_id, vector_dims(e.embedding)
         "#,
-            model,
-            since,
-        )
-        .fetch_all(self)
-        .await
-        .with_context(|| format!("failed to read embeddings for model={model} since={since:?}"))?;
-
-        Ok(rows.into_iter().map(StoredEmbedding::from).collect())
-    }
-
-    /// Read embeddings for `model` of the given items.
-    async fn read_embeddings_by_ids(
-        &self,
-        model: &str,
-        ids: &[i64],
-    ) -> Result<Vec<StoredEmbedding>> {
-        let rows = sqlx::query_as!(
-            EmbeddingRow,
-            r#"
-        SELECT e.feed_item_id as "id!: i64",
-               f.feed_id as "feed_id!: i64",
-               LEAST(d.published_at, f.inserted_at) as "date!: DateTime<Utc>",
-               e.embedding as "embedding!",
-               e.embedded_at as "embedded_at!"
-        FROM feed_item_embeddings e
-        INNER JOIN feed_items f ON f.id = e.feed_item_id
-        LEFT JOIN feed_item_details d ON d.feed_item_id = f.id
-        WHERE e.model = $1
-          AND e.feed_item_id = ANY($2)
-        "#,
-            model,
-            ids,
-        )
-        .fetch_all(self)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to read embeddings for model={model} count={}",
-                ids.len()
-            )
-        })?;
-
-        Ok(rows.into_iter().map(StoredEmbedding::from).collect())
-    }
-
-    /// Read the stored embeddings for `model` without their vectors, which make
-    /// up nearly all of the data.
-    async fn read_embedding_versions(&self, model: &str) -> Result<Vec<EmbeddingVersion>> {
-        sqlx::query_as!(
-            EmbeddingVersion,
-            r#"
-        SELECT e.feed_item_id as "id!: i64",
-               f.feed_id as "feed_id!: i64",
-               LEAST(d.published_at, f.inserted_at) as "date!: DateTime<Utc>",
-               e.embedded_at as "embedded_at!"
-        FROM feed_item_embeddings e
-        INNER JOIN feed_items f ON f.id = e.feed_item_id
-        LEFT JOIN feed_item_details d ON d.feed_item_id = f.id
-        WHERE e.model = $1
-        "#,
-            model,
-        )
-        .fetch_all(self)
-        .await
-        .with_context(|| format!("failed to read embedding versions for model={model}"))
-    }
+        model,
+    )
+    .fetch_all(pool)
+    .await
+    .with_context(|| format!("failed to read embedding centroids for model={model}"))
 }
-
-#[cfg(test)]
-mod index_tests;
 
 #[cfg(test)]
 mod tests {
@@ -425,14 +377,14 @@ mod tests {
         assert_eq!(stored, 1);
 
         let row = sqlx::query!(
-            "SELECT model, embedding FROM feed_item_embeddings WHERE feed_item_id = $1",
+            r#"SELECT model, embedding::REAL[] as "embedding!" FROM feed_item_embeddings WHERE feed_item_id = $1"#,
             id
         )
         .fetch_one(&pool)
         .await
         .unwrap();
         assert_eq!(row.model, MODEL);
-        let embedding = decode_embedding(&row.embedding);
+        let embedding = row.embedding;
         assert!((embedding[0] - 0.6).abs() < 1e-6);
         assert!((embedding[1] - 0.8).abs() < 1e-6);
     }
@@ -461,6 +413,132 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn nearest_returns_the_most_similar_items_of_the_model_and_feed(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/a.xml")
+            .await
+            .unwrap();
+        let other_feed = upsert_feed_by_url(&pool, "https://example.com/b.xml")
+            .await
+            .unwrap();
+        let close = item(&pool, feed.id, "close", "s").await;
+        let middle = item(&pool, feed.id, "middle", "s").await;
+        let far = item(&pool, feed.id, "far", "s").await;
+        let elsewhere = item(&pool, other_feed.id, "elsewhere", "s").await;
+        let other_model = item(&pool, feed.id, "other-model", "s").await;
+        let other_dimension = item(&pool, feed.id, "other-dimension", "s").await;
+        store_item_embeddings(
+            &pool,
+            MODEL,
+            &[
+                embedding(close, &[1.0, 0.1]),
+                embedding(middle, &[1.0, 1.0]),
+                embedding(far, &[0.0, 1.0]),
+                embedding(elsewhere, &[1.0, 0.0]),
+                embedding(other_dimension, &[1.0, 0.0, 0.0]),
+            ],
+        )
+        .await
+        .unwrap();
+        store_item_embeddings(&pool, "other", &[embedding(other_model, &[1.0, 0.0])])
+            .await
+            .unwrap();
+
+        let all = nearest_embeddings(&pool, MODEL, &[1.0, 0.0], None, 10, &[])
+            .await
+            .unwrap();
+        let mut ids: Vec<i64> = all.iter().map(|e| e.id).collect();
+        ids.sort();
+        assert_eq!(ids, vec![close, middle, far, elsewhere]);
+        let middle_similarity = all.iter().find(|e| e.id == middle).unwrap().similarity;
+        assert!((middle_similarity - 0.5f32.sqrt()).abs() < 1e-5);
+
+        let mut nearest = nearest_embeddings(&pool, MODEL, &[1.0, 0.0], Some(feed.id), 2, &[])
+            .await
+            .unwrap();
+        nearest.sort_by(|a, b| b.similarity.total_cmp(&a.similarity));
+        assert_eq!(
+            nearest.iter().map(|e| e.id).collect::<Vec<_>>(),
+            vec![close, middle]
+        );
+
+        let included = nearest_embeddings(
+            &pool,
+            MODEL,
+            &[1.0, 0.0],
+            Some(feed.id),
+            1,
+            &[far, other_model, i64::MAX],
+        )
+        .await
+        .unwrap();
+        let mut ids: Vec<i64> = included.iter().map(|e| e.id).collect();
+        ids.sort();
+        assert_eq!(ids, vec![close, far], "included items need an embedding");
+    }
+
+    #[sqlx::test]
+    async fn nearest_returns_the_effective_publication_date(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/a.xml")
+            .await
+            .unwrap();
+        let id = item(&pool, feed.id, "a", "s").await;
+        let published = DateTime::from_timestamp(1_600_000_000, 0).unwrap();
+        sqlx::query!(
+            "UPDATE feed_item_details SET published_at = $1 WHERE feed_item_id = $2",
+            published,
+            id
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        store_item_embeddings(&pool, MODEL, &[embedding(id, &[1.0, 0.0])])
+            .await
+            .unwrap();
+
+        let nearest = nearest_embeddings(&pool, MODEL, &[1.0, 0.0], None, 10, &[])
+            .await
+            .unwrap();
+        assert_eq!(nearest[0].date, published);
+    }
+
+    #[sqlx::test]
+    async fn store_creates_one_hnsw_index_per_model_and_dimension(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/a.xml")
+            .await
+            .unwrap();
+        let a = item(&pool, feed.id, "a", "s").await;
+        let b = item(&pool, feed.id, "b", "s").await;
+        let c = item(&pool, feed.id, "c", "s").await;
+        store_item_embeddings(&pool, MODEL, &[embedding(a, &[1.0, 0.0])])
+            .await
+            .unwrap();
+        store_item_embeddings(
+            &pool,
+            MODEL,
+            &[embedding(b, &[0.0, 1.0]), embedding(c, &[1.0, 0.0, 0.0])],
+        )
+        .await
+        .unwrap();
+        store_item_embeddings(&pool, "other", &[embedding(c, &[1.0, 0.0, 0.0])])
+            .await
+            .unwrap();
+
+        let mut indexes = sqlx::query_scalar!(
+            r#"
+            SELECT indexdef as "indexdef!" FROM pg_indexes
+            WHERE tablename = 'feed_item_embeddings' AND indexdef LIKE '%USING hnsw%'
+            "#
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        indexes.sort();
+        assert_eq!(indexes.len(), 3, "{indexes:#?}");
+        assert!(indexes.iter().any(|def| def.contains("vector(2)")
+            && def.contains(&format!("model = '{MODEL}'"))));
+    }
+
+    #[sqlx::test]
     async fn embeddings_are_deleted_with_their_item(pool: PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/a.xml")
             .await
@@ -479,19 +557,5 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, Some(0));
-    }
-
-    #[test]
-    fn embedding_bytes_round_trip_in_float4send_layout() {
-        let bytes = encode_embedding(&[1.0, -0.5]);
-        assert_eq!(bytes, vec![0x3f, 0x80, 0, 0, 0xbf, 0, 0, 0]);
-        assert_eq!(decode_embedding(&bytes), vec![1.0, -0.5]);
-    }
-
-    quickcheck::quickcheck! {
-        fn prop_embedding_bytes_round_trip_bit_exactly(vector: Vec<f32>) -> bool {
-            let decoded = decode_embedding(&encode_embedding(&vector));
-            decoded.iter().map(|v| v.to_bits()).eq(vector.iter().map(|v| v.to_bits()))
-        }
     }
 }

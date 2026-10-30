@@ -46,7 +46,7 @@ jobs:
       image: rust:latest
     services:
       postgres:
-        image: postgres:latest
+        image: pgvector/pgvector:pg18
         env:
           POSTGRES_DB: rss_centr
           POSTGRES_USER: postgres

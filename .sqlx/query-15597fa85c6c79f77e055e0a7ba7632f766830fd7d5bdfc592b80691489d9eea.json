@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE feed_item_details SET published_at = $1 WHERE feed_item_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "15597fa85c6c79f77e055e0a7ba7632f766830fd7d5bdfc592b80691489d9eea"
+}

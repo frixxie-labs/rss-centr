@@ -154,7 +154,7 @@ mod tests {
             pool,
             embedder: Arc::new(embedder),
             model: MODEL.to_string(),
-            embeddings: Arc::new(crate::search::EmbeddingIndex::new(MODEL)),
+            centroids: Arc::new(crate::search::EmbeddingCentroids::new(MODEL)),
             min_similarity: 0.3,
             recency: rss_centr_core::semantic::RecencyBoost::NONE,
         };

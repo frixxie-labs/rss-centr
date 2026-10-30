@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT indexdef as \"indexdef!\" FROM pg_indexes\n            WHERE tablename = 'feed_item_embeddings' AND indexdef LIKE '%USING hnsw%'\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "indexdef!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pg_indexes",
+            "name": "indexdef"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "cb526ab22b334ffec6d7916c914b0a29fe667ca65178cd4561970390177a790f"
+}

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT model, embedding FROM feed_item_embeddings WHERE feed_item_id = $1",
+  "query": "SELECT model, embedding::REAL[] as \"embedding!\" FROM feed_item_embeddings WHERE feed_item_id = $1",
   "describe": {
     "columns": [
       {
@@ -16,14 +16,9 @@
       },
       {
         "ordinal": 1,
-        "name": "embedding",
-        "type_info": "Bytea",
-        "origin": {
-          "Table": {
-            "table": "feed_item_embeddings",
-            "name": "embedding"
-          }
-        }
+        "name": "embedding!",
+        "type_info": "Float4Array",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -33,8 +28,8 @@
     },
     "nullable": [
       false,
-      false
+      null
     ]
   },
-  "hash": "f3a7e6ae22d642a4234a46c963bce544104385fae47f18ffb0a9dc7e4e2956b6"
+  "hash": "aafbf5f4073f10c5b163525bf90e2bd82b268ce7d93d3cfb324c1a867837c23b"
 }
