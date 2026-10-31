@@ -1,0 +1,9 @@
+[package]
+name = "rillfp"
+version = "0.1.0"
+edition = "2024"
+description = "Small, composable functional primitives for Rust"
+publish = false
+
+[dev-dependencies]
+quickcheck = "1"
