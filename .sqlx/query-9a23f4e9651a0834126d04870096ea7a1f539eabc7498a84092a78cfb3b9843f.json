@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, summary, feed_ids, feed_item_ids, generated_at, model,\n                      generation_ms, llm_calls, prompt_tokens, output_tokens, llm_ms, eval_ms\n               FROM ai_summaries ORDER BY generated_at DESC, id DESC LIMIT 1",
+  "query": "SELECT id, summary, feed_ids, feed_item_ids, generated_at, model, batch_model, final_model,\n                      cardinality(feed_ids) AS \"feed_count!\", cardinality(feed_item_ids) AS \"item_count!\",\n                      generation_ms, llm_calls, prompt_tokens, output_tokens, llm_ms, eval_ms\n               FROM ai_summaries ORDER BY generated_at DESC, id DESC LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -71,6 +71,40 @@
       },
       {
         "ordinal": 6,
+        "name": "batch_model",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ai_summaries",
+            "name": "batch_model"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "final_model",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ai_summaries",
+            "name": "final_model"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "feed_count!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "item_count!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
         "name": "generation_ms",
         "type_info": "Int8",
         "origin": {
@@ -81,7 +115,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 11,
         "name": "llm_calls",
         "type_info": "Int4",
         "origin": {
@@ -92,7 +126,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 12,
         "name": "prompt_tokens",
         "type_info": "Int8",
         "origin": {
@@ -103,7 +137,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 13,
         "name": "output_tokens",
         "type_info": "Int8",
         "origin": {
@@ -114,7 +148,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 14,
         "name": "llm_ms",
         "type_info": "Int8",
         "origin": {
@@ -125,7 +159,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 15,
         "name": "eval_ms",
         "type_info": "Int8",
         "origin": {
@@ -148,11 +182,15 @@
       false,
       true,
       true,
+      null,
+      null,
+      true,
+      true,
       true,
       true,
       true,
       true
     ]
   },
-  "hash": "8fc578438fc44c763623e521fed348c77f6930d25d9d29ec2579250ae0d75618"
+  "hash": "9a23f4e9651a0834126d04870096ea7a1f539eabc7498a84092a78cfb3b9843f"
 }

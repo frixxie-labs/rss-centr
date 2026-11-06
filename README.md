@@ -124,6 +124,9 @@ host. Model selection is configurable:
 - `OLLAMA_MODEL`: backward-compatible fallback for both stages. Stage-specific
   variables take precedence; setting only `OLLAMA_MODEL` keeps single-model
   generation. Remove overrides to use the default model for both stages.
+- `OLLAMA_SUMMARY_KEEP_ALIVE`: how long Ollama keeps the summary models loaded
+  after a call (for example `1h`). Unset uses Ollama's default; on a small GPU a
+  long value can evict the embedding model used by search.
 
 All extraction and merging calls finish before final synthesis, avoiding repeated
 model switching within a refresh. Ollama manages model loading and eviction;
@@ -131,9 +134,9 @@ loading the final model may still add overhead. Saved summaries record both
 models as `batch-model → final-model`, or one name when both stages use the same
 model. No automatic fallback is attempted if either model is unavailable.
 
-Each refresh reads both models' context limits from Ollama's `/api/show` (only
-once if they are identical) and caps each at 32,768 tokens (32K) to keep memory
-use bounded. Article batches and intermediate merges use the batch model's
+The backend reads both models' context limits from Ollama's `/api/show` once
+per model, keeps them until restart, and caps each at 16,384 tokens (16K) to
+keep memory use bounded. Article batches and intermediate merges use the batch model's
 budget; notes are merged further when needed to fit the final model's budget.
 Both models are checked before generation begins. Each stage reserves space
 for the system prompt, chat template, and generated output. Input sizing uses a
@@ -142,6 +145,19 @@ estimated input size and Ollama's actual input/output token counts for each call
 Oversized individual inputs, missing usage metadata, and incomplete or
 over-budget generations fail the refresh rather than saving a partial summary;
 the previous summary remains available.
+
+Before batching, articles whose search embeddings are near-duplicates
+(similarity at least 0.88) are grouped into one story listing every source. At
+most 40 stories per feed and 400 in total are kept, the newest first. A
+scheduled refresh is skipped when the latest summary, made with the same
+models, already covers every selected article; "Generate now" always
+regenerates.
+
+Batches start at every 16th article id, and merge groups at about one story
+note in four (by a hash of the note), so most batches are identical from one
+refresh to the next. Story notes are cached by model and prompt in
+`summary_note_cache` (pruned after two days), and only new batches are sent to
+the model.
 
 Article batches extract structured story notes rather than heavily compressed
 paragraphs: topic, event, key facts, uncertainty, and source names. The prompts
@@ -161,8 +177,8 @@ Logs distinguish output truncation from context-budget overflow. Thinking stays
 disabled and temperature is zero. Each Ollama call
 has a five-minute timeout. The complete background job has a 59-minute deadline
 and a 60-minute database lease to accommodate sequential batches on slower
-models. Failed jobs release the lease and become eligible for retry after one
-minute. HTTP 202 only acknowledges the refresh request; look for
+models. Failed jobs release the lease and are retried after one minute, doubling
+the delay after each consecutive failure up to an hour. HTTP 202 only acknowledges the refresh request; look for
 `daily news summary refreshed` to confirm completion. Logs include the batch
 plan, progress, token usage, and timeout causes.
 

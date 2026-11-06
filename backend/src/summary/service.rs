@@ -209,7 +209,7 @@ async fn generate_summary<R: SummaryRepository, G: SummaryGenerator>(
         summary,
         feed_ids,
         feed_item_ids,
-        model,
+        models: state.models.clone(),
         generation_ms: started.elapsed().as_millis() as i64,
         usage,
     };

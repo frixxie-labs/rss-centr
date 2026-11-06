@@ -137,7 +137,8 @@ impl SummaryRepository for PostgresSummaryRepository {
     async fn latest_summary(&self) -> Result<Option<DailySummary>, SummaryStoreError> {
         sqlx::query_as!(
             DailySummary,
-            r#"SELECT id, summary, feed_ids, feed_item_ids, generated_at, model,
+            r#"SELECT id, summary, feed_ids, feed_item_ids, generated_at, model, batch_model, final_model,
+                      cardinality(feed_ids) AS "feed_count!", cardinality(feed_item_ids) AS "item_count!",
                       generation_ms, llm_calls, prompt_tokens, output_tokens, llm_ms, eval_ms
                FROM ai_summaries ORDER BY generated_at DESC, id DESC LIMIT 1"#,
         )
@@ -284,15 +285,20 @@ impl SummaryRepository for PostgresSummaryRepository {
             .map_err(database("Failed to prune summary note cache"))?;
         let result = sqlx::query_as!(
             DailySummary,
-            r#"INSERT INTO ai_summaries (summary, feed_ids, feed_item_ids, model, generation_ms,
-                                         llm_calls, prompt_tokens, output_tokens, llm_ms, eval_ms)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-               RETURNING id, summary, feed_ids, feed_item_ids, generated_at, model,
+            r#"INSERT INTO ai_summaries (summary, feed_ids, feed_item_ids, model, batch_model,
+                                         final_model, generation_ms, llm_calls, prompt_tokens,
+                                         output_tokens, llm_ms, eval_ms)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+               RETURNING id, summary, feed_ids, feed_item_ids, generated_at, model, batch_model,
+                         final_model, cardinality(feed_ids) AS "feed_count!",
+                         cardinality(feed_item_ids) AS "item_count!",
                          generation_ms, llm_calls, prompt_tokens, output_tokens, llm_ms, eval_ms"#,
             summary.summary,
             &summary.feed_ids,
             &summary.feed_item_ids,
-            summary.model,
+            summary.models.label(),
+            summary.models.batch,
+            summary.models.final_summary,
             summary.generation_ms,
             summary.usage.llm_calls,
             summary.usage.prompt_tokens,
@@ -311,7 +317,7 @@ impl SummaryRepository for PostgresSummaryRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::summary::SummaryUsage;
+    use crate::summary::{SummaryModels, SummaryUsage};
 
     #[sqlx::test]
     async fn completion_persists_usage_and_reschedules_the_refresh(pool: PgPool) {
@@ -321,7 +327,10 @@ mod tests {
             summary: "Overview".into(),
             feed_ids: vec![1, 2],
             feed_item_ids: vec![10, 20],
-            model: "batch → final".into(),
+            models: SummaryModels {
+                batch: "batch".into(),
+                final_summary: "final".into(),
+            },
             generation_ms: 900,
             usage: SummaryUsage {
                 llm_calls: 3,
@@ -342,7 +351,10 @@ mod tests {
         assert_eq!(latest.summary, generated.summary);
         assert_eq!(latest.feed_ids, generated.feed_ids);
         assert_eq!(latest.feed_item_ids, generated.feed_item_ids);
-        assert_eq!(latest.model, generated.model);
+        assert_eq!(latest.model, "batch → final");
+        assert_eq!(latest.batch_model.as_deref(), Some("batch"));
+        assert_eq!(latest.final_model.as_deref(), Some("final"));
+        assert_eq!((latest.feed_count, latest.item_count), (2, 2));
         assert_eq!(latest.generation_ms, Some(900));
         assert_eq!(latest.llm_calls, Some(3));
         assert_eq!(latest.prompt_tokens, Some(1200));
@@ -369,7 +381,7 @@ mod tests {
             summary: "Previous overview".into(),
             feed_ids: vec![1],
             feed_item_ids: vec![10],
-            model: "model".into(),
+            models: SummaryModels::from_overrides(Some("model".into()), None, None),
             generation_ms: 1,
             usage: SummaryUsage::default(),
         };

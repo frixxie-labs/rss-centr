@@ -27,10 +27,10 @@ pub struct ItemDetail {
 pub struct DailySummary {
     pub id: i64,
     pub summary: String,
-    pub feed_ids: Vec<i64>,
-    pub feed_item_ids: Vec<i64>,
     pub generated_at: DateTime<Utc>,
     pub model: String,
+    pub feed_count: i32,
+    pub item_count: i32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

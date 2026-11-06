@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO ai_summaries (summary, feed_ids, feed_item_ids, model, generation_ms,\n                                         llm_calls, prompt_tokens, output_tokens, llm_ms, eval_ms)\n               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n               RETURNING id, summary, feed_ids, feed_item_ids, generated_at, model,\n                         generation_ms, llm_calls, prompt_tokens, output_tokens, llm_ms, eval_ms",
+  "query": "INSERT INTO ai_summaries (summary, feed_ids, feed_item_ids, model, batch_model,\n                                         final_model, generation_ms, llm_calls, prompt_tokens,\n                                         output_tokens, llm_ms, eval_ms)\n               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)\n               RETURNING id, summary, feed_ids, feed_item_ids, generated_at, model, batch_model,\n                         final_model, cardinality(feed_ids) AS \"feed_count!\",\n                         cardinality(feed_item_ids) AS \"item_count!\",\n                         generation_ms, llm_calls, prompt_tokens, output_tokens, llm_ms, eval_ms",
   "describe": {
     "columns": [
       {
@@ -71,6 +71,40 @@
       },
       {
         "ordinal": 6,
+        "name": "batch_model",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ai_summaries",
+            "name": "batch_model"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "final_model",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ai_summaries",
+            "name": "final_model"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "feed_count!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "item_count!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
         "name": "generation_ms",
         "type_info": "Int8",
         "origin": {
@@ -81,7 +115,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 11,
         "name": "llm_calls",
         "type_info": "Int4",
         "origin": {
@@ -92,7 +126,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 12,
         "name": "prompt_tokens",
         "type_info": "Int8",
         "origin": {
@@ -103,7 +137,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 13,
         "name": "output_tokens",
         "type_info": "Int8",
         "origin": {
@@ -114,7 +148,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 14,
         "name": "llm_ms",
         "type_info": "Int8",
         "origin": {
@@ -125,7 +159,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 15,
         "name": "eval_ms",
         "type_info": "Int8",
         "origin": {
@@ -141,6 +175,8 @@
         "Text",
         "Int8Array",
         "Int8Array",
+        "Text",
+        "Text",
         "Text",
         "Int8",
         "Int4",
@@ -159,11 +195,15 @@
       false,
       true,
       true,
+      null,
+      null,
+      true,
+      true,
       true,
       true,
       true,
       true
     ]
   },
-  "hash": "998004eedec8cc2069bcbc3638ad477e0d3104ff1f1165526e1daa3b0051771f"
+  "hash": "4cae96d4a51e131efe72ec8105872d25129da1bef6e271d506dd08eafdf65d27"
 }

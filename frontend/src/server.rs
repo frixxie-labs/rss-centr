@@ -409,7 +409,7 @@ mod tests {
         let app = Router::new()
             .route("/api/items/summary", get(|| async {
                 Json(json!({"id": 1, "summary": "Today in Rust", "feed_ids": [1], "feed_item_ids": [7],
-                    "generated_at": "2025-01-01T00:00:00Z", "model": "test-model"}))
+                    "feed_count": 1, "item_count": 1, "generated_at": "2025-01-01T00:00:00Z", "model": "test-model"}))
             }))
             .route("/api/items/latest", get(move |uri: axum::http::Uri| {
                 let item = item.clone();

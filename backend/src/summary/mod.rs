@@ -54,7 +54,13 @@ pub struct DailySummary {
     pub feed_ids: Vec<i64>,
     pub feed_item_ids: Vec<i64>,
     pub generated_at: DateTime<Utc>,
+    /// Display label for the models, e.g. `batch → final`.
     pub model: String,
+    pub batch_model: Option<String>,
+    pub final_model: Option<String>,
+    /// Number of feeds and articles the summary covers.
+    pub feed_count: i32,
+    pub item_count: i32,
     pub generation_ms: Option<i64>,
     pub llm_calls: Option<i32>,
     pub prompt_tokens: Option<i64>,
@@ -109,7 +115,7 @@ pub(crate) struct GeneratedSummary {
     pub(crate) summary: String,
     pub(crate) feed_ids: Vec<i64>,
     pub(crate) feed_item_ids: Vec<i64>,
-    pub(crate) model: String,
+    pub(crate) models: SummaryModels,
     pub(crate) generation_ms: i64,
     pub(crate) usage: SummaryUsage,
 }

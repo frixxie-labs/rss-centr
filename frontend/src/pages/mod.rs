@@ -23,21 +23,22 @@ pub fn Summary() -> impl IntoView {
     view! {
         <Title text="RSS Centr - AI Summary" />
         <section class=PANEL aria-labelledby="daily-summary-title">
-            <SummaryControls />
             <Suspense fallback=|| view! { <p role="status">"Loading latest overview…"</p> }>
                 {Suspend::new(async move {
                     match api.summary().await {
                         Ok(Some(summary)) => {
                             view! {
+                                <SummaryControls latest_id=Some(summary.id) />
                                 <p class="mt-2 whitespace-pre-line text-sm leading-relaxed text-fuji-gray">
                                     {summary.summary.clone()}
                                 </p>
                                 <p class="mt-3 text-xs text-katana-gray">
                                     {format!(
-                                        "Generated {} using {} · {} sources",
+                                        "Generated {} using {} · {} sources · {} articles",
                                         absolute_date(Some(summary.generated_at)),
                                         summary.model,
-                                        summary.feed_ids.len(),
+                                        summary.feed_count,
+                                        summary.item_count,
                                     )}
                                 </p>
                             }
@@ -45,13 +46,20 @@ pub fn Summary() -> impl IntoView {
                         }
                         Ok(None) => {
                             view! {
+                                <SummaryControls latest_id=None />
                                 <p role="status" class="text-sm text-fuji-gray">
                                     "No summary is available yet. The next scheduled generation will appear here."
                                 </p>
                             }
                                 .into_any()
                         }
-                        Err(_) => view! { <ErrorNotice message="Could not load the overview." /> }.into_any(),
+                        Err(_) => {
+                            view! {
+                                <SummaryControls latest_id=None />
+                                <ErrorNotice message="Could not load the overview." />
+                            }
+                                .into_any()
+                        }
                     }
                 })}
             </Suspense>
