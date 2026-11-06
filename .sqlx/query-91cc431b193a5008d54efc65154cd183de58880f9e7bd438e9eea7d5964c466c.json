@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM summary_note_cache WHERE created_at < NOW() - INTERVAL '2 days'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "91cc431b193a5008d54efc65154cd183de58880f9e7bd438e9eea7d5964c466c"
+}

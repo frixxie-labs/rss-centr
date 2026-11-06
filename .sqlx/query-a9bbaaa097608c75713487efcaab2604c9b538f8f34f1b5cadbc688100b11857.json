@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT i.id, i.feed_id, i.title,\n                   COALESCE(f.title, f.url) AS \"feed!\",\n                   LEFT(a.description, 300) AS \"description!\"\n            FROM feed_items i\n            JOIN feeds f ON f.id = i.feed_id\n            JOIN feed_item_details d ON d.feed_item_id = i.id\n            CROSS JOIN LATERAL (\n                SELECT COALESCE(NULLIF(BTRIM(d.summary), ''),\n                                NULLIF(BTRIM(d.content), '')) AS description\n            ) a\n            WHERE i.inserted_at >= NOW() - INTERVAL '24 hours'\n              AND i.inserted_at <= NOW()\n              AND a.description IS NOT NULL\n            ORDER BY i.inserted_at DESC, i.id DESC\n            ",
+  "query": "\n            SELECT i.id, i.feed_id, i.title,\n                   COALESCE(f.title, f.url) AS \"feed!\",\n                   LEFT(a.description, 300) AS \"description!\"\n            FROM feed_items i\n            JOIN feeds f ON f.id = i.feed_id\n            JOIN feed_item_details d ON d.feed_item_id = i.id\n            CROSS JOIN LATERAL (\n                SELECT COALESCE(NULLIF(BTRIM(d.summary), ''),\n                                NULLIF(BTRIM(d.content), '')) AS description\n            ) a\n            WHERE i.inserted_at >= NOW() - INTERVAL '24 hours'\n              AND i.inserted_at <= NOW()\n              AND a.description IS NOT NULL\n            ORDER BY i.inserted_at, i.id\n            ",
   "describe": {
     "columns": [
       {
@@ -60,5 +60,5 @@
       null
     ]
   },
-  "hash": "806db06f9536be544d32c17aa4dbf69246b08bcc5d132e7e613a7e8dfcce8b14"
+  "hash": "a9bbaaa097608c75713487efcaab2604c9b538f8f34f1b5cadbc688100b11857"
 }

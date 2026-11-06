@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO summary_note_cache (prompt_hash, notes)\n               VALUES (sha256(convert_to($1 || E'\\n' || $2, 'UTF8')), $3)\n               ON CONFLICT (prompt_hash) DO UPDATE SET notes = EXCLUDED.notes, created_at = NOW()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "91c49af1584b7e9966e56f4cbaf8cb87bfea325f6d4c7abbdf01a7fe8b337a1d"
+}

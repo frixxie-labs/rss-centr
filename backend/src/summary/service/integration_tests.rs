@@ -9,7 +9,7 @@ use tokio::sync::Semaphore;
 
 use crate::handlers::daily_summary::{fetch_daily_summary, refresh_daily_summary};
 use crate::summary::ollama::OLLAMA_REQUEST_TIMEOUT;
-use crate::summary::{ContextBudget, LEASE_SECONDS, SUMMARY_CONTEXT_TOKENS};
+use crate::summary::{ARTICLES_PER_BATCH, ContextBudget, LEASE_SECONDS, SUMMARY_CONTEXT_TOKENS};
 
 use super::*;
 
@@ -506,13 +506,12 @@ async fn worker_refresh_generates_and_persists_source_ids(pool: PgPool) {
     .await
     .unwrap();
     let mut state = summary_state(pool.clone());
-    let expected_ids: Vec<i64> = sqlx::query_scalar(
-        "SELECT id FROM feed_items WHERE feed_id = $1 ORDER BY inserted_at DESC, id DESC",
-    )
-    .bind(feed_id)
-    .fetch_all(&pool)
-    .await
-    .unwrap();
+    let expected_ids: Vec<i64> =
+        sqlx::query_scalar("SELECT id FROM feed_items WHERE feed_id = $1 ORDER BY inserted_at, id")
+            .bind(feed_id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
     state.generator =
         OllamaSummaryGenerator::new(reqwest::Client::new(), format!("http://{address}"));
     state.models = SummaryModels {
@@ -650,7 +649,14 @@ async fn model_budgets_control_merging_and_shared_models_reuse_metadata(pool: Pg
             .await
             .unwrap();
         let token = repository.claim_refresh(false).await.unwrap().unwrap();
-        let summary = generate_summary(&state, &token).await.unwrap();
+        sqlx::query("DELETE FROM summary_note_cache")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let Refresh::Generated(summary) = generate_summary(&state, &token, false).await.unwrap()
+        else {
+            panic!("expected a new summary");
+        };
         assert_eq!(summary.summary, "Final overview (Example).");
         assert_eq!(summary.feed_item_ids.len(), 26);
         assert_eq!(summary.model, state.models.label());
@@ -865,6 +871,10 @@ async fn stale_refresh_cannot_replace_previous_summary(pool: PgPool) {
         )
         .await;
         state.repository = repository.clone();
+        sqlx::query("DELETE FROM summary_note_cache")
+            .execute(&pool)
+            .await
+            .unwrap();
         state.models = SummaryModels {
             batch: "test-model".into(),
             final_summary: "test-model".into(),
@@ -886,7 +896,7 @@ async fn stale_refresh_cannot_replace_previous_summary(pool: PgPool) {
         }
         let schedule_before = repository.next_due_at().await.unwrap();
         let token = if expired { "current" } else { "stale" };
-        let error = generate_summary(&state, token).await.err().unwrap();
+        let error = generate_summary(&state, token, false).await.err().unwrap();
         assert!(matches!(
             error,
             SummaryError::Store(SummaryStoreError::LeaseConflict)

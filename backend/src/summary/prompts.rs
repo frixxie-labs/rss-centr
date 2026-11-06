@@ -1,8 +1,14 @@
 use std::fmt::Write;
 
-use super::{ContextBudget, SummaryArticle, SummaryError, budgeted_prompts};
+use super::{
+    ContextBudget, InputTooLarge, SummaryArticle, SummaryError, budgeted_prompts, starts_chunk,
+};
 
 pub(crate) const ARTICLES_PER_BATCH: usize = 25;
+// Chunks start at every 16th article id and about one story note in 4, chosen
+// by content, so most chunks and their cached notes carry over between refreshes.
+const ARTICLE_CHUNK_IDS: i64 = 16;
+const NOTE_CHUNK_ONE_IN: u64 = 4;
 // Word limits in the prompts are guidance, not tokenizer limits. Leave enough
 // headroom for Norwegian text and source names without accepting cut-off output.
 pub(crate) const BATCH_OUTPUT_TOKENS: u32 = 2048;
@@ -43,17 +49,42 @@ pub(crate) fn plan_merge_round(
     {
         return Ok(MergeRound::Final(final_prompt));
     }
-    let prompts = budgeted_prompts(
-        summaries,
-        build_merge_prompt,
-        batch_budget,
-        BATCH_OUTPUT_TOKENS,
-        SUMMARIES_PER_MERGE,
-    )?;
+    let merge_prompts = |starts: &dyn Fn(&String) -> bool| {
+        budgeted_prompts(
+            summaries,
+            build_merge_prompt,
+            batch_budget,
+            BATCH_OUTPUT_TOKENS,
+            SUMMARIES_PER_MERGE,
+            starts,
+        )
+    };
+    let mut prompts = merge_prompts(&|note| starts_chunk(note.as_bytes(), NOTE_CHUNK_ONE_IN))?;
+    // Stable boundaries are only an optimization; drop them if they would
+    // keep this round from shrinking the notes.
+    if prompts.len() >= summaries.len() {
+        prompts = merge_prompts(&|_| false)?;
+    }
     if prompts.len() >= summaries.len() {
         return Err(SummaryError::MergeBudgetTooSmall);
     }
     Ok(MergeRound::Merge(prompts))
+}
+
+/// Story-note prompts for the articles, in chunks that stay stable as the
+/// article window moves.
+pub(crate) fn article_prompts(
+    articles: &[SummaryArticle],
+    budget: ContextBudget,
+) -> Result<Vec<String>, InputTooLarge> {
+    budgeted_prompts(
+        articles,
+        build_batch_prompt,
+        budget,
+        BATCH_OUTPUT_TOKENS,
+        ARTICLES_PER_BATCH,
+        |article| article.id % ARTICLE_CHUNK_IDS == 0,
+    )
 }
 
 pub(crate) fn build_batch_prompt(articles: &[SummaryArticle]) -> String {
@@ -165,14 +196,7 @@ mod tests {
             })
             .collect();
         let budget = ContextBudget { num_ctx: 8192 };
-        let prompts = budgeted_prompts(
-            &articles,
-            build_batch_prompt,
-            budget,
-            BATCH_OUTPUT_TOKENS,
-            ARTICLES_PER_BATCH,
-        )
-        .unwrap();
+        let prompts = article_prompts(&articles, budget).unwrap();
         assert!(prompts.len() > 1);
         assert!(
             prompts
@@ -196,6 +220,7 @@ mod tests {
             ContextBudget { num_ctx: 8192 },
             FINAL_OUTPUT_TOKENS,
             8,
+            |_| false,
         )
         .unwrap();
         assert!(prompts.is_empty());
@@ -210,7 +235,8 @@ mod tests {
                 build_final_prompt,
                 ContextBudget { num_ctx: 8192 },
                 700,
-                8
+                8,
+                |_| false
             ),
             Err(InputTooLarge)
         );
@@ -270,6 +296,7 @@ mod tests {
             budget,
             BATCH_OUTPUT_TOKENS,
             8,
+            |_| false,
         )
         .unwrap();
         assert!(prompts.len() > 1 && prompts.len() < summaries.len());

@@ -12,10 +12,14 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-pub(crate) use budget::{ContextBudget, InputTooLarge, SUMMARY_CONTEXT_TOKENS, budgeted_prompts};
+pub(crate) use budget::{
+    ContextBudget, InputTooLarge, SUMMARY_CONTEXT_TOKENS, budgeted_prompts, starts_chunk,
+};
+#[cfg(test)]
+pub(crate) use prompts::ARTICLES_PER_BATCH;
 pub(crate) use prompts::{
-    ARTICLES_PER_BATCH, BATCH_OUTPUT_TOKENS, FINAL_OUTPUT_TOKENS, MergeRound,
-    SUMMARY_SYSTEM_PROMPT, build_batch_prompt, plan_merge_round,
+    BATCH_OUTPUT_TOKENS, FINAL_OUTPUT_TOKENS, MergeRound, SUMMARY_SYSTEM_PROMPT, article_prompts,
+    plan_merge_round,
 };
 
 pub(crate) use config::SummaryModels;
@@ -41,7 +45,7 @@ pub(crate) trait SummaryGenerator: Send + Sync {
     ) -> impl Future<Output = Result<Generated, SummaryError>> + Send;
 }
 
-#[derive(Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct DailySummary {
     pub id: i64,
     pub summary: String,

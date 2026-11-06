@@ -5,11 +5,12 @@ use crate::summary::{ContextBudget, Generated, SummaryArticle};
 
 type Events = Arc<Mutex<Vec<&'static str>>>;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct RecordingRepository {
     events: Events,
     has_articles: bool,
     saved: Arc<Mutex<Option<DailySummary>>>,
+    notes: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 impl SummaryRepository for RecordingRepository {
@@ -43,6 +44,44 @@ impl SummaryRepository for RecordingRepository {
     async fn release_refresh(&self, token: &str) -> Result<(), SummaryStoreError> {
         assert_eq!(token, "lease");
         self.events.lock().unwrap().push("release");
+        Ok(())
+    }
+
+    async fn skip_refresh(&self, token: &str) -> Result<(), SummaryStoreError> {
+        assert_eq!(token, "lease");
+        self.events.lock().unwrap().push("skip");
+        Ok(())
+    }
+
+    async fn cached_notes(
+        &self,
+        model: &str,
+        prompts: &[String],
+    ) -> Result<Vec<Option<String>>, SummaryStoreError> {
+        let notes = self.notes.lock().unwrap();
+        Ok(prompts
+            .iter()
+            .map(|prompt| {
+                let key = format!("{model}\n{prompt}");
+                notes
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, v)| v.clone())
+            })
+            .collect())
+    }
+
+    async fn store_notes(
+        &self,
+        model: &str,
+        prompt: &str,
+        notes: &str,
+    ) -> Result<(), SummaryStoreError> {
+        self.events.lock().unwrap().push("cache");
+        self.notes
+            .lock()
+            .unwrap()
+            .push((format!("{model}\n{prompt}"), notes.to_string()));
         Ok(())
     }
 
@@ -138,7 +177,7 @@ async fn successful_job_checks_models_then_generates_and_saves_without_releasing
         repository: RecordingRepository {
             events: events.clone(),
             has_articles: true,
-            saved: Default::default(),
+            ..Default::default()
         },
         generator: RecordingGenerator {
             events: events.clone(),
@@ -150,7 +189,7 @@ async fn successful_job_checks_models_then_generates_and_saves_without_releasing
         },
     };
 
-    state.run_refresh("lease").await;
+    state.run_refresh("lease", false).await;
 
     assert_eq!(
         *events.lock().unwrap(),
@@ -159,6 +198,7 @@ async fn successful_job_checks_models_then_generates_and_saves_without_releasing
             "batch budget",
             "final budget",
             "batch",
+            "cache",
             "final",
             "save"
         ]
@@ -194,7 +234,7 @@ async fn failed_generation_releases_the_lease_without_saving_or_running_later_st
             repository: RecordingRepository {
                 events: events.clone(),
                 has_articles: true,
-                saved: Default::default(),
+                ..Default::default()
             },
             generator: RecordingGenerator {
                 events: events.clone(),
@@ -206,7 +246,7 @@ async fn failed_generation_releases_the_lease_without_saving_or_running_later_st
             },
         };
 
-        state.run_refresh("lease").await;
+        state.run_refresh("lease", false).await;
 
         assert_eq!(*events.lock().unwrap(), expected);
         assert!(state.latest_summary().await.unwrap().is_none());
@@ -220,7 +260,7 @@ async fn job_timeout_cancels_generation_and_releases_the_lease_without_saving() 
         repository: RecordingRepository {
             events: events.clone(),
             has_articles: true,
-            saved: Default::default(),
+            ..Default::default()
         },
         generator: RecordingGenerator {
             events: events.clone(),
@@ -233,7 +273,7 @@ async fn job_timeout_cancels_generation_and_releases_the_lease_without_saving() 
     };
     let started = tokio::time::Instant::now();
 
-    state.run_refresh("lease").await;
+    state.run_refresh("lease", false).await;
 
     assert_eq!(started.elapsed(), GENERATION_TIMEOUT);
     assert_eq!(
@@ -256,7 +296,7 @@ async fn empty_articles_release_the_lease_without_calling_the_generator() {
         repository: RecordingRepository {
             events: events.clone(),
             has_articles: false,
-            saved: Default::default(),
+            ..Default::default()
         },
         generator: RecordingGenerator {
             events: events.clone(),
@@ -268,8 +308,80 @@ async fn empty_articles_release_the_lease_without_calling_the_generator() {
         },
     };
 
-    state.run_refresh("lease").await;
+    state.run_refresh("lease", false).await;
 
     assert_eq!(*events.lock().unwrap(), ["articles", "release"]);
     assert!(state.latest_summary().await.unwrap().is_none());
+}
+
+fn recording_state(events: &Events) -> SummaryState<RecordingRepository, RecordingGenerator> {
+    SummaryState {
+        repository: RecordingRepository {
+            events: events.clone(),
+            has_articles: true,
+            ..Default::default()
+        },
+        generator: RecordingGenerator {
+            events: events.clone(),
+            scenario: Scenario::Success,
+        },
+        models: SummaryModels {
+            batch: "batch".into(),
+            final_summary: "final".into(),
+        },
+    }
+}
+
+#[tokio::test]
+async fn refresh_without_new_articles_is_skipped_unless_forced_and_reuses_cached_notes() {
+    let events = Events::default();
+    let state = recording_state(&events);
+    state.run_refresh("lease", false).await;
+    events.lock().unwrap().clear();
+
+    state.run_refresh("lease", false).await;
+    assert_eq!(*events.lock().unwrap(), ["articles", "skip"]);
+    events.lock().unwrap().clear();
+
+    state.run_refresh("lease", true).await;
+    assert_eq!(
+        *events.lock().unwrap(),
+        ["articles", "batch budget", "final budget", "final", "save"],
+        "a forced refresh regenerates, reusing the cached notes"
+    );
+}
+
+#[tokio::test]
+async fn summaries_from_other_models_do_not_count_as_covering_the_articles() {
+    let events = Events::default();
+    let mut state = recording_state(&events);
+    state.run_refresh("lease", false).await;
+    state.models.final_summary = "final".into();
+    state.models.batch = "final".into();
+    let article = SummaryArticle {
+        id: 10,
+        feed_id: 1,
+        title: String::new(),
+        feed: String::new(),
+        description: String::new(),
+    };
+    let latest = state.latest_summary().await.unwrap();
+
+    assert!(!has_new_articles(
+        latest.as_ref(),
+        std::slice::from_ref(&article),
+        "batch → final"
+    ));
+    assert!(has_new_articles(
+        latest.as_ref(),
+        std::slice::from_ref(&article),
+        "final"
+    ));
+    assert!(has_new_articles(
+        None,
+        std::slice::from_ref(&article),
+        "batch → final"
+    ));
+    let newer = SummaryArticle { id: 11, ..article };
+    assert!(has_new_articles(latest.as_ref(), &[newer], "batch → final"));
 }

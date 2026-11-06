@@ -1,15 +1,15 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
-use tracing::{Instrument, error, info};
+use tracing::{Instrument, error, info, warn};
 
 use super::{
-    ARTICLES_PER_BATCH, BATCH_OUTPUT_TOKENS, ContextBudget, DailySummary, FINAL_OUTPUT_TOKENS,
-    GeneratedSummary, MergeRound, OllamaSummaryGenerator, PostgresSummaryRepository, SummaryError,
+    BATCH_OUTPUT_TOKENS, ContextBudget, DailySummary, FINAL_OUTPUT_TOKENS, GeneratedSummary,
+    MergeRound, OllamaSummaryGenerator, PostgresSummaryRepository, SummaryArticle, SummaryError,
     SummaryGenerator, SummaryModels, SummaryRepository, SummaryStoreError, SummaryUsage,
-    budgeted_prompts, build_batch_prompt, plan_merge_round,
+    article_prompts, plan_merge_round,
 };
 
 // Bound the whole job below its lease, including all sequential Ollama calls.
@@ -62,7 +62,8 @@ where
     }
 
     /// Claims the refresh lease and spawns generation. `force` ignores the
-    /// schedule but still respects an active lease. Returns whether it started.
+    /// schedule and regenerates even without new articles, but still respects
+    /// an active lease. Returns whether it started.
     pub(crate) async fn start_refresh(self, force: bool) -> Result<bool, SummaryStoreError> {
         let Some(token) = self.repository.claim_refresh(force).await? else {
             return Ok(false);
@@ -70,17 +71,21 @@ where
         info!(batch_model = %self.models.batch, final_model = %self.models.final_summary, timeout_seconds = GENERATION_TIMEOUT.as_secs(), "daily news summary refresh started");
         tokio::spawn(
             async move {
-                self.run_refresh(&token).await;
+                self.run_refresh(&token, force).await;
             }
             .in_current_span(),
         );
         Ok(true)
     }
 
-    async fn run_refresh(&self, token: &str) {
-        match tokio::time::timeout(GENERATION_TIMEOUT, generate_summary(self, token)).await {
-            Ok(Ok(summary)) => {
+    async fn run_refresh(&self, token: &str, force: bool) {
+        match tokio::time::timeout(GENERATION_TIMEOUT, generate_summary(self, token, force)).await {
+            Ok(Ok(Refresh::Generated(summary))) => {
                 info!(summary_id = summary.id, "daily news summary refreshed");
+                return;
+            }
+            Ok(Ok(Refresh::Unchanged)) => {
+                info!("no new articles since the latest summary; refresh skipped");
                 return;
             }
             Ok(Err(err)) => error!(error = ?err, "background summary refresh failed"),
@@ -92,16 +97,46 @@ where
     }
 }
 
+#[derive(Debug)]
+enum Refresh {
+    Generated(Box<DailySummary>),
+    /// The latest summary already covers every article.
+    Unchanged,
+}
+
+/// Whether the articles include any the latest summary, made with the same
+/// models, did not cover. Articles that aged out do not count.
+fn has_new_articles(
+    latest: Option<&DailySummary>,
+    articles: &[SummaryArticle],
+    model: &str,
+) -> bool {
+    let Some(latest) = latest.filter(|latest| latest.model == model) else {
+        return true;
+    };
+    let covered: HashSet<i64> = latest.feed_item_ids.iter().copied().collect();
+    articles
+        .iter()
+        .any(|article| !covered.contains(&article.id))
+}
+
 async fn generate_summary<R: SummaryRepository, G: SummaryGenerator>(
     state: &SummaryState<R, G>,
     token: &str,
-) -> Result<DailySummary, SummaryError> {
+    force: bool,
+) -> Result<Refresh, SummaryError> {
     let started = Instant::now();
-    let mut usage = SummaryUsage::default();
     let articles = state.repository.fetch_articles().await?;
-
     if articles.is_empty() {
         return Err(SummaryError::NoArticles);
+    }
+    let model = state.models.label();
+    if !force {
+        let latest = state.repository.latest_summary().await?;
+        if !has_new_articles(latest.as_ref(), &articles, &model) {
+            state.repository.skip_refresh(token).await?;
+            return Ok(Refresh::Unchanged);
+        }
     }
     let batch_budget = state.generator.context_budget(&state.models.batch).await?;
     let final_budget = if state.models.batch == state.models.final_summary {
@@ -112,20 +147,13 @@ async fn generate_summary<R: SummaryRepository, G: SummaryGenerator>(
             .context_budget(&state.models.final_summary)
             .await?
     };
-    let article_prompts = budgeted_prompts(
-        &articles,
-        build_batch_prompt,
-        batch_budget,
-        BATCH_OUTPUT_TOKENS,
-        ARTICLES_PER_BATCH,
-    )?;
+    let article_prompts = article_prompts(&articles, batch_budget)?;
     info!(
         articles = articles.len(),
         batches = article_prompts.len(),
         "summary generation plan"
     );
-    let (mut notes, notes_usage) = generate_notes(state, batch_budget, article_prompts).await?;
-    usage += notes_usage;
+    let (mut notes, mut usage) = generate_notes(state, batch_budget, article_prompts).await?;
     let summary = loop {
         match plan_merge_round(&notes, batch_budget, final_budget)? {
             MergeRound::Final(prompt) => {
@@ -161,7 +189,7 @@ async fn generate_summary<R: SummaryRepository, G: SummaryGenerator>(
         summary,
         feed_ids,
         feed_item_ids,
-        model: state.models.label(),
+        model,
         generation_ms: started.elapsed().as_millis() as i64,
         usage,
     };
@@ -176,26 +204,52 @@ async fn generate_summary<R: SummaryRepository, G: SummaryGenerator>(
         eval_ms = usage.eval_ms,
         "summary generation usage"
     );
-    Ok(result)
+    Ok(Refresh::Generated(Box::new(result)))
 }
 
-/// Generates one batch of story notes per prompt, in order, with their total usage.
-async fn generate_notes<R, G: SummaryGenerator>(
+/// Story notes for each prompt, in order, with the usage of generating them.
+/// Notes are reused from the cache when the same model saw the same prompt;
+/// the cache is an optimization, so its failures are logged, not fatal.
+async fn generate_notes<R: SummaryRepository, G: SummaryGenerator>(
     state: &SummaryState<R, G>,
     budget: ContextBudget,
     prompts: Vec<String>,
 ) -> Result<(Vec<String>, SummaryUsage), SummaryError> {
-    let mut batches = Vec::with_capacity(prompts.len());
-    for (index, prompt) in prompts.into_iter().enumerate() {
+    let model = &state.models.batch;
+    let cached = state
+        .repository
+        .cached_notes(model, &prompts)
+        .await
+        .unwrap_or_else(|err| {
+            warn!(error = ?err, "summary note cache unavailable");
+            vec![None; prompts.len()]
+        });
+    info!(
+        batches = prompts.len(),
+        cached = cached.iter().flatten().count(),
+        "summary notes plan"
+    );
+    let mut usage = SummaryUsage::default();
+    let mut notes = Vec::with_capacity(prompts.len());
+    for (index, (prompt, cached)) in prompts.into_iter().zip(cached).enumerate() {
+        if let Some(text) = cached {
+            notes.push(text);
+            continue;
+        }
         info!(batch = index + 1, "generating summary notes batch");
-        batches.push(
-            state
-                .generator
-                .generate(&state.models.batch, budget, prompt, BATCH_OUTPUT_TOKENS)
-                .await?,
-        );
+        let generated = state
+            .generator
+            .generate(model, budget, prompt.clone(), BATCH_OUTPUT_TOKENS)
+            .await?;
+        if let Err(err) = state
+            .repository
+            .store_notes(model, &prompt, &generated.text)
+            .await
+        {
+            warn!(error = ?err, "failed to cache summary notes");
+        }
+        usage += generated.usage;
+        notes.push(generated.text);
     }
-    let usage = batches.iter().map(|batch| batch.usage).sum();
-    let notes = batches.into_iter().map(|batch| batch.text).collect();
     Ok((notes, usage))
 }

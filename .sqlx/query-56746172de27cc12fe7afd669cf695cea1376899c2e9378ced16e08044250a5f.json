@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT c.notes AS \"notes?\"\n               FROM unnest($2::TEXT[]) WITH ORDINALITY AS p(prompt, ord)\n               LEFT JOIN summary_note_cache c\n                 ON c.prompt_hash = sha256(convert_to($1 || E'\\n' || p.prompt, 'UTF8'))\n               ORDER BY p.ord",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "notes?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "summary_note_cache",
+            "name": "notes"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "56746172de27cc12fe7afd669cf695cea1376899c2e9378ced16e08044250a5f"
+}

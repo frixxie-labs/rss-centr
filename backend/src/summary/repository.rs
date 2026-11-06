@@ -1,7 +1,7 @@
 use std::{error::Error, fmt, future::Future};
 
 use chrono::{DateTime, Utc};
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 use super::{DailySummary, GeneratedSummary, SummaryArticle};
 
@@ -57,6 +57,26 @@ pub(crate) trait SummaryRepository: Send + Sync {
         token: &str,
     ) -> impl Future<Output = Result<(), SummaryStoreError>> + Send;
 
+    /// Fence stale jobs and reschedule without saving a new summary.
+    fn skip_refresh(
+        &self,
+        token: &str,
+    ) -> impl Future<Output = Result<(), SummaryStoreError>> + Send;
+
+    /// Cached story notes for each prompt, in order, or `None` when missing.
+    fn cached_notes(
+        &self,
+        model: &str,
+        prompts: &[String],
+    ) -> impl Future<Output = Result<Vec<Option<String>>, SummaryStoreError>> + Send;
+
+    fn store_notes(
+        &self,
+        model: &str,
+        prompt: &str,
+        notes: &str,
+    ) -> impl Future<Output = Result<(), SummaryStoreError>> + Send;
+
     /// Fence stale jobs and reschedule atomically with persistence.
     fn complete_refresh(
         &self,
@@ -79,6 +99,25 @@ impl PostgresSummaryRepository {
 /// Maps a database error to a store error describing the failed operation.
 fn database(operation: &'static str) -> impl FnOnce(sqlx::Error) -> SummaryStoreError {
     move |source| SummaryStoreError::Database { operation, source }
+}
+
+/// Releases a live lease and schedules the next refresh, or fails with
+/// `LeaseConflict` when the lease was lost.
+async fn finish_lease(conn: &mut PgConnection, token: &str) -> Result<(), SummaryStoreError> {
+    let finished = sqlx::query!(
+        r#"UPDATE summary_refresh_queue
+           SET lease_token = NULL, lease_expires_at = NULL,
+               due_at = NOW() + INTERVAL '1 hour'
+           WHERE id = TRUE AND lease_token = $1 AND lease_expires_at > NOW()"#,
+        token,
+    )
+    .execute(conn)
+    .await
+    .map_err(database("Failed to complete summary refresh"))?;
+    if finished.rows_affected() == 0 {
+        return Err(SummaryStoreError::LeaseConflict);
+    }
+    Ok(())
 }
 
 impl SummaryRepository for PostgresSummaryRepository {
@@ -111,7 +150,7 @@ impl SummaryRepository for PostgresSummaryRepository {
             WHERE i.inserted_at >= NOW() - INTERVAL '24 hours'
               AND i.inserted_at <= NOW()
               AND a.description IS NOT NULL
-            ORDER BY i.inserted_at DESC, i.id DESC
+            ORDER BY i.inserted_at, i.id
             "#,
         )
         .fetch_all(&self.pool)
@@ -166,6 +205,54 @@ impl SummaryRepository for PostgresSummaryRepository {
         Ok(())
     }
 
+    async fn skip_refresh(&self, token: &str) -> Result<(), SummaryStoreError> {
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(database("Failed to skip summary refresh"))?;
+        finish_lease(&mut conn, token).await
+    }
+
+    async fn cached_notes(
+        &self,
+        model: &str,
+        prompts: &[String],
+    ) -> Result<Vec<Option<String>>, SummaryStoreError> {
+        sqlx::query_scalar!(
+            r#"SELECT c.notes AS "notes?"
+               FROM unnest($2::TEXT[]) WITH ORDINALITY AS p(prompt, ord)
+               LEFT JOIN summary_note_cache c
+                 ON c.prompt_hash = sha256(convert_to($1 || E'\n' || p.prompt, 'UTF8'))
+               ORDER BY p.ord"#,
+            model,
+            prompts,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(database("Failed to read summary note cache"))
+    }
+
+    async fn store_notes(
+        &self,
+        model: &str,
+        prompt: &str,
+        notes: &str,
+    ) -> Result<(), SummaryStoreError> {
+        sqlx::query!(
+            r#"INSERT INTO summary_note_cache (prompt_hash, notes)
+               VALUES (sha256(convert_to($1 || E'\n' || $2, 'UTF8')), $3)
+               ON CONFLICT (prompt_hash) DO UPDATE SET notes = EXCLUDED.notes, created_at = NOW()"#,
+            model,
+            prompt,
+            notes,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(database("Failed to store summary notes"))?;
+        Ok(())
+    }
+
     async fn complete_refresh(
         &self,
         token: &str,
@@ -173,19 +260,11 @@ impl SummaryRepository for PostgresSummaryRepository {
     ) -> Result<DailySummary, SummaryStoreError> {
         const SAVE: &str = "Failed to save summary";
         let mut tx = self.pool.begin().await.map_err(database(SAVE))?;
-        let completed = sqlx::query!(
-            r#"UPDATE summary_refresh_queue
-               SET lease_token = NULL, lease_expires_at = NULL,
-                   due_at = NOW() + INTERVAL '1 hour'
-               WHERE id = TRUE AND lease_token = $1 AND lease_expires_at > NOW()"#,
-            token,
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(database("Failed to complete summary refresh"))?;
-        if completed.rows_affected() == 0 {
-            return Err(SummaryStoreError::LeaseConflict);
-        }
+        finish_lease(&mut tx, token).await?;
+        sqlx::query!("DELETE FROM summary_note_cache WHERE created_at < NOW() - INTERVAL '2 days'")
+            .execute(&mut *tx)
+            .await
+            .map_err(database("Failed to prune summary note cache"))?;
         let result = sqlx::query_as!(
             DailySummary,
             r#"INSERT INTO ai_summaries (summary, feed_ids, feed_item_ids, model, generation_ms,
@@ -344,5 +423,55 @@ mod tests {
                 .unwrap();
         assert_eq!(token.as_deref(), Some(current.as_str()));
         assert!(repository.claim_refresh(true).await.unwrap().is_none());
+    }
+
+    #[sqlx::test]
+    async fn cached_notes_are_matched_by_model_and_prompt_in_order(pool: PgPool) {
+        let repository = PostgresSummaryRepository::new(pool);
+        repository.store_notes("m", "first", "old").await.unwrap();
+        repository
+            .store_notes("m", "first", "notes 1")
+            .await
+            .unwrap();
+        repository
+            .store_notes("m", "third", "notes 3")
+            .await
+            .unwrap();
+
+        let prompts = ["third", "second", "first"].map(String::from);
+        let cached = repository.cached_notes("m", &prompts).await.unwrap();
+        let other_model = repository.cached_notes("other", &prompts).await.unwrap();
+
+        assert_eq!(
+            cached,
+            [
+                Some("notes 3".to_string()),
+                None,
+                Some("notes 1".to_string())
+            ]
+        );
+        assert_eq!(other_model, [None, None, None]);
+    }
+
+    #[sqlx::test]
+    async fn skipping_reschedules_a_live_lease_and_rejects_a_stale_one(pool: PgPool) {
+        let repository = PostgresSummaryRepository::new(pool.clone());
+        let token = repository.claim_refresh(false).await.unwrap().unwrap();
+
+        repository.skip_refresh(&token).await.unwrap();
+
+        assert!(matches!(
+            repository.skip_refresh(&token).await,
+            Err(SummaryStoreError::LeaseConflict)
+        ));
+        let rescheduled: bool = sqlx::query_scalar(
+            "SELECT lease_token IS NULL AND due_at > NOW() + INTERVAL '59 minutes'
+             FROM summary_refresh_queue WHERE id = TRUE",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(rescheduled);
+        assert!(repository.latest_summary().await.unwrap().is_none());
     }
 }
