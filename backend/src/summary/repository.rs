@@ -50,8 +50,9 @@ pub(crate) trait SummaryRepository: Send + Sync {
 
     fn next_due_at(&self) -> impl Future<Output = Result<DateTime<Utc>, SummaryStoreError>> + Send;
 
-    /// Back off after failure. Stale tokens are a no-op so they cannot release
-    /// or reschedule another job's lease.
+    /// Back off after failure, doubling the delay from one minute up to an
+    /// hour. Stale tokens are a no-op so they cannot release or reschedule
+    /// another job's lease.
     fn release_refresh(
         &self,
         token: &str,
@@ -119,7 +120,7 @@ async fn finish_lease(conn: &mut PgConnection, token: &str) -> Result<(), Summar
     let finished = sqlx::query!(
         r#"UPDATE summary_refresh_queue
            SET lease_token = NULL, lease_expires_at = NULL,
-               due_at = NOW() + INTERVAL '1 hour'
+               due_at = NOW() + INTERVAL '1 hour', failures = 0
            WHERE id = TRUE AND lease_token = $1 AND lease_expires_at > NOW()"#,
         token,
     )
@@ -210,7 +211,8 @@ impl SummaryRepository for PostgresSummaryRepository {
         sqlx::query!(
             r#"UPDATE summary_refresh_queue
                SET lease_token = NULL, lease_expires_at = NULL,
-                   due_at = NOW() + INTERVAL '1 minute'
+                   due_at = NOW() + LEAST(POWER(2, failures), 60) * INTERVAL '1 minute',
+                   failures = failures + 1
                WHERE id = TRUE AND lease_token = $1"#,
             token,
         )
@@ -539,5 +541,32 @@ mod tests {
             embeddings(PostgresSummaryRepository::new(pool)).await,
             [None, None]
         );
+    }
+
+    #[sqlx::test]
+    async fn failures_back_off_exponentially_up_to_an_hour_and_success_resets(pool: PgPool) {
+        let repository = PostgresSummaryRepository::new(pool.clone());
+        let delay_minutes = || async {
+            sqlx::query_scalar::<_, f64>(
+                "SELECT ROUND(EXTRACT(EPOCH FROM due_at - NOW()) / 60)::FLOAT8
+                 FROM summary_refresh_queue WHERE id = TRUE",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        };
+        let mut delays = Vec::new();
+        for _ in 0..8 {
+            let token = repository.claim_refresh(true).await.unwrap().unwrap();
+            repository.release_refresh(&token).await.unwrap();
+            delays.push(delay_minutes().await);
+        }
+        assert_eq!(delays, [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0]);
+
+        let token = repository.claim_refresh(true).await.unwrap().unwrap();
+        repository.skip_refresh(&token).await.unwrap();
+        let token = repository.claim_refresh(true).await.unwrap().unwrap();
+        repository.release_refresh(&token).await.unwrap();
+        assert_eq!(delay_minutes().await, 1.0);
     }
 }

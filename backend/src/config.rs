@@ -9,6 +9,8 @@ pub(crate) struct BackendConfig {
     pub(crate) ollama_url: String,
     pub(crate) search: SearchConfig,
     pub(crate) summary_models: SummaryModels,
+    /// How long Ollama keeps the summary models loaded; Ollama's default if unset.
+    pub(crate) summary_keep_alive: Option<String>,
 }
 
 impl BackendConfig {
@@ -39,6 +41,7 @@ impl BackendConfig {
                 lookup("OLLAMA_BATCH_MODEL"),
                 lookup("OLLAMA_FINAL_MODEL"),
             ),
+            summary_keep_alive: lookup("OLLAMA_SUMMARY_KEEP_ALIVE"),
         }
     }
 }
@@ -65,6 +68,7 @@ mod tests {
         );
         assert_eq!(config.summary_models.batch, "gemma4:e4b");
         assert_eq!(config.summary_models.final_summary, "gemma4:e4b");
+        assert_eq!(config.summary_keep_alive, None);
     }
 
     #[test]
@@ -79,6 +83,7 @@ mod tests {
             ("OLLAMA_MODEL", "legacy"),
             ("OLLAMA_BATCH_MODEL", "fast"),
             ("OLLAMA_FINAL_MODEL", "quality"),
+            ("OLLAMA_SUMMARY_KEEP_ALIVE", "2h"),
         ]);
 
         let config =
@@ -97,6 +102,7 @@ mod tests {
         );
         assert_eq!(config.summary_models.batch, "fast");
         assert_eq!(config.summary_models.final_summary, "quality");
+        assert_eq!(config.summary_keep_alive.as_deref(), Some("2h"));
     }
 
     #[test]

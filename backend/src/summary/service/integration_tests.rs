@@ -1009,3 +1009,58 @@ async fn recent_articles_include_all_nonempty_descriptions(pool: PgPool) {
             .any(|article| article.description == "summary earlier")
     );
 }
+
+#[tokio::test]
+async fn generator_sends_keep_alive_only_when_configured_and_caches_context_budgets() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let (shows, generates) = (requests.clone(), requests.clone());
+    let app = axum::Router::new()
+        .route(
+            "/api/show",
+            axum::routing::post(move || {
+                shows.lock().unwrap().push("show".to_string());
+                async { Json(serde_json::json!({"model_info": {"test.context_length": 8192}})) }
+            }),
+        )
+        .route(
+            "/api/generate",
+            axum::routing::post(move |Json(request): Json<serde_json::Value>| {
+                generates
+                    .lock()
+                    .unwrap()
+                    .push(format!("keep_alive={}", request["keep_alive"]));
+                async {
+                    Json(serde_json::json!({"response": "News", "prompt_eval_count": 100, "eval_count": 20, "done_reason": "stop"}))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let url = format!("http://{address}");
+
+    for keep_alive in [None, Some("2h".to_string())] {
+        let generator = OllamaSummaryGenerator::new(reqwest::Client::new(), url.clone())
+            .with_keep_alive(keep_alive);
+        for _ in 0..2 {
+            let budget = generator.context_budget("test-model").await.unwrap();
+            generator
+                .generate("test-model", budget, "News".into(), 100)
+                .await
+                .unwrap();
+        }
+    }
+
+    assert_eq!(
+        *requests.lock().unwrap(),
+        [
+            "show",
+            "keep_alive=null",
+            "keep_alive=null",
+            "show",
+            "keep_alive=\"2h\"",
+            "keep_alive=\"2h\"",
+        ]
+    );
+    server.abort();
+}

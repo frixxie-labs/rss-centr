@@ -43,6 +43,14 @@ impl SummaryState {
         }
     }
 
+    /// Ask Ollama to keep the summary models loaded this long after a request.
+    pub(crate) fn with_keep_alive(self, keep_alive: Option<String>) -> Self {
+        Self {
+            generator: self.generator.with_keep_alive(keep_alive),
+            ..self
+        }
+    }
+
     /// Group near-duplicate articles using this model's search embeddings.
     pub(crate) fn with_embedding_model(self, model: String) -> Self {
         Self {

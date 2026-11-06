@@ -143,7 +143,8 @@ async fn main() -> Result<()> {
         config.ollama_url,
         config.summary_models,
     )
-    .with_embedding_model(embedding_model);
+    .with_embedding_model(embedding_model)
+    .with_keep_alive(config.summary_keep_alive);
     let centroids = search_state.centroids.clone();
     let centroid_pool = pool.clone();
     tokio::spawn(async move { centroids.run_loader(&centroid_pool).await });

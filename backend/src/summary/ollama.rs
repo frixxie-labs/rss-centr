@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -14,11 +16,23 @@ pub(super) const OLLAMA_REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 pub(crate) struct OllamaSummaryGenerator {
     http: reqwest::Client,
     ollama_url: String,
+    keep_alive: Option<String>,
+    /// Context budgets by model; model metadata does not change while running.
+    budgets: Arc<Mutex<HashMap<String, ContextBudget>>>,
 }
 
 impl OllamaSummaryGenerator {
     pub(crate) fn new(http: reqwest::Client, ollama_url: String) -> Self {
-        Self { http, ollama_url }
+        Self {
+            http,
+            ollama_url,
+            keep_alive: None,
+            budgets: Arc::default(),
+        }
+    }
+
+    pub(crate) fn with_keep_alive(self, keep_alive: Option<String>) -> Self {
+        Self { keep_alive, ..self }
     }
 }
 
@@ -29,6 +43,8 @@ struct GenerateRequest<'a> {
     prompt: &'a str,
     stream: bool,
     think: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep_alive: Option<&'a str>,
     options: GenerateOptions,
 }
 
@@ -113,6 +129,9 @@ struct ShowResponse {
 
 impl SummaryGenerator for OllamaSummaryGenerator {
     async fn context_budget(&self, model: &str) -> Result<ContextBudget, SummaryError> {
+        if let Some(budget) = self.cached_budget(model) {
+            return Ok(budget);
+        }
         let response = self
             .http
             .post(self.endpoint("show"))
@@ -142,7 +161,11 @@ impl SummaryGenerator for OllamaSummaryGenerator {
             model,
             model_context, num_ctx, "summary model context budget"
         );
-        Ok(ContextBudget { num_ctx })
+        let budget = ContextBudget { num_ctx };
+        if let Ok(mut budgets) = self.budgets.lock() {
+            budgets.insert(model.to_string(), budget);
+        }
+        Ok(budget)
     }
 
     async fn generate(
@@ -187,6 +210,10 @@ impl SummaryGenerator for OllamaSummaryGenerator {
 }
 
 impl OllamaSummaryGenerator {
+    fn cached_budget(&self, model: &str) -> Option<ContextBudget> {
+        self.budgets.lock().ok()?.get(model).copied()
+    }
+
     fn endpoint(&self, path: &str) -> String {
         format!("{}/api/{path}", self.ollama_url.trim_end_matches('/'))
     }
@@ -213,6 +240,7 @@ impl OllamaSummaryGenerator {
             prompt,
             stream: false,
             think: false,
+            keep_alive: self.keep_alive.as_deref(),
             options: GenerateOptions {
                 num_ctx: budget.num_ctx,
                 num_predict,
@@ -237,7 +265,8 @@ impl OllamaSummaryGenerator {
             SummaryError::InvalidResponse
         })?;
         let usage = generated.usage();
-        info!(model, prompt_tokens = generated.prompt_eval_count,
+        // Compare to calibrate BYTES_PER_TOKEN in the context budget.
+        info!(model, estimated_input_tokens, prompt_tokens = generated.prompt_eval_count,
             output_tokens = generated.eval_count, num_ctx = budget.num_ctx,
             duration_ms = usage.llm_ms, eval_ms = usage.eval_ms,
             done_reason = ?generated.done_reason, "summary token usage");

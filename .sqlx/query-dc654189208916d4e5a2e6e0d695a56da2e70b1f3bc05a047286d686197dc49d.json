@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE summary_refresh_queue\n           SET lease_token = NULL, lease_expires_at = NULL,\n               due_at = NOW() + INTERVAL '1 hour', failures = 0\n           WHERE id = TRUE AND lease_token = $1 AND lease_expires_at > NOW()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dc654189208916d4e5a2e6e0d695a56da2e70b1f3bc05a047286d686197dc49d"
+}
