@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use crate::summary::{ContextBudget, Generated, SummaryArticle};
+use crate::summary::{ContextBudget, Generated, Story, SummaryArticle};
 
 type Events = Arc<Mutex<Vec<&'static str>>>;
 
@@ -27,6 +27,7 @@ impl SummaryRepository for RecordingRepository {
                 title: "News".into(),
                 feed: "Example".into(),
                 description: "Description".into(),
+                embedding: None,
             }]
         } else {
             Vec::new()
@@ -358,11 +359,12 @@ async fn summaries_from_other_models_do_not_count_as_covering_the_articles() {
     state.run_refresh("lease", false).await;
     state.models.final_summary = "final".into();
     state.models.batch = "final".into();
-    let article = SummaryArticle {
+    let article = Story {
         id: 10,
-        feed_id: 1,
+        item_ids: vec![10],
+        feed_ids: vec![1],
+        sources: vec![],
         title: String::new(),
-        feed: String::new(),
         description: String::new(),
     };
     let latest = state.latest_summary().await.unwrap();
@@ -382,6 +384,9 @@ async fn summaries_from_other_models_do_not_count_as_covering_the_articles() {
         std::slice::from_ref(&article),
         "batch → final"
     ));
-    let newer = SummaryArticle { id: 11, ..article };
+    let newer = Story {
+        item_ids: vec![10, 11],
+        ..article
+    };
     assert!(has_new_articles(latest.as_ref(), &[newer], "batch → final"));
 }

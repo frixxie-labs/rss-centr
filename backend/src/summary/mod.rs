@@ -4,6 +4,7 @@ mod error;
 mod ollama;
 mod prompts;
 mod repository;
+mod selection;
 mod service;
 
 use std::future::Future;
@@ -28,6 +29,7 @@ pub(crate) use ollama::OllamaSummaryGenerator;
 #[cfg(test)]
 pub(crate) use repository::LEASE_SECONDS;
 pub(crate) use repository::{PostgresSummaryRepository, SummaryRepository, SummaryStoreError};
+pub(crate) use selection::{Story, select_stories};
 pub(crate) use service::SummaryState;
 
 pub(crate) trait SummaryGenerator: Send + Sync {
@@ -118,4 +120,6 @@ pub(crate) struct SummaryArticle {
     pub(crate) title: String,
     pub(crate) feed: String,
     pub(crate) description: String,
+    /// The article's search embedding, if it has one yet.
+    pub(crate) embedding: Option<pgvector::Vector>,
 }

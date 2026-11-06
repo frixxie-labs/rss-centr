@@ -130,6 +130,7 @@ async fn main() -> Result<()> {
             .await
     });
 
+    let embedding_model = config.search.model.clone();
     let search_state = SearchState::new(
         pool.clone(),
         search_http,
@@ -141,7 +142,8 @@ async fn main() -> Result<()> {
         summary_http,
         config.ollama_url,
         config.summary_models,
-    );
+    )
+    .with_embedding_model(embedding_model);
     let centroids = search_state.centroids.clone();
     let centroid_pool = pool.clone();
     tokio::spawn(async move { centroids.run_loader(&centroid_pool).await });

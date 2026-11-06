@@ -1,0 +1,83 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT i.id, i.feed_id, i.title,\n                   COALESCE(f.title, f.url) AS \"feed!\",\n                   LEFT(a.description, 300) AS \"description!\",\n                   e.embedding AS \"embedding?: pgvector::Vector\"\n            FROM feed_items i\n            JOIN feeds f ON f.id = i.feed_id\n            JOIN feed_item_details d ON d.feed_item_id = i.id\n            CROSS JOIN LATERAL (\n                SELECT COALESCE(NULLIF(BTRIM(d.summary), ''),\n                                NULLIF(BTRIM(d.content), '')) AS description\n            ) a\n            LEFT JOIN feed_item_embeddings e ON e.feed_item_id = i.id AND e.model = $1\n            WHERE i.inserted_at >= NOW() - INTERVAL '24 hours'\n              AND i.inserted_at <= NOW()\n              AND a.description IS NOT NULL\n            ORDER BY i.inserted_at, i.id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "feed_items",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "feed_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "feed_items",
+            "name": "feed_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "feed_items",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "feed!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "description!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "embedding?: pgvector::Vector",
+        "type_info": {
+          "Custom": {
+            "name": "vector",
+            "kind": "Simple"
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "feed_item_embeddings",
+            "name": "embedding"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      null,
+      false
+    ]
+  },
+  "hash": "984ce570aeac22305e26fedb0c7521676f85d33122e03c02bf90ee3c0db7f7d3"
+}

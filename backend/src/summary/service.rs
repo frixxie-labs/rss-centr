@@ -7,9 +7,9 @@ use tracing::{Instrument, error, info, warn};
 
 use super::{
     BATCH_OUTPUT_TOKENS, ContextBudget, DailySummary, FINAL_OUTPUT_TOKENS, GeneratedSummary,
-    MergeRound, OllamaSummaryGenerator, PostgresSummaryRepository, SummaryArticle, SummaryError,
+    MergeRound, OllamaSummaryGenerator, PostgresSummaryRepository, Story, SummaryError,
     SummaryGenerator, SummaryModels, SummaryRepository, SummaryStoreError, SummaryUsage,
-    article_prompts, plan_merge_round,
+    article_prompts, plan_merge_round, select_stories,
 };
 
 // Bound the whole job below its lease, including all sequential Ollama calls.
@@ -40,6 +40,14 @@ impl SummaryState {
             repository: PostgresSummaryRepository::new(pool),
             generator: OllamaSummaryGenerator::new(http, ollama_url),
             models,
+        }
+    }
+
+    /// Group near-duplicate articles using this model's search embeddings.
+    pub(crate) fn with_embedding_model(self, model: String) -> Self {
+        Self {
+            repository: self.repository.with_embedding_model(model),
+            ..self
         }
     }
 }
@@ -104,20 +112,17 @@ enum Refresh {
     Unchanged,
 }
 
-/// Whether the articles include any the latest summary, made with the same
-/// models, did not cover. Articles that aged out do not count.
-fn has_new_articles(
-    latest: Option<&DailySummary>,
-    articles: &[SummaryArticle],
-    model: &str,
-) -> bool {
+/// Whether the stories include articles the latest summary, made with the
+/// same models, did not cover. Articles that aged out do not count.
+fn has_new_articles(latest: Option<&DailySummary>, stories: &[Story], model: &str) -> bool {
     let Some(latest) = latest.filter(|latest| latest.model == model) else {
         return true;
     };
     let covered: HashSet<i64> = latest.feed_item_ids.iter().copied().collect();
-    articles
+    stories
         .iter()
-        .any(|article| !covered.contains(&article.id))
+        .flat_map(|story| &story.item_ids)
+        .any(|id| !covered.contains(id))
 }
 
 async fn generate_summary<R: SummaryRepository, G: SummaryGenerator>(
@@ -130,10 +135,12 @@ async fn generate_summary<R: SummaryRepository, G: SummaryGenerator>(
     if articles.is_empty() {
         return Err(SummaryError::NoArticles);
     }
+    let article_count = articles.len();
+    let stories = select_stories(articles);
     let model = state.models.label();
     if !force {
         let latest = state.repository.latest_summary().await?;
-        if !has_new_articles(latest.as_ref(), &articles, &model) {
+        if !has_new_articles(latest.as_ref(), &stories, &model) {
             state.repository.skip_refresh(token).await?;
             return Ok(Refresh::Unchanged);
         }
@@ -147,9 +154,10 @@ async fn generate_summary<R: SummaryRepository, G: SummaryGenerator>(
             .context_budget(&state.models.final_summary)
             .await?
     };
-    let article_prompts = article_prompts(&articles, batch_budget)?;
+    let article_prompts = article_prompts(&stories, batch_budget)?;
     info!(
-        articles = articles.len(),
+        articles = article_count,
+        stories = stories.len(),
         batches = article_prompts.len(),
         "summary generation plan"
     );
@@ -178,13 +186,17 @@ async fn generate_summary<R: SummaryRepository, G: SummaryGenerator>(
         }
     };
 
-    let feed_ids: Vec<i64> = articles
+    let feed_ids: Vec<i64> = stories
         .iter()
-        .map(|article| article.feed_id)
+        .flat_map(|story| story.feed_ids.iter().copied())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let feed_item_ids: Vec<i64> = articles.iter().map(|article| article.id).collect();
+    let mut feed_item_ids: Vec<i64> = stories
+        .iter()
+        .flat_map(|story| story.item_ids.iter().copied())
+        .collect();
+    feed_item_ids.sort_unstable();
     let generated = GeneratedSummary {
         summary,
         feed_ids,

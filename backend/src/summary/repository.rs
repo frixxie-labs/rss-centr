@@ -88,11 +88,23 @@ pub(crate) trait SummaryRepository: Send + Sync {
 #[derive(Clone)]
 pub(crate) struct PostgresSummaryRepository {
     pool: PgPool,
+    embedding_model: Option<String>,
 }
 
 impl PostgresSummaryRepository {
     pub(crate) fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            embedding_model: None,
+        }
+    }
+
+    /// Read article embeddings from this model, to group near-duplicates.
+    pub(crate) fn with_embedding_model(self, model: String) -> Self {
+        Self {
+            embedding_model: Some(model),
+            ..self
+        }
     }
 }
 
@@ -139,7 +151,8 @@ impl SummaryRepository for PostgresSummaryRepository {
             r#"
             SELECT i.id, i.feed_id, i.title,
                    COALESCE(f.title, f.url) AS "feed!",
-                   LEFT(a.description, 300) AS "description!"
+                   LEFT(a.description, 300) AS "description!",
+                   e.embedding AS "embedding?: pgvector::Vector"
             FROM feed_items i
             JOIN feeds f ON f.id = i.feed_id
             JOIN feed_item_details d ON d.feed_item_id = i.id
@@ -147,11 +160,13 @@ impl SummaryRepository for PostgresSummaryRepository {
                 SELECT COALESCE(NULLIF(BTRIM(d.summary), ''),
                                 NULLIF(BTRIM(d.content), '')) AS description
             ) a
+            LEFT JOIN feed_item_embeddings e ON e.feed_item_id = i.id AND e.model = $1
             WHERE i.inserted_at >= NOW() - INTERVAL '24 hours'
               AND i.inserted_at <= NOW()
               AND a.description IS NOT NULL
             ORDER BY i.inserted_at, i.id
             "#,
+            self.embedding_model,
         )
         .fetch_all(&self.pool)
         .await
@@ -473,5 +488,56 @@ mod tests {
         .unwrap();
         assert!(rescheduled);
         assert!(repository.latest_summary().await.unwrap().is_none());
+    }
+
+    #[sqlx::test]
+    async fn articles_carry_embeddings_from_the_configured_model_only(pool: PgPool) {
+        let items: Vec<i64> = sqlx::query_scalar(
+            "WITH feed AS (INSERT INTO feeds (url) VALUES ('https://example.com') RETURNING id),
+                  items AS (
+                      INSERT INTO feed_items (feed_id, external_id, title, url)
+                      SELECT feed.id, n::TEXT, 'News', 'https://example.com' FROM feed, generate_series(1, 2) n
+                      RETURNING id
+                  ),
+                  details AS (
+                      INSERT INTO feed_item_details (feed_item_id, summary, content, author, published_at)
+                      SELECT id, 'Description', '', '', NOW() FROM items
+                  )
+             SELECT id FROM items ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO feed_item_embeddings (feed_item_id, model, content_hash, embedding)
+             VALUES ($1, 'search', 'h', '[1,0]'), ($2, 'other', 'h', '[0,1]')",
+        )
+        .bind(items[0])
+        .bind(items[1])
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let embeddings = |repository: PostgresSummaryRepository| async move {
+            repository
+                .fetch_articles()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|article| article.embedding.map(|e| e.to_vec()))
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            embeddings(
+                PostgresSummaryRepository::new(pool.clone()).with_embedding_model("search".into())
+            )
+            .await,
+            [Some(vec![1.0, 0.0]), None]
+        );
+        assert_eq!(
+            embeddings(PostgresSummaryRepository::new(pool)).await,
+            [None, None]
+        );
     }
 }

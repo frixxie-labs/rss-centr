@@ -1,8 +1,6 @@
 use std::fmt::Write;
 
-use super::{
-    ContextBudget, InputTooLarge, SummaryArticle, SummaryError, budgeted_prompts, starts_chunk,
-};
+use super::{ContextBudget, InputTooLarge, Story, SummaryError, budgeted_prompts, starts_chunk};
 
 pub(crate) const ARTICLES_PER_BATCH: usize = 25;
 // Chunks start at every 16th article id and about one story note in 4, chosen
@@ -71,10 +69,10 @@ pub(crate) fn plan_merge_round(
     Ok(MergeRound::Merge(prompts))
 }
 
-/// Story-note prompts for the articles, in chunks that stay stable as the
+/// Story-note prompts for the stories, in chunks that stay stable as the
 /// article window moves.
 pub(crate) fn article_prompts(
-    articles: &[SummaryArticle],
+    articles: &[Story],
     budget: ContextBudget,
 ) -> Result<Vec<String>, InputTooLarge> {
     budgeted_prompts(
@@ -83,11 +81,11 @@ pub(crate) fn article_prompts(
         budget,
         BATCH_OUTPUT_TOKENS,
         ARTICLES_PER_BATCH,
-        |article| article.id % ARTICLE_CHUNK_IDS == 0,
+        |story| story.id % ARTICLE_CHUNK_IDS == 0,
     )
 }
 
-pub(crate) fn build_batch_prompt(articles: &[SummaryArticle]) -> String {
+pub(crate) fn build_batch_prompt(articles: &[Story]) -> String {
     let mut prompt = String::from(
         "Trekk ut saksnotater fra nyhetsartiklene nedenfor til en større nyhetsoversikt. \
          Bruk bare opplysninger som står i artiklene. ",
@@ -97,7 +95,9 @@ pub(crate) fn build_batch_prompt(articles: &[SummaryArticle]) -> String {
         let _ = write!(
             prompt,
             "Kilde: {}\nTittel: {}\nBeskrivelse: {}\n\n",
-            article.feed, article.title, article.description
+            article.sources.join(", "),
+            article.title,
+            article.description
         );
     }
     prompt
@@ -143,17 +143,18 @@ mod tests {
 
     #[test]
     fn article_prompt_requests_source_grounded_notes_and_preserves_input() {
-        let articles = vec![SummaryArticle {
+        let articles = vec![Story {
             id: 1,
-            feed_id: 2,
+            item_ids: vec![1, 3],
+            feed_ids: vec![2, 4],
+            sources: vec!["Example News".to_string(), "Other News".to_string()],
             title: "Budsjettforslag".to_string(),
-            feed: "Example News".to_string(),
             description: "Et anslag på 45 øre i 2027, ikke et vedtak.".to_string(),
         }];
         let prompt = build_batch_prompt(&articles);
         assert!(prompt.contains(STORY_NOTES_INSTRUCTIONS));
         assert!(prompt.contains("Usikkerhet:"));
-        assert!(prompt.contains("Kilde: Example News\nTittel: Budsjettforslag\nBeskrivelse: Et anslag på 45 øre i 2027, ikke et vedtak."));
+        assert!(prompt.contains("Kilde: Example News, Other News\nTittel: Budsjettforslag\nBeskrivelse: Et anslag på 45 øre i 2027, ikke et vedtak."));
         assert!(!prompt.contains("maks 80 ord"));
     }
 
@@ -187,11 +188,12 @@ mod tests {
     #[test]
     fn summary_batches_reserve_the_full_generation_allowance() {
         let articles: Vec<_> = (0..26)
-            .map(|id| SummaryArticle {
+            .map(|id| Story {
                 id,
-                feed_id: 1,
+                item_ids: vec![id],
+                feed_ids: vec![1],
+                sources: vec!["Source".to_string()],
                 title: "Title".to_string(),
-                feed: "Source".to_string(),
                 description: "æ".repeat(300),
             })
             .collect();
