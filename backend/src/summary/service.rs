@@ -64,14 +64,13 @@ where
     /// Claims the refresh lease and spawns generation. `force` ignores the
     /// schedule but still respects an active lease. Returns whether it started.
     pub(crate) async fn start_refresh(self, force: bool) -> Result<bool, SummaryStoreError> {
-        let state = self;
-        let Some(token) = state.repository.claim_refresh(force).await? else {
+        let Some(token) = self.repository.claim_refresh(force).await? else {
             return Ok(false);
         };
-        info!(batch_model = %state.models.batch, final_model = %state.models.final_summary, timeout_seconds = GENERATION_TIMEOUT.as_secs(), "daily news summary refresh started");
+        info!(batch_model = %self.models.batch, final_model = %self.models.final_summary, timeout_seconds = GENERATION_TIMEOUT.as_secs(), "daily news summary refresh started");
         tokio::spawn(
             async move {
-                state.run_refresh(&token).await;
+                self.run_refresh(&token).await;
             }
             .in_current_span(),
         );

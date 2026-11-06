@@ -1,3 +1,4 @@
+mod budget;
 mod config;
 mod error;
 mod ollama;
@@ -9,13 +10,12 @@ use std::future::Future;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use sqlx::FromRow;
 use utoipa::ToSchema;
 
+pub(crate) use budget::{ContextBudget, InputTooLarge, SUMMARY_CONTEXT_TOKENS, budgeted_prompts};
 pub(crate) use prompts::{
-    ARTICLES_PER_BATCH, BATCH_OUTPUT_TOKENS, ContextBudget, FINAL_OUTPUT_TOKENS, InputTooLarge,
-    MergeRound, SUMMARY_CONTEXT_TOKENS, SUMMARY_SYSTEM_PROMPT, budgeted_prompts,
-    build_batch_prompt, plan_merge_round,
+    ARTICLES_PER_BATCH, BATCH_OUTPUT_TOKENS, FINAL_OUTPUT_TOKENS, MergeRound,
+    SUMMARY_SYSTEM_PROMPT, build_batch_prompt, plan_merge_round,
 };
 
 pub(crate) use config::SummaryModels;
@@ -41,7 +41,7 @@ pub(crate) trait SummaryGenerator: Send + Sync {
     ) -> impl Future<Output = Result<Generated, SummaryError>> + Send;
 }
 
-#[derive(Clone, Serialize, FromRow, ToSchema)]
+#[derive(Clone, Serialize, ToSchema)]
 pub struct DailySummary {
     pub id: i64,
     pub summary: String,
@@ -108,7 +108,6 @@ pub(crate) struct GeneratedSummary {
     pub(crate) usage: SummaryUsage,
 }
 
-#[derive(sqlx::FromRow)]
 pub(crate) struct SummaryArticle {
     pub(crate) id: i64,
     pub(crate) feed_id: i64,

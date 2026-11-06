@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT GREATEST(due_at, COALESCE(lease_expires_at, due_at)) AS \"due_at!\"\n               FROM summary_refresh_queue WHERE id = TRUE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "due_at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "982bfb3f1d466d4f51e4ec3c294402d93169169554ddc43796c6abcc0fc410d1"
+}

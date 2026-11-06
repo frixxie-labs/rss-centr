@@ -115,10 +115,7 @@ impl SummaryGenerator for OllamaSummaryGenerator {
     async fn context_budget(&self, model: &str) -> Result<ContextBudget, SummaryError> {
         let response = self
             .http
-            .post(format!(
-                "{}/api/show",
-                self.ollama_url.trim_end_matches('/')
-            ))
+            .post(self.endpoint("show"))
             .timeout(Duration::from_secs(30))
             .json(&serde_json::json!({"model": model}))
             .send()
@@ -155,71 +152,27 @@ impl SummaryGenerator for OllamaSummaryGenerator {
         prompt: String,
         num_predict: u32,
     ) -> Result<Generated, SummaryError> {
-        let mut usage = SummaryUsage::default();
         if !budget.fits(&prompt, num_predict) {
             return Err(InputTooLarge.into());
         }
         let retry_allowance = num_predict.saturating_mul(2);
         let retry_fits = budget.fits(&prompt, retry_allowance);
+        let mut usage = SummaryUsage::default();
         for (attempt, allowance) in [num_predict, retry_allowance].into_iter().enumerate() {
-            info!(
-                model,
-                estimated_input_tokens = budget.estimated_input_tokens(&prompt),
-                num_ctx = budget.num_ctx,
-                num_predict = allowance,
-                attempt = attempt + 1,
-                "generating summary within context budget"
-            );
-            let request = GenerateRequest {
-                model,
-                system: SUMMARY_SYSTEM_PROMPT,
-                prompt: &prompt,
-                stream: false,
-                think: false,
-                options: GenerateOptions {
-                    num_ctx: budget.num_ctx,
-                    num_predict: allowance,
-                    temperature: 0.0,
-                },
-            };
-            let response = self.http
-                .post(format!("{}/api/generate", self.ollama_url.trim_end_matches('/')))
-                .timeout(OLLAMA_REQUEST_TIMEOUT)
-                .json(&request)
-                .send().await
-                .and_then(reqwest::Response::error_for_status)
-                .map_err(|err| {
-                    error!(model, error = ?err, timeout = err.is_timeout(), timeout_seconds = OLLAMA_REQUEST_TIMEOUT.as_secs(), "Ollama request failed");
-                    SummaryError::ServiceUnavailable
-                })?;
-            let generated: GenerateResponse = response.json().await.map_err(|err| {
-                error!(error = ?err, timeout = err.is_timeout(), "invalid Ollama response");
-                SummaryError::InvalidResponse
-            })?;
-            let duration_ms = (generated.total_duration / 1_000_000) as i64;
-            let eval_ms = (generated.eval_duration / 1_000_000) as i64;
-            usage += SummaryUsage {
-                llm_calls: 1,
-                prompt_tokens: i64::from(generated.prompt_eval_count),
-                output_tokens: i64::from(generated.eval_count),
-                llm_ms: duration_ms,
-                eval_ms,
-            };
-            info!(model, prompt_tokens = generated.prompt_eval_count,
-                output_tokens = generated.eval_count, num_ctx = budget.num_ctx,
-                duration_ms, eval_ms, done_reason = ?generated.done_reason, "summary token usage");
+            let generated = self
+                .generate_once(model, budget, &prompt, allowance)
+                .await?;
+            usage += generated.usage();
             let retry = (attempt == 0 && retry_fits).then_some(retry_allowance);
             match classify(&generated, budget.num_ctx, allowance, retry) {
                 Verdict::Accept(text) => return Ok(Generated { text, usage }),
-                Verdict::Retry => {
-                    warn!(
-                        model,
-                        output_tokens = generated.eval_count,
-                        num_predict = allowance,
-                        retry_num_predict = retry_allowance,
-                        "summary generation truncated, retrying"
-                    );
-                }
+                Verdict::Retry => warn!(
+                    model,
+                    output_tokens = generated.eval_count,
+                    num_predict = allowance,
+                    retry_num_predict = retry_allowance,
+                    "summary generation truncated, retrying"
+                ),
                 Verdict::Fail(error) => {
                     error!(model, prompt_tokens = generated.prompt_eval_count,
                         output_tokens = generated.eval_count, num_predict = allowance,
@@ -230,6 +183,77 @@ impl SummaryGenerator for OllamaSummaryGenerator {
             }
         }
         Err(SummaryError::Truncated)
+    }
+}
+
+impl OllamaSummaryGenerator {
+    fn endpoint(&self, path: &str) -> String {
+        format!("{}/api/{path}", self.ollama_url.trim_end_matches('/'))
+    }
+
+    /// One `/api/generate` request with the given output allowance.
+    async fn generate_once(
+        &self,
+        model: &str,
+        budget: ContextBudget,
+        prompt: &str,
+        num_predict: u32,
+    ) -> Result<GenerateResponse, SummaryError> {
+        let estimated_input_tokens = budget.estimated_input_tokens(prompt);
+        info!(
+            model,
+            estimated_input_tokens,
+            num_ctx = budget.num_ctx,
+            num_predict,
+            "generating summary within context budget"
+        );
+        let request = GenerateRequest {
+            model,
+            system: SUMMARY_SYSTEM_PROMPT,
+            prompt,
+            stream: false,
+            think: false,
+            options: GenerateOptions {
+                num_ctx: budget.num_ctx,
+                num_predict,
+                temperature: 0.0,
+            },
+        };
+        let response = self
+            .http
+            .post(self.endpoint("generate"))
+            .timeout(OLLAMA_REQUEST_TIMEOUT)
+            .json(&request)
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(|err| {
+                error!(model, error = ?err, timeout = err.is_timeout(),
+                    timeout_seconds = OLLAMA_REQUEST_TIMEOUT.as_secs(), "Ollama request failed");
+                SummaryError::ServiceUnavailable
+            })?;
+        let generated: GenerateResponse = response.json().await.map_err(|err| {
+            error!(error = ?err, timeout = err.is_timeout(), "invalid Ollama response");
+            SummaryError::InvalidResponse
+        })?;
+        let usage = generated.usage();
+        info!(model, prompt_tokens = generated.prompt_eval_count,
+            output_tokens = generated.eval_count, num_ctx = budget.num_ctx,
+            duration_ms = usage.llm_ms, eval_ms = usage.eval_ms,
+            done_reason = ?generated.done_reason, "summary token usage");
+        Ok(generated)
+    }
+}
+
+impl GenerateResponse {
+    fn usage(&self) -> SummaryUsage {
+        SummaryUsage {
+            llm_calls: 1,
+            prompt_tokens: i64::from(self.prompt_eval_count),
+            output_tokens: i64::from(self.eval_count),
+            llm_ms: (self.total_duration / 1_000_000) as i64,
+            eval_ms: (self.eval_duration / 1_000_000) as i64,
+        }
     }
 }
 

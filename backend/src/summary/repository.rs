@@ -76,47 +76,51 @@ impl PostgresSummaryRepository {
     }
 }
 
+/// Maps a database error to a store error describing the failed operation.
+fn database(operation: &'static str) -> impl FnOnce(sqlx::Error) -> SummaryStoreError {
+    move |source| SummaryStoreError::Database { operation, source }
+}
+
 impl SummaryRepository for PostgresSummaryRepository {
     async fn latest_summary(&self) -> Result<Option<DailySummary>, SummaryStoreError> {
-        sqlx::query_as::<_, DailySummary>(
+        sqlx::query_as!(
+            DailySummary,
             r#"SELECT id, summary, feed_ids, feed_item_ids, generated_at, model,
                       generation_ms, llm_calls, prompt_tokens, output_tokens, llm_ms, eval_ms
                FROM ai_summaries ORDER BY generated_at DESC, id DESC LIMIT 1"#,
         )
         .fetch_optional(&self.pool)
         .await
-        .map_err(|source| SummaryStoreError::Database {
-            operation: "Failed to fetch latest summary",
-            source,
-        })
+        .map_err(database("Failed to fetch latest summary"))
     }
 
     async fn fetch_articles(&self) -> Result<Vec<SummaryArticle>, SummaryStoreError> {
-        sqlx::query_as::<_, SummaryArticle>(
+        sqlx::query_as!(
+            SummaryArticle,
             r#"
-            SELECT i.id, i.feed_id, i.title, COALESCE(f.title, f.url) AS feed,
-                   LEFT(COALESCE(NULLIF(BTRIM(d.summary), ''),
-                                 NULLIF(BTRIM(d.content), '')), 300) AS description
+            SELECT i.id, i.feed_id, i.title,
+                   COALESCE(f.title, f.url) AS "feed!",
+                   LEFT(a.description, 300) AS "description!"
             FROM feed_items i
             JOIN feeds f ON f.id = i.feed_id
             JOIN feed_item_details d ON d.feed_item_id = i.id
+            CROSS JOIN LATERAL (
+                SELECT COALESCE(NULLIF(BTRIM(d.summary), ''),
+                                NULLIF(BTRIM(d.content), '')) AS description
+            ) a
             WHERE i.inserted_at >= NOW() - INTERVAL '24 hours'
               AND i.inserted_at <= NOW()
-              AND COALESCE(NULLIF(BTRIM(d.summary), ''),
-                           NULLIF(BTRIM(d.content), '')) IS NOT NULL
+              AND a.description IS NOT NULL
             ORDER BY i.inserted_at DESC, i.id DESC
             "#,
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(|source| SummaryStoreError::Database {
-            operation: "Failed to fetch recent articles",
-            source,
-        })
+        .map_err(database("Failed to fetch recent articles"))
     }
 
     async fn claim_refresh(&self, force: bool) -> Result<Option<String>, SummaryStoreError> {
-        sqlx::query_scalar(
+        sqlx::query_scalar!(
             r#"WITH due AS (
                    SELECT id FROM summary_refresh_queue
                    WHERE ($2 OR due_at <= NOW())
@@ -127,47 +131,38 @@ impl SummaryRepository for PostgresSummaryRepository {
                SET lease_token = md5(random()::TEXT || clock_timestamp()::TEXT),
                    lease_expires_at = NOW() + ($1::BIGINT * INTERVAL '1 second')
                FROM due WHERE q.id = due.id
-               RETURNING q.lease_token"#,
+               RETURNING q.lease_token AS "lease_token!""#,
+            LEASE_SECONDS,
+            force,
         )
-        .bind(LEASE_SECONDS)
-        .bind(force)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|source| SummaryStoreError::Database {
-            operation: "Failed to claim summary refresh",
-            source,
-        })
+        .map_err(database("Failed to claim summary refresh"))
     }
 
     /// Earliest time the lease can be claimed again: the schedule, or the
     /// lease expiry while a refresh is in progress.
     async fn next_due_at(&self) -> Result<DateTime<Utc>, SummaryStoreError> {
-        sqlx::query_scalar(
-            r#"SELECT GREATEST(due_at, COALESCE(lease_expires_at, due_at))
+        sqlx::query_scalar!(
+            r#"SELECT GREATEST(due_at, COALESCE(lease_expires_at, due_at)) AS "due_at!"
                FROM summary_refresh_queue WHERE id = TRUE"#,
         )
         .fetch_one(&self.pool)
         .await
-        .map_err(|source| SummaryStoreError::Database {
-            operation: "Failed to read summary refresh schedule",
-            source,
-        })
+        .map_err(database("Failed to read summary refresh schedule"))
     }
 
     async fn release_refresh(&self, token: &str) -> Result<(), SummaryStoreError> {
-        sqlx::query(
+        sqlx::query!(
             r#"UPDATE summary_refresh_queue
                SET lease_token = NULL, lease_expires_at = NULL,
                    due_at = NOW() + INTERVAL '1 minute'
                WHERE id = TRUE AND lease_token = $1"#,
+            token,
         )
-        .bind(token)
         .execute(&self.pool)
         .await
-        .map_err(|source| SummaryStoreError::Database {
-            operation: "Failed to release summary refresh lease",
-            source,
-        })?;
+        .map_err(database("Failed to release summary refresh lease"))?;
         Ok(())
     }
 
@@ -176,59 +171,43 @@ impl SummaryRepository for PostgresSummaryRepository {
         token: &str,
         summary: &GeneratedSummary,
     ) -> Result<DailySummary, SummaryStoreError> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|source| SummaryStoreError::Database {
-                operation: "Failed to save summary",
-                source,
-            })?;
-        let completed = sqlx::query(
+        const SAVE: &str = "Failed to save summary";
+        let mut tx = self.pool.begin().await.map_err(database(SAVE))?;
+        let completed = sqlx::query!(
             r#"UPDATE summary_refresh_queue
                SET lease_token = NULL, lease_expires_at = NULL,
                    due_at = NOW() + INTERVAL '1 hour'
                WHERE id = TRUE AND lease_token = $1 AND lease_expires_at > NOW()"#,
+            token,
         )
-        .bind(token)
         .execute(&mut *tx)
         .await
-        .map_err(|source| SummaryStoreError::Database {
-            operation: "Failed to complete summary refresh",
-            source,
-        })?;
+        .map_err(database("Failed to complete summary refresh"))?;
         if completed.rows_affected() == 0 {
             return Err(SummaryStoreError::LeaseConflict);
         }
-        let result = sqlx::query_as::<_, DailySummary>(
+        let result = sqlx::query_as!(
+            DailySummary,
             r#"INSERT INTO ai_summaries (summary, feed_ids, feed_item_ids, model, generation_ms,
                                          llm_calls, prompt_tokens, output_tokens, llm_ms, eval_ms)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                RETURNING id, summary, feed_ids, feed_item_ids, generated_at, model,
                          generation_ms, llm_calls, prompt_tokens, output_tokens, llm_ms, eval_ms"#,
+            summary.summary,
+            &summary.feed_ids,
+            &summary.feed_item_ids,
+            summary.model,
+            summary.generation_ms,
+            summary.usage.llm_calls,
+            summary.usage.prompt_tokens,
+            summary.usage.output_tokens,
+            summary.usage.llm_ms,
+            summary.usage.eval_ms,
         )
-        .bind(&summary.summary)
-        .bind(&summary.feed_ids)
-        .bind(&summary.feed_item_ids)
-        .bind(&summary.model)
-        .bind(summary.generation_ms)
-        .bind(summary.usage.llm_calls)
-        .bind(summary.usage.prompt_tokens)
-        .bind(summary.usage.output_tokens)
-        .bind(summary.usage.llm_ms)
-        .bind(summary.usage.eval_ms)
         .fetch_one(&mut *tx)
         .await
-        .map_err(|source| SummaryStoreError::Database {
-            operation: "Failed to save summary",
-            source,
-        })?;
-        tx.commit()
-            .await
-            .map_err(|source| SummaryStoreError::Database {
-                operation: "Failed to save summary",
-                source,
-            })?;
+        .map_err(database(SAVE))?;
+        tx.commit().await.map_err(database(SAVE))?;
         Ok(result)
     }
 }

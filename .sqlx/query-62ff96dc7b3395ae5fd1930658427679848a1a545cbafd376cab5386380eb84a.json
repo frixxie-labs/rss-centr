@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH due AS (\n                   SELECT id FROM summary_refresh_queue\n                   WHERE ($2 OR due_at <= NOW())\n                     AND (lease_expires_at IS NULL OR lease_expires_at <= NOW())\n                   FOR UPDATE SKIP LOCKED\n               )\n               UPDATE summary_refresh_queue q\n               SET lease_token = md5(random()::TEXT || clock_timestamp()::TEXT),\n                   lease_expires_at = NOW() + ($1::BIGINT * INTERVAL '1 second')\n               FROM due WHERE q.id = due.id\n               RETURNING q.lease_token AS \"lease_token!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "lease_token!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "summary_refresh_queue",
+            "name": "lease_token"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "62ff96dc7b3395ae5fd1930658427679848a1a545cbafd376cab5386380eb84a"
+}
