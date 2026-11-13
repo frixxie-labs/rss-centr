@@ -7,7 +7,7 @@ use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_ma
 use rillfp::{AsyncReader, NonEmpty, Reader, Validation, Writer};
 
 const CHAIN_LENGTHS: [usize; 3] = [1, 8, 32];
-const COLLECTION_SIZES: [usize; 3] = [1, 32, 1024];
+const COLLECTION_SIZES: [usize; 5] = [1, 2, 8, 32, 1024];
 
 fn reader_chain(length: usize) -> Reader<'static, u64, u64> {
     (0..length).fold(Reader::new(|value: &u64| *value), |reader, _| {
@@ -197,6 +197,68 @@ fn validation(c: &mut Criterion) {
     }
 }
 
+fn validate_owned(values: Vec<Result<u64, String>>) -> Result<u64, Vec<String>> {
+    values
+        .into_iter()
+        .fold(Validation::Valid(0), |sum, value| {
+            sum.map2(value.into(), |sum, value| sum + value)
+        })
+        .into_result()
+        .map_err(NonEmpty::into_vec)
+}
+
+fn validate_owned_direct(values: Vec<Result<u64, String>>) -> Result<u64, Vec<String>> {
+    let mut sum = 0;
+    let mut errors = Vec::new();
+    for value in values {
+        match value {
+            Ok(value) => sum += value,
+            Err(error) => errors.push(error),
+        }
+    }
+    if errors.is_empty() {
+        Ok(sum)
+    } else {
+        Err(errors)
+    }
+}
+
+fn owned_validation(c: &mut Criterion) {
+    for scenario in ["valid", "invalid", "mixed"] {
+        let mut group = c.benchmark_group(format!("validation_owned/{scenario}"));
+        for size in COLLECTION_SIZES {
+            let values: Vec<_> = (0..size)
+                .map(|index| match scenario {
+                    "invalid" => Err(format!("field {index}: value is required")),
+                    "mixed" if index % 2 == 0 => Err(format!("field {index}: value is required")),
+                    _ => Ok(index as u64),
+                })
+                .collect();
+            assert_eq!(
+                validate_owned(values.clone()),
+                validate_owned_direct(values.clone())
+            );
+            // Clone fixtures outside timing so we measure moving owned errors,
+            // not formatting or cloning their strings. Both paths consume inputs.
+            group.bench_with_input(BenchmarkId::new("rill", size), &values, |b, values| {
+                b.iter_batched(
+                    || values.clone(),
+                    |values| validate_owned(black_box(values)),
+                    BatchSize::SmallInput,
+                );
+            });
+            group.bench_with_input(BenchmarkId::new("direct", size), &values, |b, values| {
+                b.iter_batched(
+                    || values.clone(),
+                    |values| validate_owned_direct(black_box(values)),
+                    BatchSize::SmallInput,
+                );
+            });
+        }
+        group.finish();
+    }
+}
+
 fn accumulate_events(size: usize) -> (usize, Vec<usize>) {
     (0..size)
         .fold(Writer::pure(0), |writer, event| {
@@ -261,6 +323,42 @@ fn non_empty(c: &mut Criterion) {
     group.finish();
 }
 
+fn owned_append(c: &mut Criterion) {
+    let mut group = c.benchmark_group("non_empty/append_owned");
+    for size in COLLECTION_SIZES {
+        let left =
+            NonEmpty::from_head_tail("left 0".to_owned(), (1..size).map(|i| format!("left {i}")));
+        let right = NonEmpty::from_head_tail(
+            "right 0".to_owned(),
+            (1..size).map(|i| format!("right {i}")),
+        );
+        let left_vec: Vec<_> = left.iter().cloned().collect();
+        let right_vec: Vec<_> = right.iter().cloned().collect();
+        assert_eq!(
+            left.clone().append(right.clone()).into_vec(),
+            left.iter().chain(right.iter()).cloned().collect::<Vec<_>>()
+        );
+        group.bench_function(BenchmarkId::new("rill", size), |b| {
+            b.iter_batched(
+                || (left.clone(), right.clone()),
+                |(left, right)| black_box(left).append(black_box(right)),
+                BatchSize::SmallInput,
+            );
+        });
+        group.bench_function(BenchmarkId::new("vec", size), |b| {
+            b.iter_batched(
+                || (left_vec.clone(), right_vec.clone()),
+                |(mut left, mut right)| {
+                    black_box(&mut left).append(black_box(&mut right));
+                    left
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
+}
+
 fn error_accumulation(c: &mut Criterion) {
     let mut group = c.benchmark_group("non_empty/accumulation");
     for size in COLLECTION_SIZES {
@@ -300,8 +398,10 @@ criterion_group!(
     readers,
     async_readers,
     validation,
+    owned_validation,
     writers,
     non_empty,
+    owned_append,
     error_accumulation
 );
 criterion_main!(benches);

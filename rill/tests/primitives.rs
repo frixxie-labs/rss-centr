@@ -4,6 +4,17 @@ use quickcheck::quickcheck;
 use rillfp::{Logger, NonEmpty, Reader, ReaderResult, Validation, Writer};
 
 quickcheck! {
+    fn validation_map2_preserves_multiple_owned_errors(
+        left_head: String, left_tail: Vec<String>, right_head: String, right_tail: Vec<String>
+    ) -> bool {
+        let left = NonEmpty::from_head_tail(left_head, left_tail);
+        let right = NonEmpty::from_head_tail(right_head, right_tail);
+        let expected: Vec<_> = left.iter().chain(right.iter()).cloned().collect();
+        Validation::<(), _>::Invalid(left)
+            .map2(Validation::<(), _>::Invalid(right), |(), ()| panic!("invalid inputs must skip the combiner"))
+            .into_result().unwrap_err().into_vec() == expected
+    }
+
     fn validation_map2_matches_zip_then_map(left: Result<i16, String>, right: Result<i16, String>) -> bool {
         let left = Validation::from(left);
         let right = Validation::from(right);

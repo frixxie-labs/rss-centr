@@ -78,8 +78,13 @@ impl<T> NonEmpty<T> {
     }
 
     /// Concatenates two collections in left-to-right order.
+    #[inline]
     pub fn append(mut self, other: Self) -> Self {
-        self.extend(other);
+        // Reserve for both parts so pushing the head cannot cause a second
+        // growth when the tail is appended.
+        self.tail.reserve(other.len());
+        self.push(other.head);
+        self.tail.extend(other.tail);
         self
     }
 

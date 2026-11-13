@@ -53,12 +53,23 @@ impl<T, E> Validation<T, E> {
     }
 
     /// Combines independent values with `f`, accumulating all errors.
+    #[inline]
     pub fn map2<U, V>(
         self,
         other: Validation<U, E>,
         f: impl FnOnce(T, U) -> V,
     ) -> Validation<V, E> {
-        self.zip(other).map(|(left, right)| f(left, right))
+        // Match directly to avoid an intermediate Validation<(T, U), E>.
+        match self {
+            Self::Valid(left) => match other {
+                Validation::Valid(right) => Validation::Valid(f(left, right)),
+                Validation::Invalid(errors) => Validation::Invalid(errors),
+            },
+            Self::Invalid(left) => match other {
+                Validation::Valid(_) => Validation::Invalid(left),
+                Validation::Invalid(right) => Validation::Invalid(left.append(right)),
+            },
+        }
     }
 
     /// Chains dependent validation, skipping `f` when this value is invalid.

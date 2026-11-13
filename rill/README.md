@@ -267,7 +267,7 @@ cargo bench -p rillfp --bench primitives -- --test
 
 Criterion measures reader construction separately from repeated execution, sync
 and async map chains (1, 8, and 32 steps), successful/mixed/failed validation,
-Writer event accumulation, and NonEmpty mapping (1, 32, and 1024 elements).
+Writer event accumulation, and NonEmpty mapping (1, 2, 8, 32, and 1024 elements).
 Direct Rust implementations provide baselines with equivalent outputs, checked
 before timing. Optimizers may simplify direct code more than boxed compositions;
 these comparisons measure the cost of these specific workloads, not universal
@@ -284,7 +284,9 @@ committed). Use `--save-baseline before` and later `--baseline before` to compar
 changes on the same machine under similar load. No timing thresholds are enforced.
 
 Additional accumulation diagnostics compare singleton append with push/extend
-and benchmark-local validation implementations. See
+and benchmark-local validation implementations. Owned-string validation and bulk
+append use batched fixtures to exclude string construction/cloning from timing.
+See
 [the investigation notes](benches/README.md) for measured findings and caveats.
 
 ## Package name
