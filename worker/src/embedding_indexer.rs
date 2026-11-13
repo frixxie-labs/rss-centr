@@ -1,8 +1,10 @@
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use metrics::counter;
+use rillfp::AsyncReaderResult;
 use rss_centr_core::ollama;
 use rss_centr_core::semantic::{
     ClaimEmbeddingsResponse, ItemEmbedding, StoreEmbeddingsRequest, StoreEmbeddingsResult,
@@ -22,24 +24,53 @@ const LEASE_SECONDS: i64 = 600;
 const IDLE_SLEEP: Duration = Duration::from_secs(15 * 60);
 const RETRY_SLEEP: Duration = Duration::from_secs(60);
 
-pub(crate) trait EmbeddingQueue {
-    async fn claim(&self, limit: i64, lease_seconds: i64) -> Result<ClaimEmbeddingsResponse>;
-    async fn store(&self, request: StoreEmbeddingsRequest) -> Result<StoreEmbeddingsResult>;
+pub(crate) trait EmbeddingQueue: Send + Sync {
+    fn claim(
+        &self,
+        limit: i64,
+        lease_seconds: i64,
+    ) -> impl Future<Output = Result<ClaimEmbeddingsResponse>> + Send;
+    fn store(
+        &self,
+        request: StoreEmbeddingsRequest,
+    ) -> impl Future<Output = Result<StoreEmbeddingsResult>> + Send;
 }
 
-pub(crate) trait DocumentEmbedder {
-    async fn embed(&self, model: &str, inputs: &[String]) -> Result<Vec<Vec<f32>>>;
+pub(crate) trait DocumentEmbedder: Send + Sync {
+    fn embed(
+        &self,
+        model: &str,
+        inputs: &[String],
+    ) -> impl Future<Output = Result<Vec<Vec<f32>>>> + Send;
 }
 
-/// Claim one batch, embed it and store the result. Returns the number of
-/// items claimed (0 when there is nothing to do).
-pub(crate) async fn run_once(
-    queue: &impl EmbeddingQueue,
-    embedder: &impl DocumentEmbedder,
+struct EmbeddingEnvironment<Q, E> {
+    queue: Q,
+    embedder: E,
+}
+
+/// Build a reusable batch: every run claims fresh work, then embeds and stores
+/// it sequentially. Dropping a run leaves any claimed leases to expire.
+fn run_once<Q: EmbeddingQueue + 'static, E: DocumentEmbedder + 'static>(
     limit: i64,
     lease_seconds: i64,
+) -> AsyncReaderResult<EmbeddingEnvironment<Q, E>, usize, anyhow::Error> {
+    AsyncReaderResult::new(move |environment: &EmbeddingEnvironment<Q, E>| {
+        Box::pin(environment.queue.claim(limit, lease_seconds))
+    })
+    .and_then(|claimed| {
+        let claimed = Arc::new(claimed);
+        AsyncReaderResult::new(move |environment| {
+            let claimed = Arc::clone(&claimed);
+            Box::pin(async move { embed_and_store(environment, &claimed).await })
+        })
+    })
+}
+
+async fn embed_and_store<Q: EmbeddingQueue, E: DocumentEmbedder>(
+    environment: &EmbeddingEnvironment<Q, E>,
+    claimed: &ClaimEmbeddingsResponse,
 ) -> Result<usize> {
-    let claimed = queue.claim(limit, lease_seconds).await?;
     let count = claimed.jobs.len();
     if count == 0 {
         return Ok(0);
@@ -48,7 +79,8 @@ pub(crate) async fn run_once(
     let mut embeddings = Vec::with_capacity(count);
     for chunk in claimed.jobs.chunks(EMBED_BATCH_SIZE) {
         let inputs: Vec<String> = chunk.iter().map(|job| job.input.clone()).collect();
-        let vectors = embedder
+        let vectors = environment
+            .embedder
             .embed(&claimed.model, &inputs)
             .await
             .with_context(|| format!("failed to embed {} items", chunk.len()))?;
@@ -71,9 +103,10 @@ pub(crate) async fn run_once(
         );
     }
 
-    let result = queue
+    let result = environment
+        .queue
         .store(StoreEmbeddingsRequest {
-            model: claimed.model,
+            model: claimed.model.clone(),
             embeddings,
         })
         .await?;
@@ -96,8 +129,10 @@ pub(crate) async fn run(
         ollama_url,
         http: ollama_http,
     };
+    let environment = EmbeddingEnvironment { queue, embedder };
+    let batch = run_once(CLAIM_LIMIT, LEASE_SECONDS);
     loop {
-        match run_once(&queue, &embedder, CLAIM_LIMIT, LEASE_SECONDS).await {
+        match batch.run(&environment).await {
             Ok(0) => wait_for_new_items(&new_items, IDLE_SLEEP).await,
             Ok(count) => info!(count, "embedded feed items"),
             Err(err) => {
@@ -176,10 +211,17 @@ mod tests {
     struct FakeQueue {
         jobs: Vec<EmbeddingJob>,
         stored: Mutex<Vec<StoreEmbeddingsRequest>>,
+        claims: Mutex<Vec<(i64, i64)>>,
+        fail_claim: bool,
+        fail_store: bool,
     }
 
     impl EmbeddingQueue for FakeQueue {
-        async fn claim(&self, limit: i64, _lease: i64) -> Result<ClaimEmbeddingsResponse> {
+        async fn claim(&self, limit: i64, lease: i64) -> Result<ClaimEmbeddingsResponse> {
+            self.claims.lock().unwrap().push((limit, lease));
+            if self.fail_claim {
+                anyhow::bail!("claim unavailable");
+            }
             Ok(ClaimEmbeddingsResponse {
                 model: "m".to_string(),
                 jobs: self.jobs.iter().take(limit as usize).cloned().collect(),
@@ -187,6 +229,9 @@ mod tests {
         }
 
         async fn store(&self, request: StoreEmbeddingsRequest) -> Result<StoreEmbeddingsResult> {
+            if self.fail_store {
+                anyhow::bail!("store unavailable");
+            }
             let stored = request.embeddings.len() as u64;
             self.stored.lock().unwrap().push(request);
             Ok(StoreEmbeddingsResult { stored })
@@ -199,6 +244,8 @@ mod tests {
         batches: Mutex<Vec<usize>>,
         fail: bool,
         drop_one: bool,
+        fail_on_batch: Option<usize>,
+        release: Option<Arc<Notify>>,
     }
 
     impl DocumentEmbedder for FakeEmbedder {
@@ -208,6 +255,12 @@ mod tests {
                 anyhow::bail!("ollama down");
             }
             self.batches.lock().unwrap().push(inputs.len());
+            if self.fail_on_batch == Some(self.batches.lock().unwrap().len()) {
+                anyhow::bail!("later batch failed");
+            }
+            if let Some(release) = &self.release {
+                release.notified().await;
+            }
             let mut vectors: Vec<Vec<f32>> = inputs.iter().map(|i| vec![i.len() as f32]).collect();
             if self.drop_one {
                 vectors.pop();
@@ -228,11 +281,13 @@ mod tests {
 
     #[tokio::test]
     async fn empty_queue_does_nothing() {
-        let queue = FakeQueue::default();
-        let embedder = FakeEmbedder::default();
-        assert_eq!(run_once(&queue, &embedder, 10, 60).await.unwrap(), 0);
-        assert!(queue.stored.lock().unwrap().is_empty());
-        assert!(embedder.batches.lock().unwrap().is_empty());
+        let environment = EmbeddingEnvironment {
+            queue: FakeQueue::default(),
+            embedder: FakeEmbedder::default(),
+        };
+        assert_eq!(run_once(10, 60).run(&environment).await.unwrap(), 0);
+        assert!(environment.queue.stored.lock().unwrap().is_empty());
+        assert!(environment.embedder.batches.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -242,11 +297,12 @@ mod tests {
             ..Default::default()
         };
         let embedder = FakeEmbedder::default();
+        let environment = EmbeddingEnvironment { queue, embedder };
 
-        assert_eq!(run_once(&queue, &embedder, 64, 60).await.unwrap(), 20);
-        assert_eq!(*embedder.batches.lock().unwrap(), vec![16, 4]);
+        assert_eq!(run_once(64, 60).run(&environment).await.unwrap(), 20);
+        assert_eq!(*environment.embedder.batches.lock().unwrap(), vec![16, 4]);
 
-        let stored = queue.stored.lock().unwrap();
+        let stored = environment.queue.stored.lock().unwrap();
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].model, "m");
         let first = &stored[0].embeddings[0];
@@ -266,8 +322,9 @@ mod tests {
             fail: true,
             ..Default::default()
         };
-        assert!(run_once(&queue, &embedder, 10, 60).await.is_err());
-        assert!(queue.stored.lock().unwrap().is_empty());
+        let environment = EmbeddingEnvironment { queue, embedder };
+        assert!(run_once(10, 60).run(&environment).await.is_err());
+        assert!(environment.queue.stored.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -280,8 +337,116 @@ mod tests {
             drop_one: true,
             ..Default::default()
         };
-        let err = run_once(&queue, &embedder, 10, 60).await.unwrap_err();
+        let environment = EmbeddingEnvironment { queue, embedder };
+        let err = run_once(10, 60).run(&environment).await.unwrap_err();
         assert!(err.to_string().contains("2 vectors for 3 inputs"));
-        assert!(queue.stored.lock().unwrap().is_empty());
+        assert!(environment.queue.stored.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn embedding_workflow_is_lazy_send_and_reclaims_on_each_run() {
+        let environment = EmbeddingEnvironment {
+            queue: FakeQueue {
+                jobs: jobs(3),
+                ..Default::default()
+            },
+            embedder: FakeEmbedder::default(),
+        };
+        let workflow = run_once(10, 60);
+        let unpolled = workflow.run(&environment);
+        assert!(environment.queue.claims.lock().unwrap().is_empty());
+        drop(unpolled);
+        fn assert_send<T: Send>(value: T) -> T {
+            value
+        }
+        for _ in 0..2 {
+            assert_eq!(assert_send(workflow.run(&environment)).await.unwrap(), 3);
+        }
+        assert_eq!(
+            *environment.queue.claims.lock().unwrap(),
+            [(10, 60), (10, 60)]
+        );
+        assert_eq!(environment.queue.stored.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn claim_failure_skips_embedding_and_storage() {
+        let environment = EmbeddingEnvironment {
+            queue: FakeQueue {
+                fail_claim: true,
+                ..Default::default()
+            },
+            embedder: FakeEmbedder::default(),
+        };
+        let error = run_once(10, 60).run(&environment).await.unwrap_err();
+        assert_eq!(error.to_string(), "claim unavailable");
+        assert!(environment.embedder.batches.lock().unwrap().is_empty());
+        assert!(environment.queue.stored.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn later_batch_failure_does_not_store_partial_embeddings() {
+        let environment = EmbeddingEnvironment {
+            queue: FakeQueue {
+                jobs: jobs(40),
+                ..Default::default()
+            },
+            embedder: FakeEmbedder {
+                fail_on_batch: Some(2),
+                ..Default::default()
+            },
+        };
+        let error = run_once(64, 60).run(&environment).await.unwrap_err();
+        assert!(format!("{error:#}").contains("later batch failed"));
+        assert_eq!(*environment.embedder.batches.lock().unwrap(), [16, 16]);
+        assert!(environment.queue.stored.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn storage_failure_is_propagated_without_retrying() {
+        let environment = EmbeddingEnvironment {
+            queue: FakeQueue {
+                jobs: jobs(3),
+                fail_store: true,
+                ..Default::default()
+            },
+            embedder: FakeEmbedder::default(),
+        };
+        let error = run_once(10, 60).run(&environment).await.unwrap_err();
+        assert_eq!(error.to_string(), "store unavailable");
+        assert_eq!(*environment.embedder.batches.lock().unwrap(), [3]);
+        assert_eq!(*environment.queue.claims.lock().unwrap(), [(10, 60)]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelling_a_batch_stops_storage_and_does_not_poison_the_next_run() {
+        let release = Arc::new(Notify::new());
+        let environment = EmbeddingEnvironment {
+            queue: FakeQueue {
+                jobs: jobs(3),
+                ..Default::default()
+            },
+            embedder: FakeEmbedder {
+                release: Some(Arc::clone(&release)),
+                ..Default::default()
+            },
+        };
+        let batch = run_once(10, 60);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), batch.run(&environment))
+                .await
+                .is_err()
+        );
+        assert_eq!(*environment.queue.claims.lock().unwrap(), [(10, 60)]);
+        assert_eq!(*environment.embedder.batches.lock().unwrap(), [3]);
+        assert!(environment.queue.stored.lock().unwrap().is_empty());
+
+        release.notify_one();
+        assert_eq!(batch.run(&environment).await.unwrap(), 3);
+        assert_eq!(environment.queue.stored.lock().unwrap().len(), 1);
+        assert_eq!(
+            *environment.queue.claims.lock().unwrap(),
+            [(10, 60), (10, 60)]
+        );
     }
 }

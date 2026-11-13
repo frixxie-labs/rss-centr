@@ -4589,6 +4589,7 @@ dependencies = [
  "quick-xml",
  "quickcheck",
  "reqwest 0.13.5",
+ "rillfp",
  "rss-centr-core",
  "serde",
  "tokio",
