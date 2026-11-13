@@ -6,4 +6,9 @@ description = "Small, composable functional primitives for Rust"
 publish = false
 
 [dev-dependencies]
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 quickcheck = "1"
+
+[[bench]]
+name = "primitives"
+harness = false

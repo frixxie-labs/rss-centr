@@ -228,7 +228,7 @@ guarantee. Both logging traits leave backend failures to the implementation.
 
 ## Development
 
-QuickCheck is the only direct dev dependency. Property tests cover invariants,
+QuickCheck and Criterion are dev-only dependencies. Property tests cover invariants,
 composition laws, error order, and interoperability; example tests cover
 short-circuiting, laziness, explicit logging, thread sharing, async suspension,
 and cancellation. Async tests use a small, standard-library-only test executor.
@@ -254,6 +254,34 @@ cargo clippy --all-targets -- -D warnings
 cargo doc --no-deps
 cargo run --example workflow
 ```
+
+### Benchmarks
+
+From the workspace root:
+
+```sh
+cargo bench -p rillfp
+cargo bench -p rillfp --bench primitives -- reader/execution
+cargo bench -p rillfp --bench primitives -- --test
+```
+
+Criterion measures reader construction separately from repeated execution, sync
+and async map chains (1, 8, and 32 steps), successful/mixed/failed validation,
+Writer event accumulation, and NonEmpty mapping (1, 32, and 1024 elements).
+Direct Rust implementations provide baselines with equivalent outputs, checked
+before timing. Optimizers may simplify direct code more than boxed compositions;
+these comparisons measure the cost of these specific workloads, not universal
+overhead per operation. Construction timings include dropping the built readers;
+NonEmpty/Vec mapping excludes input cloning using batched setup.
+
+Async benchmarks use immediately ready futures and a single poll, not an async
+runtime: they measure allocation, dispatch, and composition rather than I/O or
+scheduling. Writer benchmarks collect events without invoking a logger.
+
+The `--test` command smoke-tests every case without collecting measurements.
+Normal runs print estimates and retain results under `target/criterion/` (not
+committed). Use `--save-baseline before` and later `--baseline before` to compare
+changes on the same machine under similar load. No timing thresholds are enforced.
 
 ## Package name
 
