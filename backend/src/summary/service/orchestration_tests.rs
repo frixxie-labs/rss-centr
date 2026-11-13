@@ -365,9 +365,9 @@ async fn summaries_from_other_models_do_not_count_as_covering_the_articles() {
     state.models.batch = "final".into();
     let article = Story {
         id: 10,
-        item_ids: vec![10],
-        feed_ids: vec![1],
-        sources: vec![],
+        item_ids: rillfp::NonEmpty::new(10),
+        feed_ids: rillfp::NonEmpty::new(1),
+        sources: rillfp::NonEmpty::new("Example News".into()),
         title: String::new(),
         description: String::new(),
     };
@@ -389,7 +389,7 @@ async fn summaries_from_other_models_do_not_count_as_covering_the_articles() {
         "batch → final"
     ));
     let newer = Story {
-        item_ids: vec![10, 11],
+        item_ids: rillfp::NonEmpty::from_head_tail(10, [11]),
         ..article
     };
     assert!(has_new_articles(latest.as_ref(), &[newer], "batch → final"));

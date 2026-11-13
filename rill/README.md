@@ -195,6 +195,19 @@ composition laws, error order, and interoperability; example tests cover
 short-circuiting, laziness, explicit logging, thread sharing, async suspension,
 and cancellation. Async tests use a small, standard-library-only test executor.
 
+From the workspace root:
+
+```sh
+cargo test -p rillfp
+QUICKCHECK_TESTS=1000 cargo test -p rillfp --test primitives
+cargo fmt --all -- --check
+cargo clippy -p rillfp --all-targets -- -D warnings
+cargo doc -p rillfp --no-deps
+cargo run -p rillfp --example workflow
+```
+
+Or from this directory:
+
 ```sh
 cargo test
 QUICKCHECK_TESTS=1000 cargo test --test primitives

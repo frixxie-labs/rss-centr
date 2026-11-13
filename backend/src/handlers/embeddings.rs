@@ -1,4 +1,5 @@
 use axum::{Json, extract::Query, extract::State};
+use rillfp::Validation;
 use rss_centr_core::semantic::{
     ClaimEmbeddingsResponse, StoreEmbeddingsRequest, StoreEmbeddingsResult,
 };
@@ -16,6 +17,49 @@ const MAX_CLAIM_LIMIT: i64 = 256;
 pub struct ClaimEmbeddingsQuery {
     pub limit: Option<i64>,
     pub lease_seconds: Option<i64>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ClaimParameters {
+    limit: i64,
+    lease_seconds: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ClaimParameterError {
+    Limit,
+    LeaseSeconds,
+}
+
+impl ClaimParameterError {
+    fn message(&self) -> String {
+        match self {
+            Self::Limit => format!("limit must be between 1 and {MAX_CLAIM_LIMIT}"),
+            Self::LeaseSeconds => "lease_seconds must be positive".into(),
+        }
+    }
+}
+
+impl ClaimEmbeddingsQuery {
+    fn validate(self) -> Validation<ClaimParameters, ClaimParameterError> {
+        let limit = self.limit.unwrap_or(32);
+        let lease_seconds = self.lease_seconds.unwrap_or(300);
+        let limit = Validation::from(
+            (1..=MAX_CLAIM_LIMIT)
+                .contains(&limit)
+                .then_some(limit)
+                .ok_or(ClaimParameterError::Limit),
+        );
+        let lease_seconds = Validation::from(
+            (lease_seconds > 0)
+                .then_some(lease_seconds)
+                .ok_or(ClaimParameterError::LeaseSeconds),
+        );
+        limit.map2(lease_seconds, |limit, lease_seconds| ClaimParameters {
+            limit,
+            lease_seconds,
+        })
+    }
 }
 
 #[utoipa::path(
@@ -37,16 +81,14 @@ pub async fn claim_embeddings(
     State(state): State<SearchState>,
     Query(query): Query<ClaimEmbeddingsQuery>,
 ) -> Result<Json<ClaimEmbeddingsResponse>, HandlerError> {
-    let limit = query.limit.unwrap_or(32);
-    let lease_seconds = query.lease_seconds.unwrap_or(300);
-    if !(1..=MAX_CLAIM_LIMIT).contains(&limit) {
-        return Err(HandlerError::bad_request(format!(
-            "limit must be between 1 and {MAX_CLAIM_LIMIT}"
-        )));
-    }
-    if lease_seconds <= 0 {
-        return Err(HandlerError::bad_request("lease_seconds must be positive"));
-    }
+    let ClaimParameters {
+        limit,
+        lease_seconds,
+    } = query
+        .validate()
+        .into_result()
+        // Keep the existing HTTP contract while retaining all errors in the pure parser.
+        .map_err(|errors| HandlerError::bad_request(errors.first().message()))?;
 
     let jobs = claim_items_needing_embedding(&state.pool, &state.model, limit, lease_seconds)
         .await
@@ -154,6 +196,131 @@ mod tests {
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_vec(request).unwrap()))
             .unwrap()
+    }
+
+    #[test]
+    fn claim_parameter_validation_accumulates_errors_in_field_order() {
+        let errors = ClaimEmbeddingsQuery {
+            limit: Some(0),
+            lease_seconds: Some(0),
+        }
+        .validate()
+        .into_result()
+        .unwrap_err();
+        assert_eq!(
+            errors.into_vec(),
+            [
+                ClaimParameterError::Limit,
+                ClaimParameterError::LeaseSeconds
+            ]
+        );
+    }
+
+    #[test]
+    fn claim_parameter_validation_preserves_defaults_and_boundaries() {
+        for (limit, lease_seconds, expected) in [
+            (
+                None,
+                None,
+                ClaimParameters {
+                    limit: 32,
+                    lease_seconds: 300,
+                },
+            ),
+            (
+                Some(1),
+                Some(1),
+                ClaimParameters {
+                    limit: 1,
+                    lease_seconds: 1,
+                },
+            ),
+            (
+                Some(MAX_CLAIM_LIMIT),
+                Some(i64::MAX),
+                ClaimParameters {
+                    limit: MAX_CLAIM_LIMIT,
+                    lease_seconds: i64::MAX,
+                },
+            ),
+        ] {
+            assert_eq!(
+                ClaimEmbeddingsQuery {
+                    limit,
+                    lease_seconds
+                }
+                .validate()
+                .into_result(),
+                Ok(expected)
+            );
+        }
+    }
+
+    quickcheck::quickcheck! {
+        fn prop_claim_validation_accepts_exactly_valid_ranges(limit: i64, lease_seconds: i64) -> bool {
+            let result = ClaimEmbeddingsQuery {
+                limit: Some(limit),
+                lease_seconds: Some(lease_seconds),
+            }.validate().into_result();
+            match result {
+                Ok(parameters) => (1..=MAX_CLAIM_LIMIT).contains(&limit)
+                    && lease_seconds > 0
+                    && parameters.limit == limit
+                    && parameters.lease_seconds == lease_seconds,
+                Err(errors) => {
+                    let expected: Vec<_> = [
+                        (!(1..=MAX_CLAIM_LIMIT).contains(&limit)).then_some(ClaimParameterError::Limit),
+                        (lease_seconds <= 0).then_some(ClaimParameterError::LeaseSeconds),
+                    ].into_iter().flatten().collect();
+                    errors.into_vec() == expected
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_claims_preserve_first_error_without_accessing_database() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+            .unwrap();
+        pool.close().await;
+        for (query, message) in [
+            (
+                ClaimEmbeddingsQuery {
+                    limit: Some(0),
+                    lease_seconds: Some(0),
+                },
+                "limit must be between 1 and 256",
+            ),
+            (
+                ClaimEmbeddingsQuery {
+                    limit: Some(257),
+                    lease_seconds: None,
+                },
+                "limit must be between 1 and 256",
+            ),
+            (
+                ClaimEmbeddingsQuery {
+                    limit: None,
+                    lease_seconds: Some(-1),
+                },
+                "lease_seconds must be positive",
+            ),
+        ] {
+            let state = SearchState {
+                pool: pool.clone(),
+                embedder: Arc::new(NoEmbedder),
+                model: "test-model".into(),
+                centroids: Arc::new(crate::search::EmbeddingCentroids::new("test-model")),
+                min_similarity: 0.3,
+                recency: rss_centr_core::semantic::RecencyBoost::NONE,
+            };
+            let error = claim_embeddings(State(state), Query(query))
+                .await
+                .unwrap_err();
+            assert_eq!(error.status, StatusCode::BAD_REQUEST);
+            assert_eq!(error.message, message);
+        }
     }
 
     #[sqlx::test]

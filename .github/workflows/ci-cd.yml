@@ -38,6 +38,11 @@ jobs:
       - name: Build worker
         run: cargo build --manifest-path worker/Cargo.toml --verbose
 
+      - name: Check rill primitives
+        run: |
+          rustup component add clippy
+          cargo clippy -p rillfp --all-targets -- -D warnings
+
   test-backend:
     name: Test backend
     needs: build-backend

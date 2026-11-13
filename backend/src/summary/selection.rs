@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use rillfp::NonEmpty;
+
 use super::SummaryArticle;
 
 // Unrelated texts score about 0.55-0.65 with embeddinggemma; reports of the
@@ -14,9 +16,9 @@ const MAX_STORIES: usize = 400;
 pub(crate) struct Story {
     /// The first article's id; it identifies the story.
     pub(crate) id: i64,
-    pub(crate) item_ids: Vec<i64>,
-    pub(crate) feed_ids: Vec<i64>,
-    pub(crate) sources: Vec<String>,
+    pub(crate) item_ids: NonEmpty<i64>,
+    pub(crate) feed_ids: NonEmpty<i64>,
+    pub(crate) sources: NonEmpty<String>,
     pub(crate) title: String,
     pub(crate) description: String,
 }
@@ -47,10 +49,10 @@ fn group_duplicates(articles: Vec<SummaryArticle>) -> Vec<Story> {
             Some(index) => {
                 let story = &mut stories[index];
                 story.item_ids.push(article.id);
-                if !story.feed_ids.contains(&article.feed_id) {
+                if !story.feed_ids.iter().any(|id| *id == article.feed_id) {
                     story.feed_ids.push(article.feed_id);
                 }
-                if !story.sources.contains(&article.feed) {
+                if !story.sources.iter().any(|source| *source == article.feed) {
                     story.sources.push(article.feed);
                 }
             }
@@ -58,9 +60,9 @@ fn group_duplicates(articles: Vec<SummaryArticle>) -> Vec<Story> {
                 embeddings.push(article.embedding);
                 stories.push(Story {
                     id: article.id,
-                    item_ids: vec![article.id],
-                    feed_ids: vec![article.feed_id],
-                    sources: vec![article.feed],
+                    item_ids: NonEmpty::new(article.id),
+                    feed_ids: NonEmpty::new(article.feed_id),
+                    sources: NonEmpty::new(article.feed),
                     title: article.title,
                     description: article.description,
                 });
@@ -86,7 +88,7 @@ fn cap_stories(stories: Vec<Story>, per_feed: usize, total: usize) -> Vec<Story>
         .into_iter()
         .rev()
         .filter(|story| {
-            let count = per_feed_count.entry(story.feed_ids[0]).or_default();
+            let count = per_feed_count.entry(*story.feed_ids.first()).or_default();
             *count += 1;
             *count <= per_feed
         })
@@ -123,7 +125,13 @@ mod tests {
 
         let groups: Vec<_> = stories
             .iter()
-            .map(|story| (story.id, story.item_ids.clone(), story.sources.clone()))
+            .map(|story| {
+                (
+                    story.id,
+                    story.item_ids.clone().into_vec(),
+                    story.sources.clone().into_vec(),
+                )
+            })
             .collect();
         assert_eq!(
             groups,
@@ -133,7 +141,7 @@ mod tests {
                 (5, vec![5], vec!["feed 3".into()]),
             ]
         );
-        assert_eq!(stories[0].feed_ids, [1, 2]);
+        assert_eq!(stories[0].feed_ids.clone().into_vec(), [1, 2]);
         assert_eq!(stories[0].title, "title 1");
     }
 
@@ -163,6 +171,30 @@ mod tests {
     }
 
     quickcheck::quickcheck! {
+        fn prop_story_membership_preserves_representative_and_unique_sources(feeds: Vec<u8>) -> bool {
+            let articles: Vec<_> = feeds.iter().enumerate().map(|(id, feed)| {
+                article(id as i64, i64::from(*feed % 8), Some(vec![1.0, 0.0]))
+            }).collect();
+            let stories = group_duplicates(articles);
+            if feeds.is_empty() {
+                return stories.is_empty();
+            }
+            let mut expected_feeds = Vec::new();
+            for feed in &feeds {
+                let id = i64::from(*feed % 8);
+                if !expected_feeds.contains(&id) {
+                    expected_feeds.push(id);
+                }
+            }
+            stories.len() == 1 && {
+                let story = &stories[0];
+                story.id == *story.item_ids.first()
+                    && story.item_ids.iter().copied().eq(0..feeds.len() as i64)
+                    && story.feed_ids.iter().copied().eq(expected_feeds.iter().copied())
+                    && story.sources.iter().cloned().eq(expected_feeds.iter().map(|id| format!("feed {id}")))
+            }
+        }
+
         fn prop_every_kept_article_is_in_exactly_one_story(feeds: Vec<u8>) -> bool {
             let articles: Vec<_> = feeds
                 .iter()

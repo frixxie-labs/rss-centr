@@ -15,7 +15,9 @@ jj describe -m "<message>"   # set change description
 
 ## Rust Commands (Cargo Workspace)
 
-The Rust code is a workspace with `backend`, `core`, and `worker` members.
+The Rust code is a workspace with `backend`, `core`, `worker`, `frontend`, and `rill` members.
+`rill/` provides the local `rillfp` functional primitives; `cargo test --workspace`
+includes its example and property tests. Use `cargo test -p rillfp` for focused tests.
 
 ```bash
 cargo check --workspace

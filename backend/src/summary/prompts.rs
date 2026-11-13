@@ -95,7 +95,12 @@ pub(crate) fn build_batch_prompt(articles: &[Story]) -> String {
         let _ = write!(
             prompt,
             "Kilde: {}\nTittel: {}\nBeskrivelse: {}\n\n",
-            article.sources.join(", "),
+            article
+                .sources
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", "),
             article.title,
             article.description
         );
@@ -138,6 +143,8 @@ pub(crate) fn build_merge_prompt(batch_summaries: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use rillfp::NonEmpty;
+
     use super::*;
     use crate::summary::{InputTooLarge, SUMMARY_CONTEXT_TOKENS};
 
@@ -145,9 +152,12 @@ mod tests {
     fn article_prompt_requests_source_grounded_notes_and_preserves_input() {
         let articles = vec![Story {
             id: 1,
-            item_ids: vec![1, 3],
-            feed_ids: vec![2, 4],
-            sources: vec!["Example News".to_string(), "Other News".to_string()],
+            item_ids: NonEmpty::from_head_tail(1, [3]),
+            feed_ids: NonEmpty::from_head_tail(2, [4]),
+            sources: NonEmpty::from_head_tail(
+                "Example News".to_string(),
+                ["Other News".to_string()],
+            ),
             title: "Budsjettforslag".to_string(),
             description: "Et anslag på 45 øre i 2027, ikke et vedtak.".to_string(),
         }];
@@ -190,9 +200,9 @@ mod tests {
         let articles: Vec<_> = (0..26)
             .map(|id| Story {
                 id,
-                item_ids: vec![id],
-                feed_ids: vec![1],
-                sources: vec!["Source".to_string()],
+                item_ids: NonEmpty::new(id),
+                feed_ids: NonEmpty::new(1),
+                sources: NonEmpty::new("Source".to_string()),
                 title: "Title".to_string(),
                 description: "æ".repeat(300),
             })

@@ -332,6 +332,7 @@ dependencies = [
  "pgvector",
  "quickcheck",
  "reqwest 0.13.5",
+ "rillfp",
  "rss-centr-core",
  "serde",
  "serde_json",
@@ -2829,6 +2830,13 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "rillfp"
+version = "0.1.0"
+dependencies = [
+ "quickcheck",
 ]
 
 [[package]]

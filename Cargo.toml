@@ -1,6 +1,9 @@
 [workspace]
-members = ["backend", "core", "worker", "frontend"]
+members = ["backend", "core", "worker", "frontend", "rill"]
 resolver = "3"
+
+[workspace.dependencies]
+rillfp = { path = "rill" }
 
 # Size-optimised profile for the Leptos WASM bundle (`lib-profile-release` in frontend/Cargo.toml).
 [profile.wasm-release]
