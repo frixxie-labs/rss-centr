@@ -2,7 +2,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use metrics::{counter, gauge};
+use metrics::gauge;
+use rillfp::{Logger, Writer};
 use rss_centr_core::feed_update_queue::{
     CompleteFeedUpdateRequest, CompletionKind, DequeuedFeedUpdate, FailedFeedUpdateRequest,
 };
@@ -15,7 +16,10 @@ use crate::feed_fetcher::{FeedSource, FetchError, FetchOutcome};
 use crate::feed_mapper::{feed_title_and_site_url, feed_to_items};
 use crate::http_util::truncate_chars;
 use crate::queue_client::FeedQueue;
-use crate::telemetry::record_feed_processed;
+
+mod events;
+
+use events::{FeedEvent, FeedTelemetry, ProcessingOutcome, completed};
 
 /// Longest fetch error description sent to the backend.
 const MAX_FAILURE_ERROR_CHARS: usize = 1_000;
@@ -110,7 +114,12 @@ fn spawn_feeds<Q: FeedQueue, S: FeedSource>(
         let queue = Arc::clone(queue);
         let source = Arc::clone(source);
         let feed_id = feed.feed_id;
-        tasks.spawn(async move { (feed_id, process_feed(&*queue, &*source, feed).await) });
+        tasks.spawn(async move {
+            (
+                feed_id,
+                process_feed(&*queue, &*source, feed, &FeedTelemetry).await,
+            )
+        });
     }
 }
 
@@ -126,6 +135,7 @@ async fn process_feed(
     queue: &impl FeedQueue,
     source: &impl FeedSource,
     feed: DequeuedFeedUpdate,
+    logger: &(impl Logger<FeedEvent> + Sync),
 ) -> Result<()> {
     let feed_id = feed.feed_id;
     let lease_token = feed.lease_token.clone();
@@ -136,30 +146,10 @@ async fn process_feed(
             let kind = request.kind;
             let fetched_items = request.items.len();
             let result = queue.complete(feed_id, request).await?;
-            if kind == CompletionKind::Fetched {
-                record_feed_processed("fetched");
-                counter!("rss_centr_worker_feed_items_inserted_total")
-                    .increment(result.inserted_items as u64);
-                info!(
-                    feed_id,
-                    fetched_items,
-                    inserted_items = result.inserted_items,
-                    next_due_at = %result.next_due_at,
-                    "feed update completed"
-                );
-            } else {
-                record_feed_processed("not_modified");
-                info!(
-                    feed_id,
-                    inserted_items = result.inserted_items,
-                    next_due_at = %result.next_due_at,
-                    "feed not modified"
-                );
-            }
+            completed(feed_id, kind, fetched_items, result).write_to(logger);
         }
         Err(fetch_error) => {
-            record_feed_processed("failed");
-            let request = failure_request(lease_token, &fetch_error);
+            let request = failure_request(lease_token, &fetch_error).write_to(logger);
             let retry_after = request.retry_after;
             let http_status = request.http_status;
             match queue.failed(feed_id, request).await {
@@ -223,14 +213,18 @@ fn completion_request(lease_token: String, outcome: &FetchOutcome) -> CompleteFe
     }
 }
 
-fn failure_request(lease_token: String, fetch_error: &FetchError) -> FailedFeedUpdateRequest {
+fn failure_request(
+    lease_token: String,
+    fetch_error: &FetchError,
+) -> Writer<FailedFeedUpdateRequest, FeedEvent> {
     let error = fetch_error.to_string();
-    FailedFeedUpdateRequest {
+    let request = FailedFeedUpdateRequest {
         lease_token,
         retry_after: fetch_error.retry_after(),
         http_status: fetch_error.http_status(),
         error: Some(truncate_chars(&error, MAX_FAILURE_ERROR_CHARS).to_string()),
-    }
+    };
+    Writer::new(request, [FeedEvent::Processed(ProcessingOutcome::Failed)])
 }
 
 #[cfg(test)]
@@ -271,6 +265,9 @@ mod tests {
         dequeue_limits: Mutex<Vec<u32>>,
         completed: Mutex<Vec<(i64, CompleteFeedUpdateRequest)>>,
         failed: Mutex<Vec<(i64, FailedFeedUpdateRequest)>>,
+        fail_complete: bool,
+        fail_failed: bool,
+        completion_release: Option<Arc<tokio::sync::Notify>>,
     }
 
     impl FakeQueue {
@@ -295,6 +292,12 @@ mod tests {
         ) -> Result<CompleteFeedUpdateResult> {
             let inserted_items = request.items.len() as i64;
             self.completed.lock().unwrap().push((feed_id, request));
+            if let Some(release) = &self.completion_release {
+                release.notified().await;
+            }
+            if self.fail_complete {
+                anyhow::bail!("completion unavailable");
+            }
             Ok(CompleteFeedUpdateResult {
                 inserted_items,
                 next_due_at: Utc::now(),
@@ -307,6 +310,9 @@ mod tests {
             request: FailedFeedUpdateRequest,
         ) -> Result<FailedFeedUpdateResult> {
             self.failed.lock().unwrap().push((feed_id, request));
+            if self.fail_failed {
+                anyhow::bail!("failure reporting unavailable");
+            }
             Ok(FailedFeedUpdateResult {
                 next_due_at: Utc::now(),
             })
@@ -376,6 +382,91 @@ mod tests {
         assert!(error.contains("HTTP 410"), "{error}");
     }
 
+    #[tokio::test]
+    async fn completion_events_follow_acknowledgement() {
+        let queue = FakeQueue::default();
+        let events = Mutex::new(Vec::new());
+        let logger = |event| {
+            assert_eq!(queue.completed.lock().unwrap().len(), 1);
+            events.lock().unwrap().push(event);
+        };
+        process_feed(&queue, &FakeSource::default(), feed(2), &logger)
+            .await
+            .unwrap();
+        assert!(matches!(
+            events.lock().unwrap().as_slice(),
+            [
+                FeedEvent::Processed(ProcessingOutcome::NotModified),
+                FeedEvent::Completed {
+                    feed_id: 2,
+                    kind: CompletionKind::NotModified,
+                    fetched_items: 0,
+                    inserted_items: 0,
+                    ..
+                },
+            ]
+        ));
+    }
+
+    #[tokio::test]
+    async fn failed_acknowledgement_emits_no_success_events() {
+        let queue = FakeQueue {
+            fail_complete: true,
+            ..Default::default()
+        };
+        let events = Mutex::new(Vec::new());
+        let error = process_feed(&queue, &FakeSource::default(), feed(2), &|event| {
+            events.lock().unwrap().push(event);
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error.to_string(), "completion unavailable");
+        assert!(events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelling_completion_emits_no_success_events() {
+        let queue = FakeQueue {
+            completion_release: Some(Arc::new(tokio::sync::Notify::new())),
+            ..Default::default()
+        };
+        let events = Mutex::new(Vec::new());
+        let source = FakeSource::default();
+        let logger = |event| events.lock().unwrap().push(event);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                process_feed(&queue, &source, feed(2), &logger),
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(queue.completed.lock().unwrap().len(), 1);
+        assert!(events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn fetch_failure_is_counted_before_reporting_even_when_reporting_fails() {
+        for fail_failed in [false, true] {
+            let queue = FakeQueue {
+                fail_failed,
+                ..Default::default()
+            };
+            let events = Mutex::new(Vec::new());
+            let logger = |event| {
+                assert!(queue.failed.lock().unwrap().is_empty());
+                events.lock().unwrap().push(event);
+            };
+            let result = process_feed(&queue, &FakeSource::default(), feed(3), &logger).await;
+            assert_eq!(result.is_err(), fail_failed);
+            assert_eq!(
+                *events.lock().unwrap(),
+                [FeedEvent::Processed(ProcessingOutcome::Failed)]
+            );
+            assert_eq!(queue.failed.lock().unwrap().len(), 1);
+        }
+    }
+
     #[test]
     fn completion_request_carries_validators_and_only_fetched_feeds_carry_content() {
         let feed = crate::feed_parser::parse_feed(
@@ -414,7 +505,8 @@ mod tests {
     #[test]
     fn failure_request_truncates_long_errors() {
         let error = FetchError::Other(anyhow!("x".repeat(MAX_FAILURE_ERROR_CHARS + 50)));
-        let request = failure_request("t".to_string(), &error);
+        let (request, events) = failure_request("t".to_string(), &error).into_parts();
+        assert_eq!(events, [FeedEvent::Processed(ProcessingOutcome::Failed)]);
         assert_eq!(request.http_status, None);
         assert_eq!(
             request.error.unwrap().chars().count(),
