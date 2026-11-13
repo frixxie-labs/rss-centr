@@ -4,6 +4,23 @@ use quickcheck::quickcheck;
 use rillfp::{Logger, NonEmpty, Reader, ReaderResult, Validation, Writer};
 
 quickcheck! {
+    fn validation_map2_matches_zip_then_map(left: Result<i16, String>, right: Result<i16, String>) -> bool {
+        let left = Validation::from(left);
+        let right = Validation::from(right);
+        let combine = |a: i16, b: i16| i32::from(a) + i32::from(b);
+        left.clone().map2(right.clone(), combine)
+            == left.zip(right).map(|(a, b)| combine(a, b))
+    }
+
+    fn non_empty_append_matches_vec_concatenation(
+        left_head: i32, left_tail: Vec<i32>, right_head: i32, right_tail: Vec<i32>
+    ) -> bool {
+        let left = NonEmpty::from_head_tail(left_head, left_tail);
+        let right = NonEmpty::from_head_tail(right_head, right_tail);
+        let expected: Vec<_> = left.iter().chain(right.iter()).copied().collect();
+        left.append(right).into_vec() == expected
+    }
+
     fn non_empty_round_trip(values: Vec<i32>) -> bool {
         match NonEmpty::from_vec(values.clone()) {
             Some(non_empty) => !values.is_empty() && non_empty.into_vec() == values,

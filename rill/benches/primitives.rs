@@ -122,6 +122,46 @@ fn validate_direct(values: &[Result<u64, usize>]) -> Result<u64, Vec<usize>> {
     }
 }
 
+// Diagnostic equivalents: separate map2's intermediate tuple from appending
+// singleton errors. Keep these beside the public-API workload for comparison.
+fn validate_fused(values: &[Result<u64, usize>]) -> Result<u64, Vec<usize>> {
+    values
+        .iter()
+        .copied()
+        .fold(Validation::Valid(0), |sum, value| {
+            match (sum, Validation::from(value)) {
+                (Validation::Valid(sum), Validation::Valid(value)) => {
+                    Validation::Valid(sum + value)
+                }
+                (Validation::Invalid(left), Validation::Invalid(right)) => {
+                    Validation::Invalid(left.append(right))
+                }
+                (Validation::Invalid(errors), _) | (_, Validation::Invalid(errors)) => {
+                    Validation::Invalid(errors)
+                }
+            }
+        })
+        .into_result()
+        .map_err(NonEmpty::into_vec)
+}
+
+fn validate_push(values: &[Result<u64, usize>]) -> Result<u64, Vec<usize>> {
+    values
+        .iter()
+        .copied()
+        .fold(Validation::Valid(0), |sum, value| match (sum, value) {
+            (Validation::Valid(sum), Ok(value)) => Validation::Valid(sum + value),
+            (Validation::Invalid(mut errors), Err(error)) => {
+                errors.push(error);
+                Validation::Invalid(errors)
+            }
+            (Validation::Invalid(errors), Ok(_)) => Validation::Invalid(errors),
+            (Validation::Valid(_), Err(error)) => Validation::invalid(error),
+        })
+        .into_result()
+        .map_err(NonEmpty::into_vec)
+}
+
 fn validation(c: &mut Criterion) {
     for scenario in ["valid", "invalid", "mixed"] {
         let mut group = c.benchmark_group(format!("validation/{scenario}"));
@@ -134,11 +174,23 @@ fn validation(c: &mut Criterion) {
                 })
                 .collect();
             assert_eq!(validate(&values), validate_direct(&values));
+            assert_eq!(validate_fused(&values), validate_direct(&values));
+            assert_eq!(validate_push(&values), validate_direct(&values));
             group.bench_with_input(BenchmarkId::new("rill", size), &values, |b, values| {
                 b.iter(|| validate(black_box(values)));
             });
             group.bench_with_input(BenchmarkId::new("direct", size), &values, |b, values| {
                 b.iter(|| validate_direct(black_box(values)));
+            });
+            group.bench_with_input(
+                BenchmarkId::new("fused_map2", size),
+                &values,
+                |b, values| {
+                    b.iter(|| validate_fused(black_box(values)));
+                },
+            );
+            group.bench_with_input(BenchmarkId::new("push", size), &values, |b, values| {
+                b.iter(|| validate_push(black_box(values)));
             });
         }
         group.finish();
@@ -209,12 +261,47 @@ fn non_empty(c: &mut Criterion) {
     group.finish();
 }
 
+fn error_accumulation(c: &mut Criterion) {
+    let mut group = c.benchmark_group("non_empty/accumulation");
+    for size in COLLECTION_SIZES {
+        group.bench_with_input(
+            BenchmarkId::new("append_singleton", size),
+            &size,
+            |b, &size| {
+                b.iter(|| {
+                    (1..black_box(size)).fold(NonEmpty::new(0), |errors, error| {
+                        errors.append(NonEmpty::new(error))
+                    })
+                });
+            },
+        );
+        group.bench_with_input(BenchmarkId::new("push", size), &size, |b, &size| {
+            b.iter(|| {
+                (1..black_box(size)).fold(NonEmpty::new(0), |mut errors, error| {
+                    errors.push(error);
+                    errors
+                })
+            });
+        });
+        group.bench_with_input(BenchmarkId::new("extend_once", size), &size, |b, &size| {
+            b.iter(|| {
+                (1..black_box(size)).fold(NonEmpty::new(0), |mut errors, error| {
+                    errors.extend(std::iter::once(error));
+                    errors
+                })
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     readers,
     async_readers,
     validation,
     writers,
-    non_empty
+    non_empty,
+    error_accumulation
 );
 criterion_main!(benches);

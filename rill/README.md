@@ -283,6 +283,10 @@ Normal runs print estimates and retain results under `target/criterion/` (not
 committed). Use `--save-baseline before` and later `--baseline before` to compare
 changes on the same machine under similar load. No timing thresholds are enforced.
 
+Additional accumulation diagnostics compare singleton append with push/extend
+and benchmark-local validation implementations. See
+[the investigation notes](benches/README.md) for measured findings and caveats.
+
 ## Package name
 
 The crate is named `rillfp`: a rill is a small flowing stream, fitting a library
