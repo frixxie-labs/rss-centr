@@ -4,7 +4,7 @@ use rss_centr_core::semantic::{
     ClaimEmbeddingsResponse, StoreEmbeddingsRequest, StoreEmbeddingsResult,
 };
 use serde::Deserialize;
-use tracing::instrument;
+use tracing::{debug, instrument};
 
 use crate::search::SearchState;
 use crate::search::embedding_store::{claim_items_needing_embedding, store_item_embeddings};
@@ -84,11 +84,13 @@ pub async fn claim_embeddings(
     let ClaimParameters {
         limit,
         lease_seconds,
-    } = query
-        .validate()
-        .into_result()
-        // Keep the existing HTTP contract while retaining all errors in the pure parser.
-        .map_err(|errors| HandlerError::bad_request(errors.first().message()))?;
+    } = query.validate().into_result().map_err(|errors| {
+        for error in &errors {
+            debug!(error = %error.message(), "invalid embedding claim parameter");
+        }
+        // Keep the existing first-error HTTP contract.
+        HandlerError::bad_request(errors.first().message())
+    })?;
 
     let jobs = claim_items_needing_embedding(&state.pool, &state.model, limit, lease_seconds)
         .await

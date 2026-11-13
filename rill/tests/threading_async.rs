@@ -39,6 +39,162 @@ fn assert_send_sync<T: Send + Sync>() {}
 fn assert_send<T: Send>(_: &T) {}
 
 #[test]
+fn async_continuations_own_non_clone_values_and_reuse_the_same_environment() {
+    struct Value(std::cell::Cell<usize>);
+
+    let reader = AsyncReader::new(|text: &String| {
+        Box::pin(async move { Value(std::cell::Cell::new(text.len())) })
+    })
+    .and_then_async(|value, text| {
+        Box::pin(async move {
+            std::future::ready(()).await;
+            value.0.get() + text.len()
+        })
+    });
+    for text in ["hello".to_owned(), "world!".to_owned()] {
+        let future = reader.run(&text);
+        assert_send(&future);
+        assert_eq!(block_on(future), 2 * text.len());
+    }
+
+    let reader = AsyncReaderResult::new(|text: &String| {
+        Box::pin(async move { Ok::<_, &str>(Value(std::cell::Cell::new(text.len()))) })
+    })
+    .and_then_async(|value, text| {
+        Box::pin(async move {
+            std::future::ready(()).await;
+            Ok(value.0.get() + text.len())
+        })
+    });
+    for text in ["hello".to_owned(), "world!".to_owned()] {
+        let future = reader.run(&text);
+        assert_send(&future);
+        assert_eq!(block_on(future), Ok(2 * text.len()));
+    }
+}
+
+#[test]
+fn async_result_continuations_skip_upstream_errors_and_propagate_their_own() {
+    let reader = AsyncReaderResult::new(|_: &()| Box::pin(async { Err::<usize, _>("upstream") }))
+        .and_then_async(|_, _| -> rillfp::BoxFuture<'_, Result<usize, &str>> {
+            panic!("must not run")
+        });
+    assert_eq!(block_on(reader.run(&())), Err("upstream"));
+
+    let reader = AsyncReaderResult::<(), _, &str>::from_reader(AsyncReader::pure(42))
+        .and_then_async(|_, _| Box::pin(async { Err::<usize, _>("continuation") }));
+    assert_eq!(block_on(reader.run(&())), Err("continuation"));
+}
+
+#[test]
+fn async_continuation_borrows_projected_environment_across_suspension_without_reader() {
+    struct Environment {
+        suffix: String,
+    }
+    let environment = Environment {
+        suffix: " world".to_owned(),
+    };
+    let mut future = {
+        let reader = AsyncReader::pure("hello".to_owned())
+            .and_then_async(|mut text, suffix: &String| {
+                Box::pin(async move {
+                    let mut pending = true;
+                    std::future::poll_fn(move |context| {
+                        if std::mem::take(&mut pending) {
+                            context.waker().wake_by_ref();
+                            Poll::Pending
+                        } else {
+                            Poll::Ready(())
+                        }
+                    })
+                    .await;
+                    text.push_str(suffix);
+                    text
+                })
+            })
+            .local_ref(|env: &Environment| &env.suffix);
+        reader.run(&environment)
+    };
+    assert_send(&future);
+    let mut context = Context::from_waker(Waker::noop());
+    assert_eq!(future.as_mut().poll(&mut context), Poll::Pending);
+    assert_eq!(block_on(future), "hello world");
+}
+
+#[test]
+fn async_continuations_are_lazy_and_cancel_with_the_run() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&calls);
+    let reader = AsyncReader::pure(42).and_then_async(move |value, _: &()| {
+        captured.lock().unwrap().push(value);
+        Box::pin(std::future::pending::<usize>())
+    });
+    let mut future = reader.run(&());
+    assert!(calls.lock().unwrap().is_empty());
+    let mut context = Context::from_waker(Waker::noop());
+    assert_eq!(future.as_mut().poll(&mut context), Poll::Pending);
+    drop(future);
+    assert_eq!(*calls.lock().unwrap(), [42]);
+
+    let captured = Arc::clone(&calls);
+    let reader = AsyncReaderResult::<(), _, &str>::from_reader(AsyncReader::pure(43))
+        .and_then_async(move |value, _| {
+            captured.lock().unwrap().push(value);
+            Box::pin(std::future::pending::<Result<usize, &str>>())
+        });
+    let mut future = reader.run(&());
+    assert_eq!(*calls.lock().unwrap(), [42]);
+    assert_eq!(future.as_mut().poll(&mut context), Poll::Pending);
+    drop(future);
+    assert_eq!(*calls.lock().unwrap(), [42, 43]);
+}
+
+#[test]
+fn async_local_ref_borrows_a_non_clone_component_and_defers_projection() {
+    struct Component(String);
+    struct Environment {
+        text: Component,
+        projections: Mutex<usize>,
+    }
+    let environment = Environment {
+        text: Component("hello".to_owned()),
+        projections: Mutex::new(0),
+    };
+    let reader = AsyncReader::new(|text: &Component| {
+        Box::pin(async move {
+            std::future::ready(()).await;
+            text.0.len()
+        })
+    })
+    .local_ref(|env: &Environment| {
+        *env.projections.lock().unwrap() += 1;
+        &env.text
+    });
+    let future = reader.run(&environment);
+    assert_send(&future);
+    assert_eq!(*environment.projections.lock().unwrap(), 0);
+    assert_eq!(block_on(future), 5);
+    assert_eq!(block_on(reader.run(&environment)), 5);
+    assert_eq!(*environment.projections.lock().unwrap(), 2);
+
+    let reader = AsyncReaderResult::new(|text: &Component| {
+        Box::pin(async move {
+            std::future::ready(()).await;
+            text.0.parse::<usize>().map_err(|_| "invalid")
+        })
+    })
+    .local_ref(|env: &Environment| &env.text);
+    let future = reader.run(&environment);
+    assert_send(&future);
+    assert_eq!(block_on(future), Err("invalid"));
+    let environment = Environment {
+        text: Component("42".to_owned()),
+        projections: Mutex::new(0),
+    };
+    assert_eq!(block_on(reader.run(&environment)), Ok(42));
+}
+
+#[test]
 fn thread_safe_primitives_implement_send_and_sync() {
     assert_send_sync::<SendReader<'static, i32, i32>>();
     assert_send_sync::<SendReaderResult<'static, i32, i32, String>>();
@@ -72,6 +228,30 @@ fn send_reader_result_composes_and_recovers_on_another_thread() {
 }
 
 quickcheck! {
+    fn async_continuation_matches_reader_composition(value: i16, environment: i16) -> bool {
+        let direct = AsyncReader::pure(value).and_then_async(|value, env: &i16| {
+            Box::pin(async move { i64::from(value) + i64::from(*env) })
+        });
+        let composed = AsyncReader::pure(value).and_then(|value| {
+            AsyncReader::new(move |env: &i16| {
+                Box::pin(async move { i64::from(value) + i64::from(*env) })
+            })
+        });
+        block_on(direct.run(&environment)) == block_on(composed.run(&environment))
+    }
+
+    fn async_result_continuation_matches_result(result: Result<i16, String>, environment: i16) -> bool {
+        let reader = AsyncReaderResult::new(|result: &Result<i16, String>| {
+            Box::pin(async move { result.clone() })
+        })
+        .local_ref(|env: &(Result<i16, String>, i16)| &env.0)
+        .and_then_async(|value, env| {
+            Box::pin(async move { Ok(i64::from(value) + i64::from(env.1)) })
+        });
+        let expected = result.clone().map(|value| i64::from(value) + i64::from(environment));
+        block_on(reader.run(&(result, environment))) == expected
+    }
+
     fn send_reader_matches_reader_arithmetic(environment: i16) -> bool {
         let reader = SendReader::new(|r: &i16| i64::from(*r))
             .map(|value| value + 1)

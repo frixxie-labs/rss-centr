@@ -132,6 +132,44 @@ be `Send`. `from_sync` lifts a `SendReader` or `SendReaderResult` with `'static`
 captures, but does not offload blocking work. Dropping a future cancels that run
 without rolling back completed effects.
 
+### Ordinary async steps and borrowed environments
+
+Use `and_then` to compose existing reusable readers. Use `and_then_async` when
+the next step is an ordinary async operation: it receives the owned intermediate
+value and a reference to the same environment, and returns a boxed future.
+Intermediate values do not need `Clone`, `Sync`, or an `Arc`. The fallible
+version skips the step on an upstream error and propagates the step's errors.
+
+`local_ref` borrows an existing component of an outer environment, whereas
+`local` constructs an owned inner environment. Neither the component nor the
+outer environment needs to implement `Clone`; projection happens only when
+the run is polled.
+
+```rust
+use rillfp::AsyncReaderResult;
+
+struct Numbers { offset: u32 }
+struct App { numbers: Numbers }
+
+let workflow = AsyncReaderResult::new(|numbers: &Numbers| {
+    Box::pin(async move { Ok::<_, &'static str>(numbers.offset.to_string()) })
+})
+.and_then_async(|text, numbers| Box::pin(async move {
+    let value = text.parse::<u32>().map_err(|_| "invalid number")?;
+    value.checked_add(numbers.offset).ok_or("overflow")
+}))
+.local_ref(|app: &App| &app.numbers);
+
+let app = App { numbers: Numbers { offset: 21 } };
+// Await in your existing runtime; each run borrows app and owns its intermediates.
+let future = workflow.run(&app);
+# drop(future);
+```
+
+An `async` block with `.await` and `?` inside `new` is also a good default for
+sequential orchestration. Use combinators where they clarify meaningful workflow
+boundaries rather than wrapping every operation in its own reader.
+
 ## Deferred structured events
 
 ```rust

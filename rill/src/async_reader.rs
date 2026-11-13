@@ -117,6 +117,23 @@ impl<R: Sync + 'static, T: Send + 'static> AsyncReader<R, T> {
         })
     }
 
+    /// Passes the owned output and borrowed environment directly to an async step.
+    ///
+    /// Unlike [`and_then`](Self::and_then), the continuation returns a future,
+    /// not another reusable reader. Each run can move its intermediate value
+    /// into that future without cloning it or wrapping it in `Arc`.
+    pub fn and_then_async<U: Send + 'static>(
+        self,
+        f: impl for<'r> Fn(T, &'r R) -> BoxFuture<'r, U> + Send + Sync + 'static,
+    ) -> AsyncReader<R, U> {
+        let f = Arc::new(f);
+        AsyncReader::new(move |environment| {
+            let future = self.run(environment);
+            let f = Arc::clone(&f);
+            Box::pin(async move { f(future.await, environment).await })
+        })
+    }
+
     /// Awaits both computations sequentially, left-to-right, not concurrently.
     pub fn zip<U: Send + 'static>(self, other: AsyncReader<R, U>) -> AsyncReader<R, (T, U)> {
         AsyncReader::new(move |environment| {
@@ -128,6 +145,17 @@ impl<R: Sync + 'static, T: Send + 'static> AsyncReader<R, T> {
                 (left, right)
             })
         })
+    }
+
+    /// Borrows a component of an outer environment without cloning or rebuilding it.
+    ///
+    /// Projection is deferred until polling. The projected reference remains
+    /// borrowed from the outer environment across `.await`.
+    pub fn local_ref<S: Sync + 'static>(
+        self,
+        f: impl for<'r> Fn(&'r S) -> &'r R + Send + Sync + 'static,
+    ) -> AsyncReader<S, T> {
+        AsyncReader::new(move |environment| self.run(f(environment)))
     }
 
     /// Builds an owned inner environment and keeps it alive across `.await`.

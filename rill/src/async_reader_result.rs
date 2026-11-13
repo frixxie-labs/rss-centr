@@ -93,6 +93,26 @@ impl<R: Sync + 'static, T: Send + 'static, E: Send + 'static> AsyncReaderResult<
         })
     }
 
+    /// Passes a successful owned value and borrowed environment to an async step.
+    ///
+    /// The continuation returns a future instead of another reusable reader,
+    /// so intermediate values need not be cloned or wrapped in `Arc`.
+    /// Upstream errors skip the continuation; its own errors propagate unchanged.
+    pub fn and_then_async<U: Send + 'static>(
+        self,
+        f: impl for<'r> Fn(T, &'r R) -> BoxFuture<'r, Result<U, E>> + Send + Sync + 'static,
+    ) -> AsyncReaderResult<R, U, E> {
+        let f = Arc::new(f);
+        AsyncReaderResult::new(move |environment| {
+            let future = self.run(environment);
+            let f = Arc::clone(&f);
+            Box::pin(async move {
+                let value = future.await?;
+                f(value, environment).await
+            })
+        })
+    }
+
     /// Recovers from an error using the same environment.
     pub fn or_else<F: Send + 'static>(
         self,
@@ -125,6 +145,19 @@ impl<R: Sync + 'static, T: Send + 'static, E: Send + 'static> AsyncReaderResult<
                 Ok((left, right))
             })
         })
+    }
+
+    /// Borrows a component of an outer environment without cloning or rebuilding it.
+    ///
+    /// Projection is deferred until polling. The projected reference remains
+    /// borrowed from the outer environment across `.await`.
+    pub fn local_ref<S: Sync + 'static>(
+        self,
+        f: impl for<'r> Fn(&'r S) -> &'r R + Send + Sync + 'static,
+    ) -> AsyncReaderResult<S, T, E> {
+        AsyncReaderResult {
+            reader: self.reader.local_ref(f),
+        }
     }
 
     /// Builds an owned inner environment and keeps it alive across `.await`.

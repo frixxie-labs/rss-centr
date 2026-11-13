@@ -58,12 +58,8 @@ fn run_once<Q: EmbeddingQueue + 'static, E: DocumentEmbedder + 'static>(
     AsyncReaderResult::new(move |environment: &EmbeddingEnvironment<Q, E>| {
         Box::pin(environment.queue.claim(limit, lease_seconds))
     })
-    .and_then(|claimed| {
-        let claimed = Arc::new(claimed);
-        AsyncReaderResult::new(move |environment| {
-            let claimed = Arc::clone(&claimed);
-            Box::pin(async move { embed_and_store(environment, &claimed).await })
-        })
+    .and_then_async(|claimed, environment| {
+        Box::pin(async move { embed_and_store(environment, &claimed).await })
     })
 }
 
