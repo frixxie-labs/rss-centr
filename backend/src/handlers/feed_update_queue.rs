@@ -96,6 +96,7 @@ pub async fn dequeue_feed_updates(
     ),
     responses(
         (status = 200, description = "Feed update completed", body = CompleteFeedUpdateResult),
+        (status = 400, description = "Unchanged feed cannot carry items"),
         (status = 409, description = "Lease token is stale or expired"),
         (status = 500, description = "Internal server error"),
     ),
@@ -206,6 +207,47 @@ mod tests {
             let error = map_queue_error(FeedQueueError::Storage(anyhow::anyhow!(message)));
             assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
         }
+    }
+
+    #[sqlx::test]
+    async fn unchanged_completion_with_items_preserves_the_lease_and_items(pool: PgPool) {
+        let feed = upsert_feed_by_url(&pool, "https://example.com/unchanged.xml")
+            .await
+            .unwrap();
+        crate::feed::feed_update_queue::enqueue_feed_now(&pool, feed.id)
+            .await
+            .unwrap();
+        let lease = dequeue_due_feeds(&pool, 100, 300)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|lease| lease.feed_id == feed.id)
+            .unwrap();
+        let app = router(pool.clone());
+        let mut body = serde_json::json!({
+            "lease_token": lease.lease_token, "fetched": false,
+            "items": [{"external_id":"1","title":"unexpected","url":"https://example.com/1"}]
+        });
+        for expected in [StatusCode::BAD_REQUEST, StatusCode::OK] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post(format!("/feed-update-queue/{}/complete", feed.id))
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+            body["items"] = serde_json::json!([]);
+        }
+        assert!(
+            crate::feed::feed_item::read_feed_items_by_feed(&pool, feed.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[sqlx::test]

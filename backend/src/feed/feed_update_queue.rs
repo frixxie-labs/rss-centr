@@ -5,7 +5,7 @@ pub use domain::FeedQueueError;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rss_centr_core::feed_update_queue::{
-    CompleteFeedUpdateRequest, CompleteFeedUpdateResult, CompletionKind, DequeuedFeedUpdate,
+    CompleteFeedUpdateRequest, CompleteFeedUpdateResult, DequeuedFeedUpdate,
     FailedFeedUpdateRequest, FailedFeedUpdateResult, FeedUpdateItemInput,
 };
 use sqlx::{PgPool, Postgres, Transaction};
@@ -18,7 +18,7 @@ use super::poll_interval::{
     PollSignal, Schedule, reschedule_after_completion, reschedule_after_failure,
 };
 
-use domain::{DetailColumns, ItemColumns};
+use domain::{Completion, DetailColumns, ItemColumns};
 
 struct FeedPollInterval {
     poll_interval_seconds: i64,
@@ -131,6 +131,7 @@ pub async fn complete_feed_update(
     request: CompleteFeedUpdateRequest,
     completed_at: DateTime<Utc>,
 ) -> Result<CompleteFeedUpdateResult, FeedQueueError> {
+    let completion = Completion::parse(request.kind, request.items)?;
     let mut tx = pool
         .begin()
         .await
@@ -138,16 +139,21 @@ pub async fn complete_feed_update(
 
     ensure_current_lease(&mut tx, feed_id, &request.lease_token).await?;
 
-    let inserted_items = insert_items(&mut tx, feed_id, &request.items, completed_at).await?;
-    let signal = match request.kind {
-        CompletionKind::Fetched => PollSignal::Fetched {
-            cadence_seconds: read_feed_cadence_seconds(&mut *tx, feed_id).await?,
-        },
-        CompletionKind::NotModified => PollSignal::NotModified {
-            current_interval_seconds: read_feed_poll_interval(&mut tx, feed_id)
-                .await?
-                .poll_interval_seconds,
-        },
+    let (inserted_items, signal) = match completion {
+        Completion::Fetched(items) => (
+            insert_items(&mut tx, feed_id, &items, completed_at).await?,
+            PollSignal::Fetched {
+                cadence_seconds: read_feed_cadence_seconds(&mut *tx, feed_id).await?,
+            },
+        ),
+        Completion::NotModified => (
+            0,
+            PollSignal::NotModified {
+                current_interval_seconds: read_feed_poll_interval(&mut tx, feed_id)
+                    .await?
+                    .poll_interval_seconds,
+            },
+        ),
     };
     let Schedule {
         poll_interval_seconds,
@@ -446,6 +452,7 @@ mod tests {
         backoff_poll_interval_seconds, failure_poll_interval_seconds,
     };
     use chrono::Duration;
+    use rss_centr_core::feed_update_queue::CompletionKind;
 
     #[test]
     fn test_failed_feed_update_request_accepts_older_workers() {
@@ -629,7 +636,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn not_modified_completions_preserve_legacy_items_metadata_and_backoff(pool: PgPool) {
+    async fn not_modified_completions_update_metadata_and_back_off(pool: PgPool) {
         let feed = upsert_feed_by_url(&pool, "https://example.com/queue-legacy.xml")
             .await
             .unwrap();
@@ -651,14 +658,14 @@ mod tests {
                 site_url: Some("https://example.com".into()),
                 etag: Some("new-etag".into()),
                 last_modified: Some("new-last-modified".into()),
-                items: vec![item_input("legacy-item", Some("Legacy summary"))],
+                items: vec![],
             },
             Utc::now(),
         )
         .await
         .unwrap();
 
-        assert_eq!(result.inserted_items, 1);
+        assert_eq!(result.inserted_items, 0);
         let updated = read_feed(&pool, feed.id).await.unwrap();
         assert_eq!(updated.title.as_deref(), Some("Legacy title"));
         assert_eq!(updated.site_url.as_deref(), Some("https://example.com"));
@@ -668,7 +675,7 @@ mod tests {
             updated.poll_interval_seconds,
             backoff_poll_interval_seconds(feed.poll_interval_seconds)
         );
-        assert!(updated.last_inserted_at.is_some());
+        assert_eq!(updated.last_inserted_at, feed.last_inserted_at);
         let expected_due =
             updated.last_checked_at.unwrap() + Duration::seconds(updated.poll_interval_seconds);
         assert_eq!(
@@ -676,8 +683,7 @@ mod tests {
             expected_due.timestamp_micros()
         );
         let items = read_feed_items_by_feed(&pool, feed.id).await.unwrap();
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].external_id, "legacy-item");
+        assert!(items.is_empty());
     }
 
     #[sqlx::test]

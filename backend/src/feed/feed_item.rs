@@ -779,3 +779,48 @@ mod tests {
         assert_eq!(items[0].summary.as_deref(), Some("summary b"));
     }
 }
+
+#[cfg(test)]
+mod wire_contract {
+    use super::*;
+    use crate::events::NewFeedItemEvent;
+
+    #[test]
+    fn latest_response_and_new_item_event_match_public_examples() {
+        let item = FeedItemWithDetail {
+            id: 7,
+            feed_id: 3,
+            external_id: "post-7".into(),
+            title: "Example article".into(),
+            url: "https://example.com/7".into(),
+            inserted_at: "2025-01-02T00:00:00Z".parse().unwrap(),
+            summary: Some("Short summary".into()),
+            content: Some("Full article".into()),
+            author: Some("A. Writer".into()),
+            published_at: Some("2025-01-01T00:00:00Z".parse().unwrap()),
+        };
+        let event = NewFeedItemEvent::from(&FeedItem {
+            id: item.id,
+            feed_id: item.feed_id,
+            external_id: item.external_id.clone(),
+            title: item.title.clone(),
+            url: item.url.clone(),
+            inserted_at: item.inserted_at,
+        });
+        for (payload, example) in [
+            (
+                serde_json::to_value([item]).unwrap(),
+                include_str!("../../../contracts/items/latest.json"),
+            ),
+            (
+                serde_json::to_value(event).unwrap(),
+                include_str!("../../../contracts/items/new-event.json"),
+            ),
+        ] {
+            assert_eq!(
+                payload,
+                serde_json::from_str::<serde_json::Value>(example).unwrap()
+            );
+        }
+    }
+}

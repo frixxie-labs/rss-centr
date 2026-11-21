@@ -2,6 +2,7 @@ mod centroids;
 mod config;
 mod embedder;
 pub mod embedding_store;
+pub(crate) mod http;
 mod items;
 mod timings;
 

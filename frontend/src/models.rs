@@ -93,12 +93,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn topic_wire_spelling_and_missing_item_details_deserialize() {
+    fn latest_items_and_new_item_events_decode_from_public_examples() {
+        let [item]: [FeedItem; 1] =
+            serde_json::from_str(include_str!("../../contracts/items/latest.json")).unwrap();
+        let event: FeedItem =
+            serde_json::from_str(include_str!("../../contracts/items/new-event.json")).unwrap();
+        assert_eq!(item.summary.as_deref(), Some("Short summary"));
+        assert_eq!(item.content.as_deref(), Some("Full article"));
+        assert_eq!(item.author.as_deref(), Some("A. Writer"));
+        assert_eq!(
+            item.published_at.unwrap().to_rfc3339(),
+            "2025-01-01T00:00:00+00:00"
+        );
+        assert_eq!(
+            event,
+            FeedItem {
+                summary: None,
+                content: None,
+                author: None,
+                published_at: None,
+                ..item
+            }
+        );
+    }
+
+    #[test]
+    fn topic_wire_spelling_and_replay_defaults_deserialize() {
         let topic: Topic = serde_json::from_str(r#"{"word":"rust","total_occurences":2,"document_frequency":1,"tf_idf":0.5,"items":[{"feed_src_id":1,"occurences":2}]}"#).unwrap();
         assert_eq!(topic.total_occurrences, 2);
         assert_eq!(topic.items[0].occurrences, 2);
-        let event: FeedItem = serde_json::from_str(r#"{"id":1,"feed_id":2,"external_id":"a","title":"x","url":"https://example.com","inserted_at":"2025-01-01T00:00:00Z"}"#).unwrap();
-        assert!(event.summary.is_none());
         assert!(serde_json::from_str::<ReplayDone>("not json").is_err());
         assert_eq!(
             serde_json::from_str::<ReplayDone>("{}").unwrap(),
