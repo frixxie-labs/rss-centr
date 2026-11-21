@@ -71,6 +71,8 @@ pub struct CompleteFeedUpdateRequest {
     pub site_url: Option<String>,
     pub etag: Option<String>,
     pub last_modified: Option<String>,
+    /// Must be empty when `fetched` is false. A contradictory completion is
+    /// rejected with HTTP 400 and leaves the lease available for retry.
     pub items: Vec<FeedUpdateItemInput>,
 }
 

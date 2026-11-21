@@ -18,11 +18,13 @@ use utoipa::OpenApi;
 
 use crate::events::NewFeedItemEvent;
 use crate::search::SearchState;
+use crate::search::http as search_http;
 use crate::summary::SummaryState;
 
 pub(crate) mod daily_summary;
 mod embeddings;
 mod error;
+pub(crate) use error::HandlerError;
 mod feed_title_index;
 mod feed_update_queue;
 mod feeds;
@@ -87,10 +89,10 @@ pub(crate) fn create_router(
 
     let items = Router::new()
         .route("/feeds/{feed_id}/items", get(items::fetch_items_by_feed))
-        .route("/items/latest", get(items::fetch_latest_items))
         .route("/items/{item_id}", get(items::fetch_item_by_id))
         .route("/items/{item_id}/detail", get(items::fetch_item_detail))
-        .with_state(search_state.clone());
+        .with_state(pool.clone())
+        .merge(search_http::router(search_state.clone()));
 
     let embeddings = Router::new()
         .route("/embeddings/claim", post(embeddings::claim_embeddings))
@@ -185,7 +187,7 @@ async fn metrics(axum::extract::State(handle): axum::extract::State<PrometheusHa
         feed_update_queue::fail_feed_update_handler,
         feed_title_index::fetch_recent_feed_title_index,
         items::fetch_items_by_feed,
-        items::fetch_latest_items,
+        search_http::fetch_latest_items,
         items::fetch_item_by_id,
         items::fetch_item_detail,
         daily_summary::fetch_daily_summary,

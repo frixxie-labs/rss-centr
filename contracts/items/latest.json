@@ -1,0 +1,14 @@
+[
+  {
+    "id": 7,
+    "feed_id": 3,
+    "external_id": "post-7",
+    "title": "Example article",
+    "url": "https://example.com/7",
+    "inserted_at": "2025-01-02T00:00:00Z",
+    "summary": "Short summary",
+    "content": "Full article",
+    "author": "A. Writer",
+    "published_at": "2025-01-01T00:00:00Z"
+  }
+]

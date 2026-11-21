@@ -6,10 +6,29 @@ use std::{
 
 use chrono::{DateTime, Utc};
 
-use rss_centr_core::feed_update_queue::FeedUpdateItemInput;
+use rss_centr_core::feed_update_queue::{CompletionKind, FeedUpdateItemInput};
+
+pub(super) enum Completion {
+    Fetched(Vec<FeedUpdateItemInput>),
+    NotModified,
+}
+
+impl Completion {
+    pub(super) fn parse(
+        kind: CompletionKind,
+        items: Vec<FeedUpdateItemInput>,
+    ) -> Result<Self, FeedQueueError> {
+        match kind {
+            CompletionKind::Fetched => Ok(Self::Fetched(items)),
+            CompletionKind::NotModified if items.is_empty() => Ok(Self::NotModified),
+            CompletionKind::NotModified => Err(FeedQueueError::ItemsWithoutFetch),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum FeedQueueError {
+    ItemsWithoutFetch,
     LeaseConflict { feed_id: i64 },
     FeedPaused { feed_id: i64 },
     FeedNotFound { feed_id: i64 },
@@ -19,6 +38,7 @@ pub enum FeedQueueError {
 impl fmt::Display for FeedQueueError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ItemsWithoutFetch => f.write_str("items must be empty when fetched is false"),
             Self::LeaseConflict { feed_id } => {
                 write!(f, "feed update lease conflict for feed_id={feed_id}")
             }
