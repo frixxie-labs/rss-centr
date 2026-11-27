@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use feed_rs::model::{Entry, Feed, Text};
 use rss_centr_core::feed_update_queue::FeedUpdateItemInput;
 
@@ -93,10 +93,13 @@ fn non_empty(value: &str) -> Option<String> {
 }
 
 fn entry_published_at(entry: &Entry) -> Option<DateTime<Utc>> {
-    entry
+    let timestamp = entry
         .published
-        .or(entry.updated)
-        .map(|dt| dt.with_timezone(&Utc))
+        .as_ref()
+        .or(entry.updated.as_ref())?
+        .timestamp();
+    let seconds = DateTime::from_timestamp_secs(timestamp.as_second())?;
+    Some(seconds + TimeDelta::nanoseconds(i64::from(timestamp.subsec_nanosecond())))
 }
 
 #[cfg(test)]
@@ -168,8 +171,8 @@ mod tests {
             let published = datetime(published_seconds);
             let updated = datetime(updated_seconds);
             let entry = Entry {
-                published: Some(published),
-                updated: Some(updated),
+                published: Some(format!("{}[UTC]", published.to_rfc3339()).parse().unwrap()),
+                updated: Some(format!("{}[UTC]", updated.to_rfc3339()).parse().unwrap()),
                 ..Default::default()
             };
 
@@ -179,7 +182,7 @@ mod tests {
         fn prop_entry_published_at_uses_updated_without_published(updated_seconds: i32) -> bool {
             let updated = datetime(updated_seconds);
             let entry = Entry {
-                updated: Some(updated),
+                updated: Some(format!("{}[UTC]", updated.to_rfc3339()).parse().unwrap()),
                 ..Default::default()
             };
 
@@ -211,7 +214,7 @@ mod tests {
     <summary>Summary of first post</summary>
     <content type="html">Full content</content>
     <author><name>Jane Doe</name></author>
-    <published>2026-07-01T10:00:00Z</published>
+    <published>1970-01-01T00:59:59.123456789+01:00</published>
   </entry>
   <entry>
     <link href="https://example.com/2" rel="alternate"/>
@@ -259,7 +262,7 @@ mod tests {
         assert_eq!(
             item.published_at,
             Some(
-                DateTime::parse_from_rfc3339("2026-07-01T10:00:00Z")
+                DateTime::parse_from_rfc3339("1969-12-31T23:59:59.123456789Z")
                     .unwrap()
                     .with_timezone(&Utc)
             )
